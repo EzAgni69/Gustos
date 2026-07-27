@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "Gusto Captain",
+    "slug": "gusto-captain",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "gusto-captain",
+    "platforms": ["ios", "android"],
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#09090b",
+    "ios": {
+      "bundleIdentifier": "com.gusto.captain",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Gusto Captain connects to the local POS server over Wi-Fi.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
+    },
+    "android": {
+      "package": "com.gusto.captain",
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "backgroundColor": "#09090b"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store"
+    ]
+  }
+}

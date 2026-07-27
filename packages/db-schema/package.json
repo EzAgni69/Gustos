@@ -1,0 +1,44 @@
+{
+  "name": "@gusto/db-schema",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./cloud": {
+      "import": "./dist/cloud/index.js",
+      "types": "./dist/cloud/index.d.ts"
+    },
+    "./local": {
+      "import": "./dist/local/index.js",
+      "types": "./dist/local/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist .turbo",
+    "db:generate": "drizzle-kit generate --config=drizzle.config.local.ts",
+    "db:generate:local": "drizzle-kit generate --config=drizzle.config.local.ts",
+    "db:generate:cloud": "drizzle-kit generate --config=drizzle.config.cloud.ts",
+    "db:migrate": "drizzle-kit migrate --config=drizzle.config.local.ts",
+    "db:push": "drizzle-kit push --config=drizzle.config.local.ts",
+    "db:push:local": "drizzle-kit push --config=drizzle.config.local.ts",
+    "db:push:cloud": "drizzle-kit push --config=drizzle.config.cloud.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44.0"
+  },
+  "devDependencies": {
+    "@gusto/tsconfig": "workspace:*",
+    "@gusto/eslint-config": "workspace:*",
+    "drizzle-kit": "^0.31.0",
+    "typescript": "^5.8.0"
+  }
+}

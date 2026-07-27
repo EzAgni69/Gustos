@@ -1,0 +1,29 @@
+{
+  "name": "@gusto/sync-worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@gusto/api-contracts": "workspace:*",
+    "@gusto/core-logic": "workspace:*",
+    "@gusto/db-schema": "workspace:*",
+    "bullmq": "^5.52.0",
+    "dotenv": "^16.5.0",
+    "drizzle-orm": "^0.44.0",
+    "postgres": "^3.4.0"
+  },
+  "devDependencies": {
+    "@gusto/tsconfig": "workspace:*",
+    "@gusto/eslint-config": "workspace:*",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}
