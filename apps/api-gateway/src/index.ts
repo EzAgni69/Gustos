@@ -1,12 +1,16 @@
 /**
  * Gusto Cloud API Gateway
  *
- * Fastify-based REST API serving the web admin dashboard and
- * handling cloud sync from local POS machines.
+ * Fastify-based REST API + Socket.IO real-time hub
+ * serving the web admin dashboard, captain app, and KDS.
+ *
+ * Cloud-Only MVP: This is the single source of truth.
  */
 
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { createServer } from "http";
+import { Server as SocketIOServer } from "socket.io";
 import dotenv from "dotenv";
 
 import { authPlugin } from "./plugins/auth.js";
@@ -22,7 +26,10 @@ import { customerRoutes } from "./routes/customer.routes.js";
 import { syncRoutes } from "./routes/sync.routes.js";
 import { inventoryRoutes } from "./routes/inventory.routes.js";
 import { orderRoutes } from "./routes/order.routes.js";
+import { kotRoutes } from "./routes/kot.routes.js";
+import { checkoutRoutes } from "./routes/checkout.routes.js";
 import { pgClient } from "./db/index.js";
+import { initSocketEvents } from "./socket/events.js";
 
 dotenv.config();
 
@@ -33,6 +40,13 @@ const fastify = Fastify({
       process.env.NODE_ENV !== "production"
         ? { target: "pino-pretty", options: { colorize: true } }
         : undefined,
+  },
+  // Disable Fastify's built-in HTTP server creation — we'll manage our own
+  serverFactory: (handler) => {
+    const httpServer = createServer((req, res) => {
+      handler(req, res);
+    });
+    return httpServer;
   },
 });
 
@@ -57,16 +71,31 @@ await fastify.register(customerRoutes);
 await fastify.register(syncRoutes);
 await fastify.register(inventoryRoutes);
 await fastify.register(orderRoutes);
+await fastify.register(kotRoutes);
+await fastify.register(checkoutRoutes);
 
 // ─── Health Check ───
 fastify.get("/health", async () => {
   return {
     status: "ok",
     service: "gusto-api-gateway",
-    version: "0.1.0",
+    version: "0.2.0",
+    mode: "cloud-only-mvp",
     timestamp: new Date().toISOString(),
   };
 });
+
+// ─── Initialize Socket.IO ───
+const httpServer = fastify.server;
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: true,
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+});
+
+initSocketEvents(io);
 
 // ─── Start Server ───
 const PORT = Number(process.env.API_GATEWAY_PORT ?? 3001);
@@ -78,7 +107,9 @@ try {
 ║       ☁️  Gusto Cloud API Gateway            ║
 ╠══════════════════════════════════════════════╣
 ║  REST API:    http://localhost:${PORT}         ║
-║  Version:     0.1.0                          ║
+║  Socket.IO:   ws://localhost:${PORT}           ║
+║  Mode:        Cloud-Only MVP                 ║
+║  Version:     0.2.0                          ║
 ║  Status:      ✅ Running                      ║
 ╚══════════════════════════════════════════════╝
   `);
@@ -90,6 +121,7 @@ try {
 // ─── Graceful Shutdown ───
 const shutdown = async (signal: string) => {
   console.log(`\n[${signal}] Shutting down gracefully...`);
+  io.close();
   await fastify.close();
   await pgClient.end();
   console.log("Server closed.");
@@ -98,3 +130,5 @@ const shutdown = async (signal: string) => {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+export { fastify, io, httpServer };

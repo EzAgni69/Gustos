@@ -203,6 +203,13 @@ export const diningTables = pgTable(
 
 // ─── Orders ───
 
+export const orderModeEnum = pgEnum("order_mode", [
+  "DINE_IN",
+  "TAKEAWAY",
+  "DELIVERY",
+  "QUICK_BILL",
+]);
+
 export const orders = pgTable(
   "orders",
   {
@@ -217,6 +224,7 @@ export const orders = pgTable(
       onDelete: "set null",
     }),
     orderNumber: varchar("order_number", { length: 30 }).notNull(),
+    orderMode: orderModeEnum("order_mode").default("DINE_IN").notNull(),
     status: orderStatusEnum("status").default("DRAFT").notNull(),
     subtotal: decimal("subtotal", { precision: 10, scale: 2 })
       .default("0")
@@ -224,6 +232,8 @@ export const orders = pgTable(
     discountAmount: decimal("discount_amount", { precision: 10, scale: 2 })
       .default("0")
       .notNull(),
+    discountType: varchar("discount_type", { length: 20 }),
+    discountValue: decimal("discount_value", { precision: 10, scale: 2 }),
     taxAmount: decimal("tax_amount", { precision: 10, scale: 2 })
       .default("0")
       .notNull(),
@@ -232,9 +242,13 @@ export const orders = pgTable(
       .notNull(),
     paymentMode: paymentModeEnum("payment_mode"),
     customerId: uuid("customer_id"),
+    customerName: varchar("customer_name", { length: 255 }),
+    customerPhone: varchar("customer_phone", { length: 20 }),
     waiterId: uuid("waiter_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    waiterName: varchar("waiter_name", { length: 255 }),
+    paxCount: integer("pax_count").default(1).notNull(),
     notes: text("notes"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -263,6 +277,7 @@ export const orderItems = pgTable(
     modifiers: text("modifiers"), // JSON array stored as text
     notes: text("notes"),
     status: orderStatusEnum("status").default("PLACED").notNull(),
+    kotId: uuid("kot_id"),
   },
   (table) => [index("order_items_order_idx").on(table.orderId)]
 );
@@ -283,6 +298,32 @@ export const kitchenOrderTickets = pgTable(
   },
   (table) => [index("kots_order_idx").on(table.orderId)]
 );
+
+export const kotItems = pgTable(
+  "kot_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kotId: uuid("kot_id")
+      .notNull()
+      .references(() => kitchenOrderTickets.id, { onDelete: "cascade" }),
+    orderItemId: uuid("order_item_id")
+      .notNull()
+      .references(() => orderItems.id, { onDelete: "cascade" }),
+    menuItemName: varchar("menu_item_name", { length: 255 }).notNull(),
+    quantity: integer("quantity").notNull(),
+    modifiers: text("modifiers"),
+    notes: text("notes"),
+  },
+  (table) => [index("kot_items_kot_idx").on(table.kotId)]
+);
+
+// ─── Sequences (daily order/KOT/invoice number tracking) ───
+
+export const sequences = pgTable("sequences", {
+  id: varchar("id", { length: 50 }).primaryKey(), // e.g. "order-20260715-outletId"
+  currentValue: integer("current_value").default(0).notNull(),
+  dateKey: varchar("date_key", { length: 8 }).notNull(), // YYYYMMDD
+});
 
 // ─── Invoices & Payments ───
 
@@ -479,10 +520,54 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
     fields: [orders.outletId],
     references: [outlets.id],
   }),
+  table: one(diningTables, {
+    fields: [orders.tableId],
+    references: [diningTables.id],
+  }),
+  waiter: one(users, {
+    fields: [orders.waiterId],
+    references: [users.id],
+  }),
   items: many(orderItems),
   kots: many(kitchenOrderTickets),
   invoice: one(invoices, {
     fields: [orders.id],
     references: [invoices.orderId],
+  }),
+}));
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderItems.orderId],
+    references: [orders.id],
+  }),
+}));
+
+export const kitchenOrderTicketsRelations = relations(
+  kitchenOrderTickets,
+  ({ one, many }) => ({
+    order: one(orders, {
+      fields: [kitchenOrderTickets.orderId],
+      references: [orders.id],
+    }),
+    items: many(kotItems),
+  })
+);
+
+export const kotItemsRelations = relations(kotItems, ({ one }) => ({
+  kot: one(kitchenOrderTickets, {
+    fields: [kotItems.kotId],
+    references: [kitchenOrderTickets.id],
+  }),
+  orderItem: one(orderItems, {
+    fields: [kotItems.orderItemId],
+    references: [orderItems.id],
+  }),
+}));
+
+export const invoicesRelations = relations(invoices, ({ one }) => ({
+  order: one(orders, {
+    fields: [invoices.orderId],
+    references: [orders.id],
   }),
 }));
