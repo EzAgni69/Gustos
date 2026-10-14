@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { useForm, Controller } from "react-hook-form";
@@ -44,11 +46,13 @@ import { UtensilsCrossed, Plus, MoreHorizontal, Loader2, Edit, Trash2, FolderEdi
 import { apiFetch } from "@/lib/api-client";
 
 export default function MenuPage() {
+  const { toast } = useToast();
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [currentOutletId, setCurrentOutletId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   // Item Modal State
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
@@ -72,11 +76,13 @@ export default function MenuPage() {
       isVeg: true,
       isAvailable: true,
       sortOrder: 0,
+      variants: "",
     }
   });
 
   const loadData = async () => {
     setLoading(true);
+    setError("");
     
     const outletsRes = await apiFetch<Outlet[]>("/outlets");
     let initialOutletId = "";
@@ -105,23 +111,7 @@ export default function MenuPage() {
         setMenuItems(itemsRes.data);
       }
     } else {
-      // Mock fallback data for visual demo if server is offline
-      setMenuItems([
-        {
-          id: "1",
-          categoryId: "cat-1",
-          outletId: "out-1",
-          name: "Margherita Pizza",
-          description: "Classic tomato sauce, fresh mozzarella, and basil",
-          price: 399.0,
-          gstRate: "5",
-          isVeg: true,
-          isAvailable: true,
-          sortOrder: 1,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }
-      ]);
+      setError(outletsRes.message || "Failed to load outlets. Ensure the API server is running.");
     }
     setLoading(false);
   };
@@ -142,6 +132,7 @@ export default function MenuPage() {
       isVeg: true,
       isAvailable: true,
       sortOrder: 0,
+      variants: "",
     });
     setIsItemModalOpen(true);
   };
@@ -158,6 +149,7 @@ export default function MenuPage() {
       isVeg: item.isVeg,
       isAvailable: item.isAvailable,
       sortOrder: item.sortOrder,
+      variants: item.variants || "",
     });
     setIsItemModalOpen(true);
   };
@@ -178,6 +170,7 @@ export default function MenuPage() {
           isVeg: data.isVeg,
           isAvailable: data.isAvailable,
           sortOrder: data.sortOrder,
+          variants: data.variants || undefined,
         }),
       });
 
@@ -185,7 +178,7 @@ export default function MenuPage() {
         setMenuItems(menuItems.map(m => m.id === editingItem.id ? res.data! : m));
         setIsItemModalOpen(false);
       } else {
-        alert(res.message || "Failed to update menu item");
+        toast({ title: "Update failed", description: res.message || "Failed to update menu item", variant: "error" });
       }
     } else {
       // Create
@@ -194,6 +187,7 @@ export default function MenuPage() {
         body: JSON.stringify({
           ...data,
           description: data.description || undefined,
+          variants: data.variants || undefined,
         }),
       });
 
@@ -201,7 +195,7 @@ export default function MenuPage() {
         setMenuItems([...menuItems, res.data]);
         setIsItemModalOpen(false);
       } else {
-        alert(res.message || "Failed to create menu item");
+        toast({ title: "Creation failed", description: res.message || "Failed to create menu item", variant: "error" });
       }
     }
 
@@ -214,7 +208,7 @@ export default function MenuPage() {
     if (res.success) {
       setMenuItems(menuItems.filter(m => m.id !== id));
     } else {
-      alert(res.message || "Failed to delete item");
+      toast({ title: "Delete failed", description: res.message || "Failed to delete item", variant: "error" });
     }
   };
 
@@ -250,7 +244,7 @@ export default function MenuPage() {
     if (res.success) {
       setCategories(categories.filter(c => c.id !== id));
     } else {
-      alert(res.message || "Failed to delete category");
+      toast({ title: "Delete failed", description: res.message || "Failed to delete category", variant: "error" });
     }
   };
 
@@ -410,6 +404,19 @@ export default function MenuPage() {
                       <p className="text-red-500 text-xs font-medium">{form.formState.errors.description.message}</p>
                     )}
                   </div>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="variants">Variants (JSON format)</Label>
+                    <Textarea
+                      id="variants"
+                      placeholder='[{"name": "8\"", "price": 100}, {"name": "12\"", "price": 200}]'
+                      className="resize-none font-mono text-xs"
+                      {...form.register("variants")}
+                    />
+                    {form.formState.errors.variants && (
+                      <p className="text-red-500 text-xs font-medium">{form.formState.errors.variants.message}</p>
+                    )}
+                  </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
@@ -499,11 +506,17 @@ export default function MenuPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-medium flex items-center gap-2">
+          <span>⚠️</span>
+          <span>{error}</span>
+        </div>
+      )}
+
       <Card className="shadow-xs border-gray-100">
         <CardHeader className="bg-gray-50/50 border-b border-gray-100">
           <div className="flex items-center gap-2">
-            <UtensilsCrossed className="w-5 h-5 text-blue-600" />
-            <div>
+            <UtensilsCrossed className="w-5 h-5 text-blue-600" />            <div>
               <CardTitle className="text-lg">All Menu Items</CardTitle>
               <CardDescription>Comprehensive list of all dishes and items.</CardDescription>
             </div>

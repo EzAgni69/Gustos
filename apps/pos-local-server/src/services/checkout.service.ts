@@ -10,21 +10,31 @@ import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
 import {
   calculateCartTotals,
-  calculateGST,
+  validatePaymentSplits,
+  buildReceiptFromOrder,
+  roundCurrency,
+  type PaymentSplitInput,
   type CartItem,
   type DiscountConfig,
   type GSTRate,
 } from "@gusto/core-logic";
-import { buildBillReceipt, type ReceiptData } from "@gusto/printer";
+import { buildBillReceipt, renderToConsole } from "@gusto/printer";
 import { getNextInvoiceNumber } from "./sequence.service.js";
 import { queueSyncEvent } from "./sync.service.js";
+import { getActiveShift } from "./shift.service.js";
 import { emitOrderUpdated, emitTableStatusChanged } from "../socket/events.js";
 
-export type PaymentMode = "CASH" | "CARD" | "UPI" | "ONLINE" | "SPLIT";
+const OUTLET_ID = process.env.OUTLET_ID || "local-outlet";
+
+export type PaymentMode = "CASH" | "CARD" | "UPI" | "ONLINE" | "SPLIT" | "OTHER";
 
 export interface CheckoutInput {
   paymentMode: PaymentMode;
-  splitDetails?: { mode: PaymentMode; amount: number }[];
+  paymentSubMethod?: string;
+  paymentSplits?: PaymentSplitInput[];
+  tipAmount?: number;
+  tenderedAmount?: number; // Cash tendered by customer
+  changeDue?: number; // Change returned
 }
 
 /**
@@ -46,6 +56,12 @@ export function processCheckout(
     throw new Error(`Order is already ${order.status.toLowerCase()}`);
   }
 
+  // Permissive Shift Enforcement: warn if no shift is active, but allow checkout
+  const activeShift = getActiveShift();
+  if (!activeShift) {
+    console.warn(`⚠️ [Checkout] Processing payment for ${order.orderNumber} without an active shift!`);
+  }
+
   const items = db
     .select()
     .from(schema.orderItems)
@@ -60,10 +76,13 @@ export function processCheckout(
   const cartItems: CartItem[] = items.map((item) => ({
     menuItemId: item.menuItemId,
     menuItemName: item.menuItemName,
+    variantName: item.variantName ?? undefined,
     quantity: item.quantity,
     unitPrice: item.unitPrice,
     gstRate: item.gstRate as GSTRate,
     modifiers: item.modifiers ? JSON.parse(item.modifiers) : undefined,
+    notes: item.notes ?? undefined,
+    addOns: item.addOns ? JSON.parse(item.addOns) : undefined,
   }));
 
   let discount: DiscountConfig | undefined;
@@ -75,13 +94,25 @@ export function processCheckout(
   }
 
   const totals = calculateCartTotals(cartItems, discount);
+  const tipAmount = input.tipAmount && input.tipAmount > 0 ? roundCurrency(input.tipAmount) : 0;
+  const payableTotal = roundCurrency(totals.grandTotal + tipAmount);
 
-  // Calculate CGST and SGST breakdown
-  let totalCGST = 0;
-  let totalSGST = 0;
-  for (const tb of totals.taxBreakdown) {
-    totalCGST += tb.cgst;
-    totalSGST += tb.sgst;
+  // Validate split payments if applicable
+  if (input.paymentMode === "SPLIT") {
+    if (!input.paymentSplits || input.paymentSplits.length === 0) {
+      throw new Error("Split payment requires paymentSplits to be provided");
+    }
+    const validation = validatePaymentSplits(input.paymentSplits, payableTotal);
+    if (!validation.valid) {
+      throw new Error(validation.error);
+    }
+  } else if (input.paymentMode === "CASH" && input.tenderedAmount !== undefined) {
+    const tenderedAmount = roundCurrency(input.tenderedAmount);
+    if (tenderedAmount < payableTotal) {
+      throw new Error(
+        `Tendered amount (₹${tenderedAmount.toFixed(2)}) is less than payable total (₹${payableTotal.toFixed(2)})`
+      );
+    }
   }
 
   // Generate invoice
@@ -89,17 +120,27 @@ export function processCheckout(
   const invoiceNumber = getNextInvoiceNumber();
   const now = new Date().toISOString();
 
+  const tenderedAmount = input.tenderedAmount !== undefined ? roundCurrency(input.tenderedAmount) : null;
+  const changeDue = input.changeDue !== undefined ? roundCurrency(input.changeDue) : null;
+
   db.insert(schema.invoices)
     .values({
       id: invoiceId,
       orderId,
       invoiceNumber,
+      receiptStatus: "ORIGINAL",
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
-      cgstAmount: totalCGST,
-      sgstAmount: totalSGST,
+      cgstAmount: totals.totalCgst,
+      sgstAmount: totals.totalSgst,
+      totalQuantity: totals.totalQuantity,
       totalAmount: totals.grandTotal,
       paymentMode: input.paymentMode,
+      paymentSubMethod: input.paymentSubMethod,
+      paymentSplits: input.paymentSplits ? JSON.stringify(input.paymentSplits) : null,
+      tipAmount,
+      tenderedAmount,
+      changeDue,
       isPaid: true,
       createdAt: now,
     })
@@ -110,6 +151,9 @@ export function processCheckout(
     .set({
       status: "COMPLETED",
       paymentMode: input.paymentMode,
+      paymentSubMethod: input.paymentSubMethod,
+      paymentSplits: input.paymentSplits ? JSON.stringify(input.paymentSplits) : null,
+      tipAmount,
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
       taxAmount: totals.totalTax,
@@ -141,7 +185,12 @@ export function processCheckout(
       eventType: "PAYMENT_RECEIVED",
       payload: JSON.stringify({
         paymentMode: input.paymentMode,
+        paymentSubMethod: input.paymentSubMethod,
+        paymentSplits: input.paymentSplits,
         totalAmount: totals.grandTotal,
+        tipAmount,
+        tenderedAmount,
+        changeDue,
         invoiceNumber,
       }),
       userId,
@@ -157,6 +206,11 @@ export function processCheckout(
     organizationId: order.organizationId,
     invoiceNumber,
     paymentMode: input.paymentMode,
+    paymentSubMethod: input.paymentSubMethod,
+    paymentSplits: input.paymentSplits,
+    tipAmount,
+    tenderedAmount,
+    changeDue,
     subtotal: totals.subtotal,
     discountAmount: totals.discountAmount,
     taxAmount: totals.totalTax,
@@ -171,58 +225,60 @@ export function processCheckout(
     completedAt: now,
   });
 
-  // Build receipt template
-  let tableName: string | undefined;
-  if (order.tableId) {
-    const table = db
-      .select()
-      .from(schema.diningTables)
-      .where(eq(schema.diningTables.id, order.tableId))
-      .get();
-    tableName = table?.name;
+  // Fetch outlet config
+  let outlet = db.select().from(schema.outletConfig).where(eq(schema.outletConfig.outletId, OUTLET_ID)).get();
+  if (!outlet) {
+    // Fallback if not configured
+    outlet = {
+      id: "fallback",
+      outletId: OUTLET_ID,
+      outletName: "Gusto's Pizzeria (Not Configured)",
+      address: "Please complete setup",
+      phone: null,
+      gstNumber: null,
+      fssaiLicenseNo: null,
+      greetingMessage: "Thank you, visit again!",
+      logoImagePath: null,
+      defaultGstRate: "5",
+      currencySymbol: "₹",
+      updatedAt: now,
+    };
   }
 
-  const receiptData: ReceiptData = {
-    outletName: "Gusto Restaurant",
-    outletAddress: "Shop 12, Versova Road, Andheri West, Mumbai 400058",
-    outletPhone: "+91 22 2634 5678",
-    gstNumber: "27AADCG1234A1Z5",
-    invoiceNumber,
-    orderNumber: order.orderNumber,
-    tableName,
-    waiterName: order.waiterName ?? undefined,
-    items: items.map((i) => ({
-      name: i.menuItemName,
-      quantity: i.quantity,
-      unitPrice: i.unitPrice,
-      total: i.unitPrice * i.quantity,
-      modifiers: i.modifiers ? JSON.parse(i.modifiers) : undefined,
-    })),
-    subtotal: totals.subtotal,
-    discountAmount: totals.discountAmount,
-    cgst: totalCGST,
-    sgst: totalSGST,
-    grandTotal: totals.grandTotal,
-    paymentMode: input.paymentMode,
-    customerName: order.customerName ?? undefined,
-    customerPhone: order.customerPhone ?? undefined,
-    createdAt: new Date(),
-  };
+  // Build receipt template
+  let table: { name: string } | undefined;
+  if (order.tableId) {
+    const t = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, order.tableId)).get();
+    if (t) table = { name: t.name };
+  }
+
+  const receiptData = buildReceiptFromOrder({
+    order,
+    items,
+    invoice: {
+      invoiceNumber,
+      subtotal: totals.subtotal,
+      discountAmount: totals.discountAmount,
+      cgstAmount: totals.totalCgst,
+      sgstAmount: totals.totalSgst,
+      totalQuantity: totals.totalQuantity,
+      totalAmount: totals.grandTotal,
+      paymentMode: input.paymentMode,
+      paymentSubMethod: input.paymentSubMethod,
+      paymentSplits: input.paymentSplits ? JSON.stringify(input.paymentSplits) : null,
+      tipAmount,
+      tenderedAmount,
+      changeDue,
+    },
+    outlet,
+    table,
+  });
 
   const printTemplate = buildBillReceipt(receiptData);
 
   // Log receipt to console (simulated print)
   console.log(`\n🧾 RECEIPT — ${invoiceNumber} (Order: ${order.orderNumber})`);
-  for (const line of printTemplate) {
-    if (line.type === "divider") console.log("─".repeat(40));
-    else if (line.type === "blank") console.log("");
-    else if (line.columns) {
-      const cols = line.columns.map((c: any) => c.text.padEnd(c.width)).join("");
-      console.log(cols);
-    } else if (line.content) {
-      console.log(line.content);
-    }
-  }
+  console.log(renderToConsole(printTemplate));
   console.log("");
 
   emitOrderUpdated({
@@ -237,6 +293,7 @@ export function processCheckout(
     invoiceId,
     invoiceNumber,
     totals,
+    tipAmount,
     paymentMode: input.paymentMode,
     printTemplate,
   };

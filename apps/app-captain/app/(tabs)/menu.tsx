@@ -1,51 +1,36 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { View, StyleSheet, FlatList, Text, Pressable, ScrollView, TextInput, KeyboardAvoidingView, Platform } from "react-native";
+import { View, StyleSheet, FlatList, Text, Pressable, ScrollView } from "react-native";
 import { useRouter } from "expo-router";
 import { useDataStore } from "../../src/stores/data.store";
-import { useCartStore } from "../../src/stores/cart.store";
+import { useCartStore, buildCartKey } from "../../src/stores/cart.store";
 import { MenuItemCard } from "../../src/components/MenuItemCard";
 import { CartBar } from "../../src/components/CartBar";
-import { BottomSheet } from "../../src/components/BottomSheet";
-import { QuantityStepper } from "../../src/components/QuantityStepper";
+import { ItemCustomizer } from "../../src/components/ItemCustomizer";
+import { ItemInfoModal } from "../../src/components/ItemInfoModal";
 import { colors, spacing, fontSize, fontWeight, radius } from "../../src/config/theme";
-import { COMMON_MODIFIERS } from "../../src/config/constants";
 import type { MenuItemResponse } from "../../src/services/api";
 
 export default function MenuScreen() {
   const { categories, fetchMenu, menuLoading, selectedCategoryId, selectCategory, getFilteredItems } = useDataStore();
-  const { items: cartItems, addItem, updateQuantity, setItemModifiers, setItemNotes, getItemCount, getSubtotal } = useCartStore();
+  const { items: cartItems, addItem, upsertItem, getItemCount, getSubtotal } = useCartStore();
   const router = useRouter();
 
   const [activeItem, setActiveItem] = useState<MenuItemResponse | null>(null);
   const [sheetVisible, setSheetVisible] = useState(false);
 
-  // Local state for bottom sheet
-  const activeCartItem = useMemo(() => {
-    return cartItems.find((i) => i.menuItemId === activeItem?.id);
-  }, [cartItems, activeItem]);
+  const [infoItem, setInfoItem] = useState<MenuItemResponse | null>(null);
+  const [infoSheetVisible, setInfoSheetVisible] = useState(false);
 
-  const [localQuantity, setLocalQuantity] = useState(0);
-  const [localModifiers, setLocalModifiers] = useState<Set<string>>(new Set());
-  const [localNotes, setLocalNotes] = useState("");
+  // Find existing cart item for the active item (to pre-fill the customizer)
+  const activeCartItem = useMemo(() => {
+    if (!activeItem) return undefined;
+    // Find the first cart item matching this menu item
+    return cartItems.find((i) => i.menuItemId === activeItem.id);
+  }, [cartItems, activeItem]);
 
   useEffect(() => {
     fetchMenu();
   }, [fetchMenu]);
-
-  // Sync sheet state with cart
-  useEffect(() => {
-    if (activeItem) {
-      if (activeCartItem) {
-        setLocalQuantity(activeCartItem.quantity);
-        setLocalModifiers(new Set(activeCartItem.modifiers));
-        setLocalNotes(activeCartItem.notes);
-      } else {
-        setLocalQuantity(1);
-        setLocalModifiers(new Set());
-        setLocalNotes("");
-      }
-    }
-  }, [activeItem, activeCartItem]);
 
   const handleOpenSheet = (item: MenuItemResponse) => {
     setActiveItem(item);
@@ -53,30 +38,28 @@ export default function MenuScreen() {
   };
 
   const handleCloseSheet = () => {
-    if (activeItem && activeCartItem) {
-      updateQuantity(activeItem.id, localQuantity);
-      setItemModifiers(activeItem.id, Array.from(localModifiers));
-      setItemNotes(activeItem.id, localNotes);
-    } else if (activeItem && localQuantity > 0) {
-      // Add new item if quantity is set
-      addItem(activeItem);
-      // Hack: we need to wait for store update before setting modifiers, 
-      // but Zustand is sync so it's ok
-      updateQuantity(activeItem.id, localQuantity);
-      setItemModifiers(activeItem.id, Array.from(localModifiers));
-      setItemNotes(activeItem.id, localNotes);
-    }
     setSheetVisible(false);
   };
 
-  const toggleModifier = (mod: string) => {
-    const next = new Set(localModifiers);
-    if (next.has(mod)) {
-      next.delete(mod);
-    } else {
-      next.add(mod);
-    }
-    setLocalModifiers(next);
+  const handleOpenInfo = (item: MenuItemResponse) => {
+    setInfoItem(item);
+    setInfoSheetVisible(true);
+  };
+
+  const handleCloseInfo = () => {
+    setInfoSheetVisible(false);
+  };
+
+  const handleConfirmCustomization = (params: Parameters<typeof upsertItem>[0]) => {
+    upsertItem(params);
+    setSheetVisible(false);
+  };
+
+  // Calculate total quantity for a specific menu item across all variants
+  const getItemTotalQty = (menuItemId: string): number => {
+    return cartItems
+      .filter((i) => i.menuItemId === menuItemId)
+      .reduce((sum, i) => sum + i.quantity, 0);
   };
 
   const filteredItems = getFilteredItems();
@@ -110,10 +93,16 @@ export default function MenuScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         renderItem={({ item }) => {
-          const qty = cartItems.find((i) => i.menuItemId === item.id)?.quantity ?? 0;
+          const qty = getItemTotalQty(item.id);
           return (
             <View style={styles.cardWrapper}>
-              <MenuItemCard item={item} quantity={qty} onAdd={addItem} onPress={handleOpenSheet} />
+              <MenuItemCard 
+                item={item} 
+                quantity={qty} 
+                onAdd={addItem} 
+                onPress={handleOpenSheet} 
+                onInfoPress={handleOpenInfo} 
+              />
             </View>
           );
         }}
@@ -122,56 +111,32 @@ export default function MenuScreen() {
       {/* Cart Bar */}
       <CartBar itemCount={getItemCount()} total={getSubtotal()} onPress={() => router.push("/cart")} />
 
-      {/* Item Detail Bottom Sheet */}
-      <BottomSheet isVisible={sheetVisible} onClose={handleCloseSheet} height={500}>
-        {activeItem && (
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-            <ScrollView contentContainerStyle={styles.sheetContent}>
-              <View style={styles.sheetHeader}>
-                <View>
-                  <Text style={styles.sheetTitle}>{activeItem.name}</Text>
-                  <Text style={styles.sheetPrice}>₹{activeItem.price.toFixed(0)}</Text>
-                </View>
-                <QuantityStepper quantity={localQuantity} onChange={setLocalQuantity} min={0} />
-              </View>
+      {/* Item Customizer Bottom Sheet */}
+      <ItemCustomizer
+        item={activeItem}
+        isVisible={sheetVisible}
+        onClose={handleCloseSheet}
+        onConfirm={handleConfirmCustomization}
+        initialValues={
+          activeCartItem
+            ? {
+                quantity: activeCartItem.quantity,
+                variantName: activeCartItem.variantName,
+                modifiers: activeCartItem.modifiers,
+                addOns: activeCartItem.addOns,
+                notes: activeCartItem.notes,
+              }
+            : undefined
+        }
+      />
 
-              <Text style={styles.sectionTitle}>Modifiers</Text>
-              <View style={styles.modifiersList}>
-                {COMMON_MODIFIERS.map((mod) => {
-                  const selected = localModifiers.has(mod);
-                  return (
-                    <Pressable
-                      key={mod}
-                      style={[styles.modifierChip, selected && styles.modifierChipSelected]}
-                      onPress={() => toggleModifier(mod)}
-                    >
-                      <Text style={[styles.modifierText, selected && styles.modifierTextSelected]}>{mod}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              <Text style={styles.sectionTitle}>Special Instructions</Text>
-              <TextInput
-                style={styles.notesInput}
-                placeholder="e.g. Make it extra spicy..."
-                placeholderTextColor={colors.textTertiary}
-                value={localNotes}
-                onChangeText={setLocalNotes}
-                multiline
-                numberOfLines={3}
-                textAlignVertical="top"
-              />
-            </ScrollView>
-            
-            <View style={styles.sheetFooter}>
-               <Pressable style={styles.doneButton} onPress={handleCloseSheet}>
-                 <Text style={styles.doneButtonText}>Done</Text>
-               </Pressable>
-            </View>
-          </KeyboardAvoidingView>
-        )}
-      </BottomSheet>
+      {/* Item Info Modal (from ⓘ button) */}
+      <ItemInfoModal
+        item={infoItem}
+        isVisible={infoSheetVisible}
+        onClose={handleCloseInfo}
+        onAddPress={handleOpenSheet}
+      />
     </View>
   );
 }
@@ -186,18 +151,4 @@ const styles = StyleSheet.create({
   categoryTextSelected: { color: colors.accent, fontWeight: fontWeight.bold },
   listContent: { padding: spacing.md, gap: spacing.md, paddingBottom: 100 },
   cardWrapper: {},
-  sheetContent: { padding: spacing.xl },
-  sheetHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: spacing.xl },
-  sheetTitle: { fontSize: fontSize.xl, fontWeight: fontWeight.bold, color: colors.textPrimary, marginBottom: 4 },
-  sheetPrice: { fontSize: fontSize.lg, color: colors.textSecondary, fontWeight: fontWeight.medium },
-  sectionTitle: { fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: colors.textPrimary, marginBottom: spacing.md, marginTop: spacing.md },
-  modifiersList: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginBottom: spacing.lg },
-  modifierChip: { paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.sm, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.borderLight },
-  modifierChipSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
-  modifierText: { color: colors.textSecondary, fontSize: fontSize.sm },
-  modifierTextSelected: { color: "#fff", fontWeight: fontWeight.bold },
-  notesInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.borderLight, borderRadius: radius.md, padding: spacing.md, color: colors.textPrimary, minHeight: 80, fontSize: fontSize.md },
-  sheetFooter: { padding: spacing.xl, paddingTop: 0 },
-  doneButton: { backgroundColor: colors.accent, padding: spacing.lg, borderRadius: radius.md, alignItems: "center" },
-  doneButtonText: { color: "#fff", fontSize: fontSize.lg, fontWeight: fontWeight.bold },
 });

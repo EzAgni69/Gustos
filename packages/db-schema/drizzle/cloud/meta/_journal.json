@@ -12,8 +12,15 @@
     {
       "idx": 1,
       "version": "7",
-      "when": 1785157772488,
-      "tag": "0001_special_bastion",
+      "when": 1786441901282,
+      "tag": "0001_brief_mister_fear",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787128899675,
+      "tag": "0002_oval_shiver_man",
       "breakpoints": true
     }
   ]

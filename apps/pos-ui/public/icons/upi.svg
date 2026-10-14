@@ -1,0 +1,6 @@
+<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="48" height="48" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
+      <path d="M13 35L24 13H16L5 35H13Z" fill="#097939"/>
+      <path d="M23 35L34 13H26L15 35H23Z" fill="#F26722"/>
+      <text x="36" y="29" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="900" fill="#1E293B" text-anchor="middle" font-style="italic">UPI</text>
+    </svg>

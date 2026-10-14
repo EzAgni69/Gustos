@@ -58,21 +58,21 @@ export const ModifiersModal: React.FC = () => {
       tabIndex={0}
       className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm select-none outline-none"
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col">
+      <div className="bg-surface border border-border-hover rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="bg-gray-950 px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+        <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-base font-black text-white flex items-center gap-2">
+            <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
               <span>🏷️ ITEM MODIFIERS & NOTES</span>
-              <span className="text-[10px] font-mono bg-orange-600/20 text-orange-400 px-2 py-0.5 rounded border border-orange-500/30">
+              <span className="text-[10px] font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
                 Alt+M
               </span>
             </h2>
-            <p className="text-xs text-orange-300 font-bold mt-0.5">{cartItem.menuItemName}</p>
+            <p className="text-xs text-primary-hover font-bold mt-0.5">{cartItem.menuItemName}</p>
           </div>
           <button
             onClick={closeModal}
-            className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white flex items-center justify-center font-bold"
+            className="w-8 h-8 rounded-lg bg-surface-hover hover:bg-surface-hover text-text-muted hover:text-text-main flex items-center justify-center font-bold"
           >
             ✕
           </button>
@@ -81,7 +81,7 @@ export const ModifiersModal: React.FC = () => {
         {/* Modifiers Grid */}
         <div className="p-6 space-y-4">
           <div>
-            <div className="text-xs font-bold text-gray-300 mb-2 font-mono">
+            <div className="text-xs font-bold text-text-main mb-2 font-mono">
               Select Kitchen Modifiers / Preparation Notes:
             </div>
             <div className="flex flex-wrap gap-2">
@@ -93,8 +93,8 @@ export const ModifiersModal: React.FC = () => {
                     onClick={() => handleToggleMod(mod)}
                     className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
                       isSelected
-                        ? "bg-orange-600 text-white border-orange-500 shadow-md shadow-orange-600/20 font-bold"
-                        : "bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-750 hover:text-white"
+                        ? "bg-primary text-text-inverse border-primary shadow-md shadow-primary/30 font-bold"
+                        : "bg-surface-hover text-text-main border-border-hover hover:bg-surface-hover hover:text-text-main"
                     }`}
                   >
                     <span>{isSelected ? "✓ " : "+ "}</span>
@@ -107,7 +107,7 @@ export const ModifiersModal: React.FC = () => {
 
           {/* Custom Notes */}
           <div>
-            <label className="block text-xs font-bold text-gray-300 mb-1.5 font-mono">
+            <label className="block text-xs font-bold text-text-main mb-1.5 font-mono">
               Custom Chef Instructions / Allergies:
             </label>
             <textarea
@@ -115,25 +115,25 @@ export const ModifiersModal: React.FC = () => {
               onChange={(e) => setCustomNotes(e.target.value)}
               placeholder="e.g. Cut into 4 slices, No onions or garlic..."
               rows={3}
-              className="w-full bg-gray-950 border border-gray-700 focus:border-orange-500 rounded-xl p-3 text-xs text-white placeholder-gray-500 focus:outline-none font-sans"
+              className="w-full bg-background border border-border-hover focus:border-primary rounded-xl p-3 text-xs text-text-main placeholder-gray-500 focus:outline-none font-sans"
             />
           </div>
         </div>
 
         {/* Footer */}
-        <div className="bg-gray-950 px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-3">
+        <div className="bg-background px-6 py-4 border-t border-border flex items-center justify-between gap-3">
           <button
             onClick={closeModal}
-            className="px-5 py-2.5 bg-gray-800 hover:bg-gray-750 text-gray-300 rounded-xl text-xs font-bold border border-gray-700"
+            className="px-5 py-2.5 bg-surface-hover hover:bg-surface-hover text-text-main rounded-xl text-xs font-bold border border-border-hover"
           >
             Cancel [Esc]
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 bg-orange-600 hover:bg-orange-500 text-white font-black py-2.5 rounded-xl text-xs shadow-lg shadow-orange-600/30 flex items-center justify-center gap-1.5"
+            className="flex-1 bg-primary hover:bg-primary-hover text-text-inverse font-black py-2.5 rounded-xl text-xs shadow-lg shadow-primary/30 flex items-center justify-center gap-1.5"
           >
             <span>APPLY MODIFIERS</span>
-            <span className="text-[10px] bg-orange-700/80 px-1.5 py-0.5 rounded font-mono border border-orange-500/40">
+            <span className="text-[10px] bg-orange-700/80 px-1.5 py-0.5 rounded font-mono border border-primary">
               Enter
             </span>
           </button>

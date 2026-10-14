@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { flushOutbox } from "./realtime-uplink.service.js";
 
 /**
  * Queue a sync event in the outbox for later cloud push.
@@ -27,6 +28,9 @@ export function queueSyncEvent(
       createdAt: new Date().toISOString(),
     })
     .run();
+
+  // Instantly attempt to flush if realtime connection is active
+  flushOutbox().catch(console.error);
 }
 
 /**
@@ -58,7 +62,7 @@ export function markEventSynced(eventId: string): void {
 /**
  * Mark a sync event as failed and increment retry count.
  */
-export function markEventFailed(eventId: string): void {
+export function markEventFailed(eventId: string, errorMessage?: string): void {
   const event = db
     .select()
     .from(schema.syncOutbox)
@@ -70,6 +74,7 @@ export function markEventFailed(eventId: string): void {
       .set({
         status: "FAILED",
         retryCount: event.retryCount + 1,
+        lastError: errorMessage,
       })
       .where(eq(schema.syncOutbox.id, eventId))
       .run();
@@ -109,11 +114,12 @@ export async function pushToCloud(): Promise<number> {
         markEventSynced(event.id);
         syncedCount++;
       } else {
-        markEventFailed(event.id);
+        const text = await response.text();
+        markEventFailed(event.id, `HTTP ${response.status}: ${text}`);
       }
-    } catch {
+    } catch (err) {
       // Network error — cloud is unreachable, mark as failed for retry
-      markEventFailed(event.id);
+      markEventFailed(event.id, String(err));
     }
   }
 

@@ -62,23 +62,23 @@ export const CustomerModal: React.FC = () => {
       tabIndex={0}
       className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm select-none outline-none"
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col">
+      <div className="bg-surface border border-border-hover rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="bg-gray-950 px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+        <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-base font-black text-white flex items-center gap-2">
+            <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
               <span>👤 CUSTOMER & LOYALTY CRM</span>
-              <span className="text-[10px] font-mono bg-orange-600/20 text-orange-400 px-2 py-0.5 rounded border border-orange-500/30">
+              <span className="text-[10px] font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
                 F9
               </span>
             </h2>
-            <p className="text-xs text-gray-400 font-mono mt-0.5">
+            <p className="text-xs text-text-muted font-mono mt-0.5">
               Link phone number to accumulate or redeem loyalty points
             </p>
           </div>
           <button
             onClick={closeModal}
-            className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white flex items-center justify-center font-bold"
+            className="w-8 h-8 rounded-lg bg-surface-hover hover:bg-surface-hover text-text-muted hover:text-text-main flex items-center justify-center font-bold"
           >
             ✕
           </button>
@@ -87,7 +87,7 @@ export const CustomerModal: React.FC = () => {
         {/* Content */}
         <div className="p-6 space-y-4">
           <div>
-            <label className="block text-xs font-bold text-gray-300 mb-1 font-mono">
+            <label className="block text-xs font-bold text-text-main mb-1 font-mono">
               Mobile Number (10 digits):
             </label>
             <input
@@ -96,12 +96,12 @@ export const CustomerModal: React.FC = () => {
               onChange={(e) => handleSearchPhone(e.target.value)}
               placeholder="e.g. 9876543210 (Try this for Amit Sharma)"
               autoFocus
-              className="w-full bg-gray-950 border border-gray-700 focus:border-orange-500 rounded-xl px-4 py-2.5 text-sm font-mono text-white focus:outline-none"
+              className="w-full bg-background border border-border-hover focus:border-primary rounded-xl px-4 py-2.5 text-sm font-mono text-text-main focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-gray-300 mb-1 font-mono">
+            <label className="block text-xs font-bold text-text-main mb-1 font-mono">
               Customer Full Name:
             </label>
             <input
@@ -109,14 +109,14 @@ export const CustomerModal: React.FC = () => {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Amit Sharma"
-              className="w-full bg-gray-950 border border-gray-700 focus:border-orange-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none font-sans"
+              className="w-full bg-background border border-border-hover focus:border-primary rounded-xl px-4 py-2.5 text-sm text-text-main focus:outline-none font-sans"
             />
           </div>
 
           {points !== undefined && (
-            <div className="bg-orange-600/10 border border-orange-500/30 rounded-xl p-3 flex items-center justify-between text-orange-300 font-mono text-xs">
+            <div className="bg-primary/10 border border-primary rounded-xl p-3 flex items-center justify-between text-primary-hover font-mono text-xs">
               <span>Accumulated Loyalty Points:</span>
-              <span className="font-extrabold text-sm text-orange-400">{points} Pts</span>
+              <span className="font-extrabold text-sm text-primary-hover">{points} Pts</span>
             </div>
           )}
 
@@ -131,19 +131,19 @@ export const CustomerModal: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <div className="bg-gray-950 px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-3">
+        <div className="bg-background px-6 py-4 border-t border-border flex items-center justify-between gap-3">
           <button
             onClick={closeModal}
-            className="px-5 py-2.5 bg-gray-800 hover:bg-gray-750 text-gray-300 rounded-xl text-xs font-bold border border-gray-700"
+            className="px-5 py-2.5 bg-surface-hover hover:bg-surface-hover text-text-main rounded-xl text-xs font-bold border border-border-hover"
           >
             Cancel [Esc]
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 bg-orange-600 hover:bg-orange-500 text-white font-black py-2.5 rounded-xl text-xs shadow-lg shadow-orange-600/30 flex items-center justify-center gap-1.5"
+            className="flex-1 bg-primary hover:bg-primary-hover text-text-inverse font-black py-2.5 rounded-xl text-xs shadow-lg shadow-primary/30 flex items-center justify-center gap-1.5"
           >
             <span>SAVE / LINK CUSTOMER</span>
-            <span className="text-[10px] bg-orange-700/80 px-1.5 py-0.5 rounded font-mono border border-orange-500/40">
+            <span className="text-[10px] bg-orange-700/80 px-1.5 py-0.5 rounded font-mono border border-primary">
               Enter
             </span>
           </button>

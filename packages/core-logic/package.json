@@ -18,7 +18,8 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@gusto/api-contracts": "workspace:*"
+    "@gusto/api-contracts": "workspace:*",
+    "@gusto/printer": "workspace:*"
   },
   "devDependencies": {
     "@gusto/tsconfig": "workspace:*",

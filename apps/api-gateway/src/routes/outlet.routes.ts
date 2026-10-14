@@ -19,6 +19,7 @@ import * as cloudSchema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { requireMinRole, getOrganizationId } from "../middleware/auth.js";
 import { success, paginated, error } from "../utils/response.js";
+import { publishSyncUpdate } from "../utils/sync-publisher.js";
 
 export async function outletRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -138,6 +139,8 @@ export async function outletRoutes(fastify: FastifyInstance) {
       if (!updated) {
         return reply.status(404).send(error("Outlet not found"));
       }
+
+      await publishSyncUpdate(orgId, id, "CONFIG_UPDATED");
 
       return reply.send(success(updated, "Outlet updated"));
     }

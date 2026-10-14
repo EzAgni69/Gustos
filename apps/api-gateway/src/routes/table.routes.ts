@@ -20,6 +20,7 @@ import * as cloudSchema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { requireMinRole, getOrganizationId } from "../middleware/auth.js";
 import { success, error } from "../utils/response.js";
+import { publishSyncUpdate } from "../utils/sync-publisher.js";
 
 export async function tableRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -85,6 +86,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
         .returning();
       const table = results[0]!;
 
+      await publishSyncUpdate(orgId, body.outletId, "TABLE_UPDATED");
+
       return reply.status(201).send(success(table, "Table created"));
     }
   );
@@ -124,6 +127,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
         .returning();
       const updated = results[0]!;
 
+      await publishSyncUpdate(orgId, table.outletId, "TABLE_UPDATED");
+
       return reply.send(success(updated, "Table updated"));
     }
   );
@@ -158,6 +163,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
       await db
         .delete(cloudSchema.diningTables)
         .where(eq(cloudSchema.diningTables.id, id));
+
+      await publishSyncUpdate(orgId, table.outletId, "TABLE_UPDATED");
 
       return reply.send(success(null, "Table deleted"));
     }
@@ -194,6 +201,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
       .where(eq(cloudSchema.diningTables.id, id))
       .returning();
     const updated = results[0]!;
+
+    await publishSyncUpdate(orgId, table.outletId, "TABLE_UPDATED");
 
     return reply.send(success(updated, "Table status updated"));
   });

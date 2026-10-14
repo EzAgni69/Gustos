@@ -10,12 +10,25 @@
  */
 
 import { Worker, Queue } from "bullmq";
-import { eq } from "drizzle-orm";
+import { Redis } from "ioredis";
+import { eq, and } from "drizzle-orm";
 import { db } from "./db.js";
 import * as schema from "@gusto/db-schema/cloud";
+import { processInventoryDeduction } from "./handlers/inventory.handler.js";
 import dotenv from "dotenv";
+import * as Sentry from "@sentry/node";
+import { nodeProfilingIntegration } from "@sentry/profiling-node";
 
 dotenv.config();
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  integrations: [
+    nodeProfilingIntegration(),
+  ],
+  tracesSampleRate: 1.0,
+  profilesSampleRate: 1.0,
+});
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const CONCURRENCY = Number(process.env.SYNC_WORKER_CONCURRENCY ?? 5);
@@ -28,10 +41,20 @@ const connection = {
   maxRetriesPerRequest: null,
 };
 
+// ─── Redis Pub/Sub ───
+const pubClient = new Redis(REDIS_URL);
+
 // ─── Queues ───
 
 export const syncQueue = new Queue("pos-sync", { connection });
-export const inventoryQueue = new Queue("inventory-deduction", { connection });
+export const inventoryQueue = new Queue("inventory-deduction", {
+  connection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 3000 },
+    removeOnComplete: true,
+  },
+});
 export const webhookQueue = new Queue("webhook-processing", { connection });
 
 // ─── Sync Worker ───
@@ -125,9 +148,67 @@ const syncWorker = new Worker(
         });
 
         console.log(`[Sync] ✅ Successfully synced ORDER_COMPLETED: ${orderNumber}`);
+
+        // 3.5 Publish real-time sync event for Cloud ERP updates
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ORDER_COMPLETED",
+          organizationId,
+          outletId,
+          payload: { orderId, orderNumber, status: "COMPLETED" },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+
+        // 4. Auto-enqueue inventory deduction job
+        if (items && items.length > 0) {
+          await inventoryQueue.add("deduct-for-order", {
+            orderId,
+            orderNumber,
+            organizationId,
+            outletId,
+            items: items.map((i: any) => ({
+              menuItemId: i.menuItemId,
+              menuItemName: i.menuItemName,
+              quantity: i.quantity,
+            })),
+          });
+          console.log(`[Sync] 📦 Queued inventory deduction for order ${orderNumber} (outlet: ${outletId})`);
+        }
       } catch (err) {
+        Sentry.captureException(err);
         console.error(`[Sync] ❌ Failed to sync order ${orderNumber}:`, err);
         throw err;
+      }
+    } else if (eventType === "ONLINE_ORDER_ACCEPTED") {
+      const { onlineOrderId } = payload;
+      if (onlineOrderId) {
+        console.log(`[Sync] 🍔 ONLINE_ORDER_ACCEPTED -> Zomato Order ${onlineOrderId}`);
+        await db.update(schema.onlineOrders)
+          .set({ status: "ACCEPTED", updatedAt: new Date() })
+          .where(eq(schema.onlineOrders.id, onlineOrderId));
+        
+        // Mock Zomato REST API Call
+        console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/accept -> 200 OK`);
+      }
+    } else if (eventType === "ONLINE_ORDER_REJECTED") {
+      const { onlineOrderId, reason } = payload;
+      if (onlineOrderId) {
+        console.log(`[Sync] 🍔 ONLINE_ORDER_REJECTED -> Zomato Order ${onlineOrderId} (Reason: ${reason})`);
+        await db.update(schema.onlineOrders)
+          .set({ status: "REJECTED", updatedAt: new Date() })
+          .where(eq(schema.onlineOrders.id, onlineOrderId));
+        
+        // Mock Zomato REST API Call
+        console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/reject -> 200 OK`);
+      }
+    } else if (eventType === "ONLINE_ORDER_READY") {
+      const { onlineOrderId } = payload;
+      if (onlineOrderId) {
+        console.log(`[Sync] 🍔 ONLINE_ORDER_READY -> Zomato Order ${onlineOrderId} is ready for pickup!`);
+        await db.update(schema.onlineOrders)
+          .set({ status: "READY_FOR_PICKUP", updatedAt: new Date() })
+          .where(eq(schema.onlineOrders.id, onlineOrderId));
+        
+        // Mock Zomato REST API Call
+        console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/ready -> 200 OK`);
       }
     }
 
@@ -141,15 +222,22 @@ const syncWorker = new Worker(
 const inventoryWorker = new Worker(
   "inventory-deduction",
   async (job) => {
-    console.log(`[Inventory] Processing deduction for order ${job.data.orderId}`);
+    const { orderId, orderNumber, organizationId, outletId, items } = job.data;
+    console.log(`[Inventory] Processing deduction for order ${orderNumber} (${items.length} items)`);
 
-    // TODO (Phase 4): Implement recipe-based deduction
-    // 1. Look up recipes for each menu item in the order
-    // 2. Calculate ingredient quantities
-    // 3. Deduct from inventory_items
-    // 4. Trigger low-stock alerts if needed
+    const result = await processInventoryDeduction(orderId, organizationId, items, outletId, pubClient);
 
-    return { deducted: true };
+    if (result.deductions.length > 0) {
+      console.log(
+        `[Inventory] ✅ Deducted ${result.deductions.length} ingredient(s) for order ${orderNumber}`
+      );
+    }
+
+    if (result.warnings.length > 0) {
+      console.log(`[Inventory] ⚠️ ${result.warnings.length} warning(s) for order ${orderNumber}`);
+    }
+
+    return result;
   },
   { connection, concurrency: 3 }
 );
@@ -159,11 +247,85 @@ const inventoryWorker = new Worker(
 const webhookWorker = new Worker(
   "webhook-processing",
   async (job) => {
-    console.log(`[Webhook] Processing ${job.name} from ${job.data.source}`);
+    console.log(`[Webhook] Processing ${job.name}`);
 
-    // TODO (Phase 5): Implement webhook handlers
-    // 1. Zomato/Swiggy order received → route to outlet POS
-    // 2. Payment confirmation → update invoice
+    if (job.name === "process-zomato-webhook") {
+      const { onlineOrderId, organizationId, outletId, payload } = job.data;
+      
+      console.log(`[Webhook] Routing Zomato order ${payload.order_id} to outlet ${outletId}`);
+      
+      // Phase 2: Menu Mapping Engine
+      const mappedItems = [];
+      for (const item of payload.items) {
+        const mapping = await db.query.aggregatorMenuMappings.findFirst({
+          where: and(
+            eq(schema.aggregatorMenuMappings.provider, "ZOMATO"),
+            eq(schema.aggregatorMenuMappings.aggregatorItemId, String(item.item_id)),
+            eq(schema.aggregatorMenuMappings.outletId, outletId)
+          ),
+        });
+
+        mappedItems.push({
+          ...item,
+          pos_mapped_id: mapping?.posMenuItemId || null,
+        });
+      }
+      
+      payload.items = mappedItems;
+
+      // 1. Zomato order received → route to outlet POS
+      pubClient.publish(
+        "sync-events",
+        JSON.stringify({
+          eventType: "ONLINE_ORDER_RECEIVED",
+          organizationId,
+          outletId,
+          payload: {
+            onlineOrderId,
+            ...payload,
+          },
+        })
+      ).catch(err => console.error("[Webhook] Pub/Sub Error:", err));
+
+      // 2. Schedule timeout check (Phase 3: 2-minute fallback)
+      await webhookQueue.add(
+        "check-zomato-ack",
+        { onlineOrderId, organizationId, outletId },
+        { delay: 2 * 60 * 1000 } // 2 minutes
+      );
+    } 
+    else if (job.name === "check-zomato-ack") {
+      const { onlineOrderId, organizationId, outletId } = job.data;
+      
+      const order = await db.query.onlineOrders.findFirst({
+        where: eq(schema.onlineOrders.id, onlineOrderId),
+      });
+
+      if (order && order.status === "RECEIVED") {
+        console.log(`[Webhook] ⚠️ POS timeout! Auto-rejecting Zomato order ${order.externalOrderId}`);
+        
+        await db
+          .update(schema.onlineOrders)
+          .set({ status: "REJECTED", updatedAt: new Date() })
+          .where(eq(schema.onlineOrders.id, onlineOrderId));
+
+        // TODO (Phase 5): Call Zomato REST API to actually reject the order
+        // e.g. await rejectZomatoOrder(order.externalOrderId, config);
+        
+        // Notify POS that it was auto-rejected
+        pubClient.publish(
+          "sync-events",
+          JSON.stringify({
+            eventType: "ONLINE_ORDER_AUTO_REJECTED",
+            organizationId,
+            outletId,
+            payload: { onlineOrderId },
+          })
+        ).catch(err => console.error("[Webhook] Pub/Sub Error:", err));
+      } else {
+        console.log(`[Webhook] Order ${onlineOrderId} was acknowledged (status: ${order?.status})`);
+      }
+    }
 
     return { processed: true };
   },
@@ -180,6 +342,10 @@ syncWorker.on("failed", (job, err) => {
   console.error(`[Sync] Job ${job?.id} failed:`, err.message);
 });
 
+inventoryWorker.on("completed", (job) => {
+  console.log(`[Inventory] Job ${job.id} completed`);
+});
+
 inventoryWorker.on("failed", (job, err) => {
   console.error(`[Inventory] Job ${job?.id} failed:`, err.message);
 });
@@ -194,3 +360,4 @@ console.log(`
 ║  Status:      ✅ Listening                    ║
 ╚══════════════════════════════════════════════╝
 `);
+

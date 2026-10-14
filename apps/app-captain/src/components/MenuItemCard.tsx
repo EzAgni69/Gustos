@@ -4,8 +4,7 @@
  * Menu item card displaying veg/non-veg dot, name, price, and quick-add button.
  */
 
-import React from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Alert, Image } from "react-native";
 import { colors, fontSize, radius, spacing, fontWeight, shadow } from "../config/theme";
 import type { MenuItemResponse } from "../services/api";
 
@@ -14,9 +13,10 @@ interface MenuItemCardProps {
   quantity?: number;
   onAdd: (item: MenuItemResponse) => void;
   onPress: (item: MenuItemResponse) => void;
+  onInfoPress: (item: MenuItemResponse) => void;
 }
 
-export function MenuItemCard({ item, quantity = 0, onAdd, onPress }: MenuItemCardProps) {
+export function MenuItemCard({ item, quantity = 0, onAdd, onPress, onInfoPress }: MenuItemCardProps) {
   const isAvailable = item.isAvailable;
 
   return (
@@ -37,6 +37,15 @@ export function MenuItemCard({ item, quantity = 0, onAdd, onPress }: MenuItemCar
           <Text style={[styles.name, !isAvailable && styles.textUnavailable]} numberOfLines={2}>
             {item.name}
           </Text>
+          {item.description ? (
+            <Pressable 
+              onPress={() => onInfoPress(item)}
+              hitSlop={8}
+              style={styles.infoButton}
+            >
+              <Text style={styles.infoText}>i</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {item.description && (
@@ -46,9 +55,21 @@ export function MenuItemCard({ item, quantity = 0, onAdd, onPress }: MenuItemCar
         )}
 
         <View style={styles.footer}>
-          <Text style={[styles.price, !isAvailable && styles.textUnavailable]}>
-            ₹{item.price.toFixed(0)}
-          </Text>
+          <View>
+            <Text style={[styles.price, !isAvailable && styles.textUnavailable]}>
+              ₹{Number(item.price).toFixed(0)}
+            </Text>
+            {isAvailable && (item.variants || item.categoryId === "cat-pizza-reg" || item.categoryId === "cat-pizza-prem" || item.categoryId === "cat-combos" || item.name.toLowerCase().includes("pizza") || item.name.toLowerCase().includes("combo")) ? (
+              <View style={styles.customizableRow}>
+                <Image
+                  source={require("../../assets/images/icons/customizable_badge.png")}
+                  style={styles.customizableIcon}
+                  resizeMode="contain"
+                />
+                <Text style={styles.customizableText}>Customizable</Text>
+              </View>
+            ) : null}
+          </View>
 
           {isAvailable ? (
             <Pressable
@@ -134,6 +155,21 @@ const styles = StyleSheet.create({
     fontWeight: fontWeight.bold,
     color: colors.textPrimary,
   },
+  customizableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
+  },
+  customizableIcon: {
+    width: 12,
+    height: 12,
+  },
+  customizableText: {
+    fontSize: 10,
+    color: colors.accent,
+    fontWeight: fontWeight.semibold,
+  },
   addButton: {
     backgroundColor: colors.bgInput,
     paddingHorizontal: spacing.lg,
@@ -172,5 +208,22 @@ const styles = StyleSheet.create({
   },
   textUnavailable: {
     color: colors.textTertiary,
+  },
+  infoButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.bgInput,
+    marginLeft: spacing.xs,
+  },
+  infoText: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: colors.textSecondary,
+    fontFamily: "serif", // for a classic 'i' look
   },
 });

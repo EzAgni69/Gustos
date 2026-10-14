@@ -1,4 +1,8 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api/v1";
+const RAW_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const BASE_URL_CLEAN = RAW_BASE_URL.replace(/\/+$/, "");
+const API_BASE_URL = BASE_URL_CLEAN.endsWith("/api/v1")
+  ? BASE_URL_CLEAN
+  : `${BASE_URL_CLEAN}/api/v1`;
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -35,8 +39,14 @@ export async function apiFetch<T>(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
+  // Handle endpoints whether they start with slash or already contain /api/v1
+  const cleanEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  const requestUrl = cleanEndpoint.startsWith("/api/v1/")
+    ? `${BASE_URL_CLEAN.replace(/\/api\/v1$/, "")}${cleanEndpoint}`
+    : `${API_BASE_URL}${cleanEndpoint}`;
+
   try {
-    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const res = await fetch(requestUrl, {
       ...options,
       headers,
     });

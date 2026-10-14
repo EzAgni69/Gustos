@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -80,43 +82,15 @@ const TABLE_STATUS_CONFIG: Record<
   },
 };
 
-// ─── Mock Data ───
-
-function generateMockTables(): DiningTable[] {
-  const sections = ["Main Hall", "Terrace", "Private"];
-  const statuses: TableStatus[] = [
-    "AVAILABLE",
-    "OCCUPIED",
-    "AVAILABLE",
-    "RESERVED",
-    "OCCUPIED",
-    "AVAILABLE",
-    "CLEANING",
-    "AVAILABLE",
-    "OCCUPIED",
-    "AVAILABLE",
-    "RESERVED",
-    "AVAILABLE",
-  ];
-
-  return Array.from({ length: 12 }, (_, i) => ({
-    id: `table-${i + 1}`,
-    outletId: "outlet-1",
-    name: `T${i + 1}`,
-    capacity: [2, 4, 4, 6, 2, 4, 8, 2, 4, 6, 4, 2][i]!,
-    status: statuses[i]!,
-    section: sections[Math.floor(i / 4)]!,
-    sortOrder: i,
-  }));
-}
-
 // ─── Component ───
 
 export default function TablesPage() {
+  const { toast } = useToast();
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [currentOutletId, setCurrentOutletId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -135,6 +109,7 @@ export default function TablesPage() {
 
   const loadData = async () => {
     setLoading(true);
+    setError("");
 
     const outletsRes = await apiFetch<Outlet[]>("/outlets");
     let initialOutletId = "";
@@ -153,10 +128,12 @@ export default function TablesPage() {
       if (tablesRes.success && tablesRes.data) {
         setTables(tablesRes.data);
       } else {
-        setTables(generateMockTables());
+        setError(tablesRes.message || "Failed to load tables.");
+        setTables([]);
       }
     } else {
-      setTables(generateMockTables());
+      setError(outletsRes.message || "Failed to load outlets. Cannot display floor plan.");
+      setTables([]);
     }
 
     setLoading(false);
@@ -209,7 +186,7 @@ export default function TablesPage() {
         setTables(tables.map(t => t.id === editingTable.id ? res.data! : t));
         setIsModalOpen(false);
       } else {
-        alert(res.message || "Failed to update table");
+        toast({ title: "Update failed", description: res.message || "Failed to update table", variant: "error" });
       }
     } else {
       // Create
@@ -225,18 +202,7 @@ export default function TablesPage() {
         setTables([...tables, res.data]);
         setIsModalOpen(false);
       } else {
-        // Mock fallback
-        const newTable: DiningTable = {
-          id: `table-${Date.now()}`,
-          outletId: data.outletId,
-          name: data.name,
-          capacity: data.capacity,
-          status: "AVAILABLE",
-          section: data.section || undefined,
-          sortOrder: data.sortOrder ?? tables.length,
-        };
-        setTables([...tables, newTable]);
-        setIsModalOpen(false);
+        toast({ title: "Creation failed", description: res.message || "Failed to create table", variant: "error" });
       }
     }
 
@@ -250,7 +216,7 @@ export default function TablesPage() {
     if (res.success) {
       setTables(tables.filter(t => t.id !== id));
     } else {
-      alert(res.message || "Failed to delete table");
+      toast({ title: "Delete failed", description: res.message || "Failed to delete table", variant: "error" });
     }
   };
 
@@ -392,9 +358,15 @@ export default function TablesPage() {
         </Dialog>
       </div>
 
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-medium flex items-center gap-2">
+          <span>⚠️</span>
+          <span>{error}</span>
+        </div>
+      )}
+
       {/* Status Legend */}
-      <div className="flex flex-wrap items-center gap-3">
-        {(Object.keys(TABLE_STATUS_CONFIG) as TableStatus[]).map((status) => (
+      <div className="flex flex-wrap items-center gap-3">        {(Object.keys(TABLE_STATUS_CONFIG) as TableStatus[]).map((status) => (
           <div
             key={status}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-gray-100 shadow-xs"

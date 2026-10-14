@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -38,10 +41,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Store, Plus, MoreHorizontal, Loader2, Edit, Trash2 } from "lucide-react";
+import { Store, Plus, MoreHorizontal, Loader2, Edit, Trash2, Activity, Wifi } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 
 export default function OutletsPage() {
+  const { toast } = useToast();
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [franchises, setFranchises] = useState<Franchise[]>([]);
   const [loading, setLoading] = useState(true);
@@ -84,21 +88,6 @@ export default function OutletsPage() {
       setOutlets(outletsRes.data);
     } else {
       setError(outletsRes.message || "Failed to load outlets");
-      // Mock fallback data for visual demo if server is offline
-      setOutlets([
-        {
-          id: "1",
-          organizationId: "org-1",
-          franchiseId: "fran-1",
-          name: "Downtown Gusto",
-          address: "123 Main St, City Center",
-          phone: "+91 9876543210",
-          gstNumber: "22AAAAA0000A1Z5",
-          isActive: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ]);
     }
     setLoading(false);
   };
@@ -153,7 +142,7 @@ export default function OutletsPage() {
         setOutlets(outlets.map(o => o.id === editingOutlet.id ? res.data! : o));
         setIsModalOpen(false);
       } else {
-        alert(res.message || "Failed to update outlet");
+        toast({ title: "Update failed", description: res.message || "Failed to update outlet", variant: "error" });
       }
     } else {
       // Create
@@ -172,7 +161,7 @@ export default function OutletsPage() {
         setOutlets([...outlets, res.data]);
         setIsModalOpen(false);
       } else {
-        alert(res.message || "Failed to create outlet");
+        toast({ title: "Creation failed", description: res.message || "Failed to create outlet", variant: "error" });
       }
     }
 
@@ -186,7 +175,7 @@ export default function OutletsPage() {
     if (res.success) {
       setOutlets(outlets.filter(o => o.id !== id));
     } else {
-      alert(res.message || "Failed to delete outlet");
+      toast({ title: "Delete failed", description: res.message || "Failed to delete outlet", variant: "error" });
     }
   };
 
@@ -299,78 +288,116 @@ export default function OutletsPage() {
         </Dialog>
       </div>
 
-      <Card className="shadow-xs border-gray-100">
-        <CardHeader className="bg-gray-50/50 border-b border-gray-100">
-          <div className="flex items-center gap-2">
-            <Store className="w-5 h-5 text-blue-600" />
-            <div>
-              <CardTitle className="text-lg">All Outlets</CardTitle>
-              <CardDescription>A complete list of registered outlets.</CardDescription>
+      <Tabs defaultValue="outlets" className="w-full">
+        <TabsList className="mb-4">
+          <TabsTrigger value="outlets" className="gap-2">
+            <Store className="w-4 h-4" />
+            Outlets
+          </TabsTrigger>
+          <TabsTrigger value="sync_monitor" className="gap-2">
+            <Activity className="w-4 h-4" />
+            Edge Sync Monitor
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="outlets">
+          {error && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-medium flex items-center gap-2">
+              <span>⚠️</span>
+              <span>{error}</span>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="p-8 text-center text-gray-500 flex items-center justify-center gap-2">
-              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-              Loading outlets...
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-gray-50 hover:bg-gray-50">
-                  <TableHead className="w-[250px]">Name</TableHead>
-                  <TableHead>Address</TableHead>
-                  <TableHead>Phone</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {outlets.map((outlet) => (
-                  <TableRow key={outlet.id}>
-                    <TableCell className="font-medium text-gray-900">{outlet.name}</TableCell>
-                    <TableCell className="text-gray-500">{outlet.address}</TableCell>
-                    <TableCell className="text-gray-500">{outlet.phone || "—"}</TableCell>
-                    <TableCell>
-                      <span
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          outlet.isActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-800"
-                        }`}
-                      >
-                        {outlet.isActive ? "Active" : "Inactive"}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-gray-500">
-                      {new Date(outlet.createdAt).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger>
-                          <Button variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600">
-                            <MoreHorizontal className="w-4 h-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openEditModal(outlet)}>
-                            <Edit className="w-4 h-4 mr-2" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteOutlet(outlet.id)}>
-                            <Trash2 className="w-4 h-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
           )}
-        </CardContent>
-      </Card>
+          <Card className="shadow-xs border-gray-100">
+            <CardHeader className="bg-gray-50/50 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Store className="w-5 h-5 text-blue-600" />
+                <div>
+                  <CardTitle className="text-lg">All Outlets</CardTitle>
+                  <CardDescription>A complete list of registered outlets.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {loading ? (
+                <div className="p-8 text-center text-gray-500 flex items-center justify-center gap-2">
+                  <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                  Loading outlets...
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-gray-50 hover:bg-gray-50">
+                      <TableHead className="w-[250px]">Name</TableHead>
+                      <TableHead>Address</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Created</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {outlets.map((outlet) => (
+                      <TableRow key={outlet.id}>
+                        <TableCell className="font-medium text-gray-900">{outlet.name}</TableCell>
+                        <TableCell className="text-gray-500">{outlet.address}</TableCell>
+                        <TableCell className="text-gray-500">{outlet.phone || "—"}</TableCell>
+                        <TableCell>
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              outlet.isActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-800"
+                            }`}
+                          >
+                            {outlet.isActive ? "Active" : "Inactive"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-gray-500">
+                          {new Date(outlet.createdAt).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger>
+                              <Button variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600">
+                                <MoreHorizontal className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => openEditModal(outlet)}>
+                                <Edit className="w-4 h-4 mr-2" />
+                                Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteOutlet(outlet.id)}>
+                                <Trash2 className="w-4 h-4 mr-2" />
+                                Delete
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="sync_monitor">
+          <Card className="shadow-xs border-gray-100">
+            <CardHeader className="bg-gray-50/50 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Wifi className="w-5 h-5 text-blue-600" />
+                <div>
+                  <CardTitle className="text-lg">Edge Sync Monitor</CardTitle>
+                  <CardDescription>Real-time monitor of local POS servers syncing to cloud.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-8 text-center text-gray-500">
+              Dashboard for sync latency and online/offline heartbeats coming soon.
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -31,7 +31,7 @@ export function CartBar({ itemCount, total, onPress }: CartBarProps) {
             {itemCount} {itemCount === 1 ? "Item" : "Items"}
           </Text>
           <View style={styles.divider} />
-          <Text style={styles.totalText}>₹{total.toFixed(0)}</Text>
+          <Text style={styles.totalText}>₹{Number(total).toFixed(0)}</Text>
         </View>
 
         <Text style={styles.ctaText}>View Cart →</Text>

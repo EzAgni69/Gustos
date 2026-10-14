@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ActivityIndicator, Pressable } from "react-native";
+import { View, Text, StyleSheet, ActivityIndicator, Pressable, Image, ScrollView } from "react-native";
 import { useAuthStore } from "../../src/stores/auth.store";
 import { getUsers } from "../../src/services/api";
 import { PinPad } from "../../src/components/PinPad";
@@ -17,7 +17,7 @@ export default function LoginScreen() {
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const { login, isLoading, logout } = useAuthStore();
+  const { login, isLoading, disconnectServer } = useAuthStore();
 
   useEffect(() => {
     fetchUsers();
@@ -51,6 +51,7 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        <Image source={require("../../assets/images/logo.png")} style={styles.logo} resizeMode="contain" />
         <Text style={styles.title}>Welcome to Gusto</Text>
         <Text style={styles.subtitle}>Enter your PIN to start shift</Text>
       </View>
@@ -58,7 +59,7 @@ export default function LoginScreen() {
       {loadingUsers ? (
         <ActivityIndicator size="large" color={colors.accent} style={{ flex: 1 }} />
       ) : (
-        <View style={styles.content}>
+        <ScrollView style={{ flex: 1, width: "100%" }} contentContainerStyle={styles.content}>
           {/* User Selector */}
           <View style={styles.userList}>
             {users.map((u) => (
@@ -94,10 +95,10 @@ export default function LoginScreen() {
             />
           </View>
 
-          <Pressable onPress={() => logout()} style={styles.changeServerButton}>
+          <Pressable onPress={() => disconnectServer()} style={styles.changeServerButton}>
             <Text style={styles.changeServerText}>Change Server IP</Text>
           </Pressable>
-        </View>
+        </ScrollView>
       )}
     </View>
   );
@@ -111,7 +112,13 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: "center",
-    marginBottom: spacing.xxxl,
+    marginTop: spacing.xl,
+    marginBottom: spacing.xl,
+  },
+  logo: {
+    width: 100,
+    height: 100,
+    marginBottom: spacing.md,
   },
   title: {
     fontSize: fontSize.xxxl,
@@ -124,8 +131,9 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
   },
   content: {
-    flex: 1,
+    flexGrow: 1,
     alignItems: "center",
+    paddingBottom: spacing.xxl,
   },
   userList: {
     flexDirection: "row",

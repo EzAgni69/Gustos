@@ -14,6 +14,7 @@ import type { UserRole } from "@gusto/api-contracts";
 export interface JWTPayload {
   id: string;
   organizationId: string;
+  outletId?: string | null;
   role: UserRole;
   email?: string;
 }

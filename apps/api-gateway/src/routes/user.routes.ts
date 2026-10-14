@@ -21,6 +21,7 @@ import { db } from "../db/index.js";
 import { requireMinRole, getOrganizationId } from "../middleware/auth.js";
 import { hashPassword } from "../utils/password.js";
 import { success, paginated, error } from "../utils/response.js";
+import { publishSyncUpdate } from "../utils/sync-publisher.js";
 
 /** Strip sensitive fields from user objects before sending to client */
 function sanitizeUser(user: typeof cloudSchema.users.$inferSelect) {
@@ -139,6 +140,10 @@ export async function userRoutes(fastify: FastifyInstance) {
         .returning();
       const user = results[0]!;
 
+      if (user.outletId) {
+        await publishSyncUpdate(orgId, user.outletId, "USER_UPDATED");
+      }
+
       return reply.status(201).send(success(sanitizeUser(user), "User created"));
     }
   );
@@ -217,6 +222,10 @@ export async function userRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(error("User not found"));
       }
 
+      if (updated.outletId) {
+        await publishSyncUpdate(orgId, updated.outletId, "USER_UPDATED");
+      }
+
       return reply.send(success(sanitizeUser(updated), "User updated"));
     }
   );
@@ -248,6 +257,10 @@ export async function userRoutes(fastify: FastifyInstance) {
       const deactivated = results[0];
       if (!deactivated) {
         return reply.status(404).send(error("User not found"));
+      }
+
+      if (deactivated.outletId) {
+        await publishSyncUpdate(orgId, deactivated.outletId, "USER_UPDATED");
       }
 
       return reply.send(success(null, "User deactivated"));

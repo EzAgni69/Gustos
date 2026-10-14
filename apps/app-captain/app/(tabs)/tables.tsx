@@ -1,38 +1,89 @@
 import React, { useEffect, useState } from "react";
-import { View, StyleSheet, FlatList, RefreshControl, Text } from "react-native";
+import { View, StyleSheet, FlatList, RefreshControl, Text, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { useDataStore } from "../../src/stores/data.store";
 import { useCartStore } from "../../src/stores/cart.store";
 import { TableCard } from "../../src/components/TableCard";
 import { colors, spacing, fontSize, fontWeight } from "../../src/config/theme";
-import type { TableResponse } from "../../src/services/api";
+import { updateTableStatus, getAllReservations, type TableResponse, type ReservationResponse } from "../../src/services/api";
 
 export default function TablesScreen() {
   const { tables, fetchTables, tablesLoading } = useDataStore();
   const { setTable, clearCart } = useCartStore();
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
+  const [reservations, setReservations] = useState<ReservationResponse[]>([]);
+
+  const loadData = async () => {
+    await fetchTables();
+    try {
+      const res = await getAllReservations();
+      setReservations(res);
+    } catch (e) {
+      console.error("Failed to load reservations", e);
+    }
+  };
 
   useEffect(() => {
-    fetchTables();
+    loadData();
   }, [fetchTables]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await fetchTables();
+    await loadData();
     setRefreshing(false);
   };
 
   const handleTablePress = (table: TableResponse) => {
-    if (table.status === "AVAILABLE") {
-      // Start a new order
-      clearCart();
-      setTable(table.id, table.name);
-      router.push("/(tabs)/menu");
-    } else if (table.currentOrderId) {
-      // View existing order
-      router.push(`/order/${table.currentOrderId}`);
-    }
+    Alert.alert(
+      `Table: ${table.name}`,
+      `What would you like to do?`,
+      [
+        {
+          text: table.currentOrderId ? "View Order" : "Start Order",
+          onPress: () => {
+            if (table.currentOrderId) {
+              router.push(`/order/${table.currentOrderId}`);
+            } else {
+              clearCart();
+              setTable(table.id, table.name);
+              router.push("/(tabs)/menu");
+            }
+          },
+        },
+          ...(table.currentOrderId ? [{
+            text: "Add Items",
+            onPress: () => {
+              clearCart();
+              setTable(table.id, table.name);
+              useCartStore.getState().setExistingOrder(table.currentOrderId!);
+              router.push("/(tabs)/menu");
+            }
+          }] : []),
+          {
+            text: "Reserve Table",
+            onPress: () => {
+              router.push(`/reserve/${table.id}`);
+            },
+          },
+          {
+            text: "Mark as Available",
+            onPress: async () => {
+              try {
+                await updateTableStatus(table.id, "AVAILABLE");
+                fetchTables();
+              } catch (e) {
+                Alert.alert("Error", "Could not update table status.");
+              }
+            },
+            style: "destructive",
+          },
+          {
+            text: "Cancel",
+            style: "cancel",
+          },
+        ]
+      );
   };
 
   if (!tablesLoading && tables.length === 0) {
@@ -60,7 +111,11 @@ export default function TablesScreen() {
         }
         renderItem={({ item }) => (
           <View style={styles.cardWrapper}>
-            <TableCard table={item} onPress={handleTablePress} />
+            <TableCard 
+              table={item} 
+              reservations={reservations.filter(r => r.tableId === item.id)}
+              onPress={handleTablePress} 
+            />
           </View>
         )}
       />

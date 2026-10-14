@@ -27,11 +27,13 @@ function useProtectedRoute(isReady: boolean, fontsLoaded: boolean) {
       }
     } else {
       if (inAuthGroup || path === "") {
-        router.replace("/(tabs)/tables");
+        router.replace("/(tabs)");
       }
     }
   }, [isConnected, user, segments, isReady, fontsLoaded]);
 }
+
+import { OfflineBanner } from "../src/components/OfflineBanner";
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -41,24 +43,22 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
-  const { restoreSession } = useAuthStore();
-  const [isReady, setIsReady] = useState(false);
+  const { isHydrated, restoreSession } = useAuthStore();
 
   useEffect(() => {
-    // Attempt to restore session on mount
     restoreSession();
-    setIsReady(true);
   }, [restoreSession]);
 
-  useProtectedRoute(isReady, fontsLoaded);
+  useProtectedRoute(isHydrated, fontsLoaded);
 
-  if (!fontsLoaded || !isReady) {
+  if (!fontsLoaded || !isHydrated) {
     return null;
   }
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar style="light" />
+      <OfflineBanner />
       <Stack
         screenOptions={{
           headerShown: false,

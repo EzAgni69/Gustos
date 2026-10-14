@@ -23,3 +23,12 @@ export const posSyncQueue = new Queue("pos-sync", {
     removeOnComplete: true,
   },
 });
+
+export const webhookQueue = new Queue("webhook-processing", {
+  connection: redisConnection as any,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 2000 },
+    removeOnComplete: true,
+  },
+});

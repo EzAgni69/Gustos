@@ -18,6 +18,8 @@
     "@gusto/api-contracts": "workspace:*",
     "@gusto/core-logic": "workspace:*",
     "@gusto/db-schema": "workspace:*",
+    "@sentry/node": "^10.74.0",
+    "@sentry/profiling-node": "^10.74.0",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.80.2",
     "dotenv": "^16.5.0",
@@ -27,8 +29,7 @@
     "ioredis": "^5.11.1",
     "pino-pretty": "^13.0.0",
     "postgres": "^3.4.0",
-    "socket.io": "^4.8.0",
-    "uuid": "^11.1.0",
+    "socket.io": "^4.8.3",
     "zod": "^3.24.0"
   },
   "devDependencies": {

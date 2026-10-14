@@ -25,6 +25,11 @@ import { orderRoutes } from "./routes/order.routes.js";
 import { kotRoutes } from "./routes/kot.routes.js";
 import { checkoutRoutes } from "./routes/checkout.routes.js";
 import { printRoutes } from "./routes/print.routes.js";
+import { shiftRoutes } from "./routes/shift.routes.js";
+import { syncRoutes } from "./routes/sync.routes.js";
+import { startCloudSyncPoller } from "./services/cloud-sync.service.js";
+import { startPrintRetryLoop } from "./services/print.service.js";
+import { initRealtimeUplink } from "./services/realtime-uplink.service.js";
 
 dotenv.config();
 
@@ -52,6 +57,8 @@ app.use(cors());
 app.use(express.json());
 app.use(authMiddleware);
 
+import os from "os";
+
 // ─── Health Check ───
 app.get("/health", (_req, res) => {
   res.json({
@@ -59,6 +66,27 @@ app.get("/health", (_req, res) => {
     service: "gusto-pos-local-server",
     version: "0.1.0",
     timestamp: new Date().toISOString(),
+  });
+});
+
+// ─── Network Info ───
+app.get("/api/system/network", (_req, res) => {
+  const nets = os.networkInterfaces();
+  const results: string[] = [];
+
+  for (const name of Object.keys(nets)) {
+    const interfaces = nets[name];
+    if (!interfaces) continue;
+    for (const net of interfaces) {
+      if (net.family === "IPv4" && !net.internal) {
+        results.push(net.address);
+      }
+    }
+  }
+
+  res.json({
+    success: true,
+    ipAddresses: results,
   });
 });
 
@@ -70,6 +98,8 @@ app.use("/api/orders", orderRoutes);
 app.use("/api", kotRoutes);        // /api/orders/:id/kot, /api/kots, /api/kots/:id/status
 app.use("/api", checkoutRoutes);    // /api/orders/:id/checkout, /api/orders/:id/invoice
 app.use("/api/print", printRoutes);
+app.use("/api/shifts", shiftRoutes);
+app.use("/api/sync", syncRoutes);
 
 // ─── Global Error Handler ───
 app.use(
@@ -91,7 +121,7 @@ app.use(
 initSocketEvents(io);
 
 // ─── Start Server ───
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT as number, "0.0.0.0", () => {
   console.log(`
 ╔══════════════════════════════════════════════╗
 ║         🍽️  Gusto POS Local Server          ║
@@ -102,6 +132,29 @@ httpServer.listen(PORT, () => {
 ║  Status:      ✅ Running                      ║
 ╚══════════════════════════════════════════════╝
   `);
+
+  // Start cloud sync poller — pulls menu, tables, users from cloud
+  startCloudSyncPoller((changes) => {
+    if (changes.menuItemsUpdated > 0 || changes.menuCategoriesUpdated > 0) {
+      io.emit("sync:menu-updated", {
+        menuItemsUpdated: changes.menuItemsUpdated,
+        menuCategoriesUpdated: changes.menuCategoriesUpdated,
+        timestamp: changes.timestamp,
+      });
+    }
+    if (changes.diningTablesUpdated > 0) {
+      io.emit("sync:tables-updated", {
+        tablesUpdated: changes.diningTablesUpdated,
+        timestamp: changes.timestamp,
+      });
+    }
+  });
+
+  // Start print retry loop for failed print jobs
+  startPrintRetryLoop();
+
+  // Initialize real-time cloud ERP uplink
+  initRealtimeUplink();
 });
 
 export { app, io, httpServer };

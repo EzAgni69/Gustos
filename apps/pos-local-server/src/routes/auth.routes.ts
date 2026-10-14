@@ -12,10 +12,10 @@ import { db } from "../db/index.js";
 const router = Router();
 
 /**
- * POST /api/auth/pin-login
+ * POST /api/auth/pin-login and POST /api/auth/login
  * Validate PIN and return user object.
  */
-router.post("/pin-login", (req, res) => {
+const handlePinLogin = (req: import("express").Request, res: import("express").Response) => {
   const { pin } = req.body as { pin?: string };
 
   if (!pin) {
@@ -34,16 +34,24 @@ router.post("/pin-login", (req, res) => {
     return;
   }
 
+  const userData = {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    pin: user.pin,
+  };
+
   res.json({
     success: true,
-    data: {
-      id: user.id,
-      name: user.name,
-      role: user.role,
-    },
+    data: userData,
+    user: userData,
+    token: `pos_token_${user.id}`,
     message: "Login successful",
   });
-});
+};
+
+router.post("/pin-login", handlePinLogin);
+router.post("/login", handlePinLogin);
 
 /**
  * GET /api/auth/users

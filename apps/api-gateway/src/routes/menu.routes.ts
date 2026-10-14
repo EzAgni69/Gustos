@@ -29,6 +29,7 @@ import * as cloudSchema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { requireMinRole, getOrganizationId } from "../middleware/auth.js";
 import { success, paginated, error } from "../utils/response.js";
+import { publishSyncUpdate } from "../utils/sync-publisher.js";
 
 export async function menuRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -90,6 +91,8 @@ export async function menuRoutes(fastify: FastifyInstance) {
         .returning();
       const category = results[0]!;
 
+      await publishSyncUpdate(orgId, body.outletId, "MENU_UPDATED");
+
       return reply.status(201).send(success(category, "Category created"));
     }
   );
@@ -130,6 +133,8 @@ export async function menuRoutes(fastify: FastifyInstance) {
         .returning();
       const updated = results[0]!;
 
+      await publishSyncUpdate(orgId, category.outletId, "MENU_UPDATED");
+
       return reply.send(success(updated, "Category updated"));
     }
   );
@@ -164,6 +169,8 @@ export async function menuRoutes(fastify: FastifyInstance) {
       await db
         .delete(cloudSchema.menuCategories)
         .where(eq(cloudSchema.menuCategories.id, id));
+
+      await publishSyncUpdate(orgId, category.outletId, "MENU_UPDATED");
 
       return reply.send(success(null, "Category deleted"));
     }
@@ -258,6 +265,7 @@ export async function menuRoutes(fastify: FastifyInstance) {
           outletId: body.outletId,
           name: body.name,
           description: body.description,
+          variants: body.variants,
           price: body.price.toString(),
           gstRate: body.gstRate,
           isVeg: body.isVeg,
@@ -266,6 +274,8 @@ export async function menuRoutes(fastify: FastifyInstance) {
         })
         .returning();
       const item = results[0]!;
+
+      await publishSyncUpdate(orgId, body.outletId, "MENU_UPDATED");
 
       return reply.status(201).send(success(item, "Menu item created"));
     }
@@ -332,6 +342,7 @@ export async function menuRoutes(fastify: FastifyInstance) {
       if (body.categoryId !== undefined) updateData.categoryId = body.categoryId;
       if (body.name !== undefined) updateData.name = body.name;
       if (body.description !== undefined) updateData.description = body.description;
+      if (body.variants !== undefined) updateData.variants = body.variants;
       if (body.price !== undefined) updateData.price = body.price.toString();
       if (body.gstRate !== undefined) updateData.gstRate = body.gstRate;
       if (body.isVeg !== undefined) updateData.isVeg = body.isVeg;
@@ -344,6 +355,8 @@ export async function menuRoutes(fastify: FastifyInstance) {
         .where(eq(cloudSchema.menuItems.id, id))
         .returning();
       const updated = results[0]!;
+
+      await publishSyncUpdate(orgId, item.outletId, "MENU_UPDATED");
 
       return reply.send(success(updated, "Menu item updated"));
     }
@@ -379,6 +392,8 @@ export async function menuRoutes(fastify: FastifyInstance) {
       await db
         .delete(cloudSchema.menuItems)
         .where(eq(cloudSchema.menuItems.id, id));
+
+      await publishSyncUpdate(orgId, item.outletId, "MENU_UPDATED");
 
       return reply.send(success(null, "Menu item deleted"));
     }

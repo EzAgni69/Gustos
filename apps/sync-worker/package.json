@@ -15,14 +15,16 @@
     "@gusto/api-contracts": "workspace:*",
     "@gusto/core-logic": "workspace:*",
     "@gusto/db-schema": "workspace:*",
+    "@sentry/node": "^10.74.0",
+    "@sentry/profiling-node": "^10.74.0",
     "bullmq": "^5.52.0",
     "dotenv": "^16.5.0",
     "drizzle-orm": "^0.44.0",
     "postgres": "^3.4.0"
   },
   "devDependencies": {
-    "@gusto/tsconfig": "workspace:*",
     "@gusto/eslint-config": "workspace:*",
+    "@gusto/tsconfig": "workspace:*",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0"
   }

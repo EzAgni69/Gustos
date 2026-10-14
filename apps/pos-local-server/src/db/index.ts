@@ -5,6 +5,11 @@ import Database, { type Database as DatabaseType } from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "@gusto/db-schema/local";
+import dotenv from "dotenv";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, "../../../../.env") });
 
 // Resolve database path from environment variables or default
 const dbPath = process.env.POS_LOCAL_DB_PATH || "./data/local.sqlite";
@@ -32,8 +37,7 @@ export const db = drizzle(sqlite, { schema });
 export function initializeDatabase(): void {
   console.log(`[Database] Initializing SQLite database at ${resolvedDbPath}...`);
 
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
+
 
   const relativeMigrationsFolder = path.resolve(
     __dirname,

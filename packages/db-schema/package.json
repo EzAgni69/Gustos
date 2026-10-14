@@ -8,14 +8,17 @@
   "exports": {
     ".": {
       "import": "./dist/index.js",
+      "default": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
     "./cloud": {
       "import": "./dist/cloud/index.js",
+      "default": "./dist/cloud/index.js",
       "types": "./dist/cloud/index.d.ts"
     },
     "./local": {
       "import": "./dist/local/index.js",
+      "default": "./dist/local/index.js",
       "types": "./dist/local/index.d.ts"
     }
   },

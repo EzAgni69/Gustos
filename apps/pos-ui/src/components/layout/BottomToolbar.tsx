@@ -1,6 +1,7 @@
 import React from "react";
 import { useCartStore } from "../../store/useCartStore";
 import { useUIStore, type POSModal } from "../../store/useUIStore";
+import { CashIcon, SplitIcon } from "../common/PaymentIcons";
 
 export const BottomToolbar: React.FC = () => {
   const { items, holdCurrentBill } = useCartStore();
@@ -10,7 +11,7 @@ export const BottomToolbar: React.FC = () => {
     key: string;
     alt: string;
     label: string;
-    icon: string;
+    icon: React.ReactNode;
     color: string;
     action: () => void;
   }[] = [
@@ -19,7 +20,7 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+K",
       label: "Save & Print KOT",
       icon: "🖨️",
-      color: "bg-emerald-700 hover:bg-emerald-600 border-emerald-600 text-white font-bold",
+      color: "bg-emerald-700 hover:bg-emerald-600 border-emerald-600 text-text-inverse font-bold",
       action: () => {
         if (items.length === 0) {
           showNotification("⚠️ Cart is empty. Add items before firing KOT.");
@@ -33,7 +34,7 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+S",
       label: "Short-Code Search",
       icon: "🔍",
-      color: "bg-gray-800 hover:bg-gray-750 border-gray-700 text-gray-300",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
       action: () => {
         const el = document.getElementById("pos-search-input") as HTMLInputElement | null;
         if (el) {
@@ -47,7 +48,7 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+H",
       label: "Hold / Retrieve",
       icon: "⏸️",
-      color: "bg-amber-600 hover:bg-amber-500 border-amber-500 text-white font-bold",
+      color: "bg-highlight hover:bg-highlight-hover border-highlight text-text-inverse font-bold",
       action: () => {
         if (items.length > 0) {
           holdCurrentBill("Customer parked bill (F3)");
@@ -62,7 +63,7 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+Z",
       label: "Discount",
       icon: "🏷️",
-      color: "bg-gray-800 hover:bg-gray-750 border-gray-700 text-gray-300",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
       action: () => openModal("DISCOUNT"),
     },
     {
@@ -70,7 +71,7 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+T",
       label: activeView === "BILLING" ? "Table Floor Map" : "Billing Screen",
       icon: "📍",
-      color: "bg-blue-600 hover:bg-blue-500 border-blue-500 text-white font-bold",
+      color: "bg-blue-600 hover:bg-blue-500 border-blue-500 text-text-inverse font-bold",
       action: () => {
         const nextView = activeView === "BILLING" ? "TABLES" : "BILLING";
         setActiveView(nextView);
@@ -81,11 +82,27 @@ export const BottomToolbar: React.FC = () => {
       key: "F6",
       alt: "Alt+P",
       label: "Split Bill",
-      icon: "✂️",
-      color: "bg-gray-800 hover:bg-gray-750 border-gray-700 text-gray-300",
+      icon: <SplitIcon className="w-3.5 h-3.5" />,
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
       action: () => {
         if (items.length > 0) openModal("SPLIT_BILL");
         else showNotification("⚠️ Add items to bill before splitting.");
+      },
+    },
+    {
+      key: "F7",
+      alt: "Alt+C",
+      label: "Open Drawer",
+      icon: "🪙",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
+      action: async () => {
+        try {
+          const { apiClient } = await import("../../api/client");
+          await apiClient("/print/open-drawer", { method: "POST" });
+          showNotification("🪙 Cash drawer command sent");
+        } catch (e) {
+          showNotification("⚠️ Failed to open cash drawer (offline?)");
+        }
       },
     },
     {
@@ -93,7 +110,7 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+O",
       label: "Open Item / Misc",
       icon: "➕",
-      color: "bg-gray-800 hover:bg-gray-750 border-gray-700 text-gray-300",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
       action: () => openModal("OPEN_ITEM"),
     },
     {
@@ -101,15 +118,37 @@ export const BottomToolbar: React.FC = () => {
       alt: "Alt+L",
       label: "Customer / CRM",
       icon: "👤",
-      color: "bg-gray-800 hover:bg-gray-750 border-gray-700 text-gray-300",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
       action: () => openModal("CUSTOMER"),
+    },
+    {
+      key: "F10",
+      alt: "Alt+Y",
+      label: "Sync Queue",
+      icon: "🔄",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
+      action: () => openModal("SYNC_QUEUE"),
+    },
+    {
+      key: "F11",
+      alt: "Alt+B",
+      label: "Bill Paper (Flip)",
+      icon: "🧾",
+      color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
+      action: () => {
+        if (items.length === 0) {
+          showNotification("⚠️ Cart is empty. Add items before viewing bill paper.");
+          return;
+        }
+        openModal("BILL_PREVIEW");
+      },
     },
     {
       key: "F12",
       alt: "Enter",
       label: "Settle & Pay",
-      icon: "💵",
-      color: "bg-orange-600 hover:bg-orange-500 border-orange-500 text-white font-extrabold shadow-lg shadow-orange-600/30",
+      icon: <CashIcon className="w-3.5 h-3.5" />,
+      color: "bg-primary hover:bg-primary-hover border-primary text-text-inverse font-extrabold shadow-lg shadow-primary/30",
       action: () => {
         if (items.length === 0) {
           showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
@@ -121,7 +160,7 @@ export const BottomToolbar: React.FC = () => {
   ];
 
   return (
-    <footer className="bg-gray-900 border-t border-gray-800 px-3 py-2 flex items-center justify-between gap-1.5 overflow-x-auto select-none shrink-0">
+    <footer className="bg-surface border-t border-border px-3 py-2 flex items-center justify-between gap-1.5 overflow-x-auto select-none shrink-0">
       {buttons.map((btn) => (
         <button
           key={btn.key}
@@ -130,7 +169,7 @@ export const BottomToolbar: React.FC = () => {
           title={`${btn.label} [Key: ${btn.key} or ${btn.alt}]`}
         >
           <div className="flex items-center gap-1">
-            <span className="bg-gray-950/60 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold tracking-wider border border-white/10">
+            <span className="bg-background/60 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold tracking-wider border border-white/10">
               {btn.key}
             </span>
             <span>{btn.icon}</span>

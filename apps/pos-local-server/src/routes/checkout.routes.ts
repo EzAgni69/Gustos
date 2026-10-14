@@ -25,6 +25,7 @@ router.post("/orders/:id/checkout", (req, res) => {
         invoiceId: result.invoiceId,
         invoiceNumber: result.invoiceNumber,
         totalAmount: result.totals.grandTotal,
+        tipAmount: result.tipAmount,
         paymentMode: result.paymentMode,
       },
       message: `Payment received — ${result.invoiceNumber}`,

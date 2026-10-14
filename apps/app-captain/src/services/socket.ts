@@ -7,6 +7,7 @@
 
 import { io, Socket } from "socket.io-client";
 import { SOCKET_EVENTS } from "../config/constants";
+import { drainOfflineQueue } from "../lib/offlineQueue";
 
 let socket: Socket | null = null;
 
@@ -16,7 +17,7 @@ const listeners = new Map<string, Set<EventCallback>>();
 /**
  * Connect to the POS server.
  */
-export function connectSocket(serverUrl: string): void {
+export function connectSocket(serverUrl: string, userId?: string | null): void {
   if (socket?.connected) {
     socket.disconnect();
   }
@@ -26,7 +27,6 @@ export function connectSocket(serverUrl: string): void {
     : `http://${serverUrl}`;
 
   socket = io(url, {
-    transports: ["websocket"],
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
@@ -38,6 +38,11 @@ export function connectSocket(serverUrl: string): void {
     console.log("[Socket.IO] Connected to POS server");
     // Join captains channel
     socket?.emit(SOCKET_EVENTS.JOIN_CAPTAIN);
+    
+    // Drain offline queue on connect/reconnect
+    drainOfflineQueue(url, userId).catch(err => {
+      console.error("[Socket.IO] Error draining offline queue:", err);
+    });
   });
 
   socket.on("disconnect", (reason) => {

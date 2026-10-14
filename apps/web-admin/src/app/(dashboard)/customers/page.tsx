@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -57,8 +59,12 @@ import {
 import { apiFetch } from "@/lib/api-client";
 
 export default function CustomersPage() {
+  const { toast } = useToast();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -76,34 +82,23 @@ export default function CustomersPage() {
 
   const loadCustomers = async () => {
     setLoading(true);
-    const res = await apiFetch<Customer[]>("/customers");
+    setError("");
+    const res = await apiFetch<Customer[]>(`/customers?page=${page}&limit=20`);
 
     if (res.success && res.data) {
       setCustomers(res.data);
+      if ((res as any).pagination) {
+        setTotalPages((res as any).pagination.totalPages);
+      }
     } else {
-      // Mock fallback data
-      setCustomers([
-        {
-          id: "1",
-          organizationId: "org-1",
-          name: "Rahul Verma",
-          phone: "+91 98765 12345",
-          email: "rahul.verma@email.com",
-          notes: "Regular customer — prefers window seating",
-          loyaltyPoints: 1250,
-          totalVisits: 14,
-          totalSpend: 12450.0,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ]);
+      setError(res.message || "Failed to load customers. Please check your connection.");
     }
     setLoading(false);
   };
 
   useEffect(() => {
     loadCustomers();
-  }, []);
+  }, [page]);
 
   const openCreateModal = () => {
     setEditingCustomer(null);
@@ -146,7 +141,7 @@ export default function CustomersPage() {
         setCustomers(customers.map(c => c.id === editingCustomer.id ? res.data! : c));
         setIsModalOpen(false);
       } else {
-        alert(res.message || "Failed to update customer");
+        toast({ title: "Update failed", description: res.message || "Failed to update customer", variant: "error" });
       }
     } else {
       // Create
@@ -163,22 +158,7 @@ export default function CustomersPage() {
         setCustomers([res.data, ...customers]);
         setIsModalOpen(false);
       } else {
-        // Mock fallback
-        const newCustomer: Customer = {
-          id: `cust-${Date.now()}`,
-          organizationId: "org-1",
-          name: data.name,
-          phone: data.phone,
-          email: data.email,
-          notes: data.notes,
-          loyaltyPoints: 0,
-          totalVisits: 0,
-          totalSpend: 0,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        setCustomers([newCustomer, ...customers]);
-        setIsModalOpen(false);
+        toast({ title: "Creation failed", description: res.message || "Failed to create customer", variant: "error" });
       }
     }
 
@@ -192,7 +172,7 @@ export default function CustomersPage() {
     if (res.success) {
       setCustomers(customers.filter(c => c.id !== id));
     } else {
-      alert(res.message || "Failed to delete customer");
+      toast({ title: "Delete failed", description: res.message || "Failed to delete customer", variant: "error" });
     }
   };
 
@@ -335,9 +315,15 @@ export default function CustomersPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-medium flex items-center gap-2">
+          <span>⚠️</span>
+          <span>{error}</span>
+        </div>
+      )}
+
       {/* Summary Cards */}
-      <div className="grid gap-4 grid-cols-3">
-        <Card className="shadow-xs border-gray-100">
+      <div className="grid gap-4 grid-cols-3">        <Card className="shadow-xs border-gray-100">
           <CardContent className="pt-5">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-blue-50">
@@ -475,6 +461,10 @@ export default function CustomersPage() {
                             <Edit className="w-4 h-4 mr-2" />
                             Edit
                           </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => window.location.href = `/crm/loyalty/${customer.id}`}>
+                            <Star className="w-4 h-4 mr-2" />
+                            View Loyalty
+                          </DropdownMenuItem>
                           <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteCustomer(customer.id)}>
                             <Trash2 className="w-4 h-4 mr-2" />
                             Delete
@@ -495,6 +485,27 @@ export default function CustomersPage() {
             </Table>
           )}
         </CardContent>
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between px-6 py-3 border-t border-gray-100">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+            >
+              Previous
+            </Button>
+            <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+            >
+              Next
+            </Button>
+          </div>
+        )}
       </Card>
     </div>
   );

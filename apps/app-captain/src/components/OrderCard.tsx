@@ -18,7 +18,7 @@ interface OrderCardProps {
 
 function formatTime(isoString: string): string {
   const date = new Date(isoString);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 export function OrderCard({ order, tableName, onPress }: OrderCardProps) {
@@ -44,7 +44,7 @@ export function OrderCard({ order, tableName, onPress }: OrderCardProps) {
         <StatusBadge status={order.status} />
         <View style={styles.metaRow}>
           <Text style={styles.items}>{itemCount} {itemCount === 1 ? "Item" : "Items"}</Text>
-          <Text style={styles.total}>₹{order.totalAmount.toFixed(0)}</Text>
+          <Text style={styles.total}>₹{Number(order.totalAmount).toFixed(0)}</Text>
         </View>
       </View>
     </Pressable>

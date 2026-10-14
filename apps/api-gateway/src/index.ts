@@ -1,20 +1,43 @@
 /**
  * Gusto Cloud API Gateway
  *
- * Fastify-based REST API + Socket.IO real-time hub
- * serving the web admin dashboard, captain app, and KDS.
- *
- * Cloud-Only MVP: This is the single source of truth.
+ * Fastify-based REST API serving the web admin dashboard and
+ * handling cloud sync from local POS machines.
  */
 
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { createServer } from "http";
-import { Server as SocketIOServer } from "socket.io";
 import dotenv from "dotenv";
+import * as Sentry from "@sentry/node";
+import { nodeProfilingIntegration } from "@sentry/profiling-node";
+
+dotenv.config();
+
+// ─── Production Safety Checks ───
+if (
+  process.env.NODE_ENV === "production" &&
+  (!process.env.JWT_SECRET || process.env.JWT_SECRET === "change-me-in-production")
+) {
+  console.error(
+    "FATAL: JWT_SECRET is set to the default insecure value. " +
+    "Set a strong random JWT_SECRET before running in production."
+  );
+  process.exit(1);
+}
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  integrations: [
+    nodeProfilingIntegration(),
+  ],
+  tracesSampleRate: 1.0,
+  profilesSampleRate: 1.0,
+});
 
 import { authPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
+import { Server as SocketServer } from "socket.io";
+import { initCloudSocket } from "./socket/cloud-events.js";
 import { authRoutes } from "./routes/auth.routes.js";
 import { organizationRoutes } from "./routes/organization.routes.js";
 import { franchiseRoutes } from "./routes/franchise.routes.js";
@@ -26,33 +49,48 @@ import { customerRoutes } from "./routes/customer.routes.js";
 import { syncRoutes } from "./routes/sync.routes.js";
 import { inventoryRoutes } from "./routes/inventory.routes.js";
 import { orderRoutes } from "./routes/order.routes.js";
-import { kotRoutes } from "./routes/kot.routes.js";
-import { checkoutRoutes } from "./routes/checkout.routes.js";
+import { integrationRoutes } from "./routes/integration.routes.js";
+import { crmRoutes } from "./routes/crm.routes.js";
+import { hrRoutes } from "./routes/hr.routes.js";
+import { reportingRoutes } from "./routes/reporting.routes.js";
+import { posRoutes } from "./routes/pos.routes.js";
+import { recipeRoutes } from "./routes/recipe.routes.js";
+import { stockRoutes } from "./routes/stock.routes.js";
 import { pgClient } from "./db/index.js";
-import { initSocketEvents } from "./socket/events.js";
 
-dotenv.config();
+
 
 const fastify = Fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info",
     transport:
-      process.env.NODE_ENV !== "production"
+      process.env.NODE_ENV === "development"
         ? { target: "pino-pretty", options: { colorize: true } }
-        : undefined,
-  },
-  // Disable Fastify's built-in HTTP server creation — we'll manage our own
-  serverFactory: (handler) => {
-    const httpServer = createServer((req, res) => {
-      handler(req, res);
-    });
-    return httpServer;
+        : undefined, // fallback to standard JSON
   },
 });
 
+// ─── Initialize Socket.IO ───
+const io = new SocketServer(fastify.server, {
+  cors: {
+    origin: process.env.CORS_ORIGIN
+      ? process.env.CORS_ORIGIN
+      : process.env.NODE_ENV === "production"
+      ? false
+      : true,
+    credentials: true,
+  },
+});
+initCloudSocket(io);
+
 // ─── Register Plugins ───
+const allowedOrigin = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN
+  : process.env.NODE_ENV === "production"
+  ? false
+  : true;
 await fastify.register(cors, {
-  origin: true,
+  origin: allowedOrigin,
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 });
@@ -71,31 +109,23 @@ await fastify.register(customerRoutes);
 await fastify.register(syncRoutes);
 await fastify.register(inventoryRoutes);
 await fastify.register(orderRoutes);
-await fastify.register(kotRoutes);
-await fastify.register(checkoutRoutes);
+await fastify.register(integrationRoutes);
+await fastify.register(crmRoutes);
+await fastify.register(hrRoutes);
+await fastify.register(reportingRoutes);
+await fastify.register(posRoutes);
+await fastify.register(recipeRoutes);
+await fastify.register(stockRoutes);
 
 // ─── Health Check ───
 fastify.get("/health", async () => {
   return {
     status: "ok",
     service: "gusto-api-gateway",
-    version: "0.2.0",
-    mode: "cloud-only-mvp",
+    version: "0.1.0",
     timestamp: new Date().toISOString(),
   };
 });
-
-// ─── Initialize Socket.IO ───
-const httpServer = fastify.server;
-const io = new SocketIOServer(httpServer, {
-  cors: {
-    origin: true,
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
-
-initSocketEvents(io);
 
 // ─── Start Server ───
 const PORT = Number(process.env.API_GATEWAY_PORT ?? 3001);
@@ -107,13 +137,12 @@ try {
 ║       ☁️  Gusto Cloud API Gateway            ║
 ╠══════════════════════════════════════════════╣
 ║  REST API:    http://localhost:${PORT}         ║
-║  Socket.IO:   ws://localhost:${PORT}           ║
-║  Mode:        Cloud-Only MVP                 ║
-║  Version:     0.2.0                          ║
+║  Version:     0.1.0                          ║
 ║  Status:      ✅ Running                      ║
 ╚══════════════════════════════════════════════╝
   `);
 } catch (err) {
+  Sentry.captureException(err);
   fastify.log.error(err);
   process.exit(1);
 }
@@ -121,7 +150,6 @@ try {
 // ─── Graceful Shutdown ───
 const shutdown = async (signal: string) => {
   console.log(`\n[${signal}] Shutting down gracefully...`);
-  io.close();
   await fastify.close();
   await pgClient.end();
   console.log("Server closed.");
@@ -130,5 +158,3 @@ const shutdown = async (signal: string) => {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-export { fastify, io, httpServer };

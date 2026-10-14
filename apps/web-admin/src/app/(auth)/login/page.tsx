@@ -59,7 +59,7 @@ export default function LoginPage() {
         return;
       }
 
-      document.cookie = `gusto_token=${res.data.token}; path=/; max-age=86400;`;
+      document.cookie = `gusto_token=${res.data.token}; path=/; max-age=86400; SameSite=Strict${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
       router.push("/");
     } catch (err) {
       setApiError("An unexpected error occurred during login");
@@ -86,7 +86,7 @@ export default function LoginPage() {
         return;
       }
 
-      document.cookie = `gusto_token=${res.data.token}; path=/; max-age=86400;`;
+      document.cookie = `gusto_token=${res.data.token}; path=/; max-age=86400; SameSite=Strict${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
       router.push("/");
     } catch (err) {
       setApiError("An unexpected error occurred during registration");
@@ -100,8 +100,8 @@ export default function LoginPage() {
       <div className="absolute inset-0 bg-linear-to-b from-blue-50 to-white -z-10" />
       <Card className="w-full max-w-md shadow-xl border-0 ring-1 ring-black/5 bg-white/80 backdrop-blur-xl">
         <CardHeader className="space-y-2 text-center pt-8">
-          <div className="mx-auto w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-blue-500/30">
-            <span className="text-3xl">🍽️</span>
+          <div className="flex justify-center mb-4">
+            <img src="/logo.png" alt="Gusto's Pizzeria" className="h-16 object-contain" />
           </div>
           <CardTitle className="text-3xl font-bold tracking-tight text-gray-900">
             Gusto ERP
@@ -152,7 +152,7 @@ export default function LoginPage() {
                   <Input
                     id="email"
                     type="email"
-                    placeholder="admin@gusto.com"
+                    placeholder="admin@gusto.dev"
                     className="pl-9 bg-white"
                     {...loginForm.register("email")}
                   />

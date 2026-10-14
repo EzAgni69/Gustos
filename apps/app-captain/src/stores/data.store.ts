@@ -15,9 +15,12 @@ import {
   getCategories,
   getMenuItems,
   getTables,
+  getBaseUrl,
 } from "../services/api";
 import { onSocketEvent } from "../services/socket";
 import { SOCKET_EVENTS } from "../config/constants";
+import { DeviceEventEmitter } from "react-native";
+import * as Haptics from "expo-haptics";
 
 interface DataState {
   // Tables
@@ -44,6 +47,7 @@ export const useDataStore = create<DataState>()((set, get) => ({
   tablesLoading: false,
 
   fetchTables: async () => {
+    if (!getBaseUrl()) return;
     set({ tablesLoading: true });
     try {
       const tables = await getTables();
@@ -61,6 +65,7 @@ export const useDataStore = create<DataState>()((set, get) => ({
   selectedCategoryId: null,
 
   fetchMenu: async () => {
+    if (!getBaseUrl()) return;
     set({ menuLoading: true });
     try {
       const [categories, menuItems] = await Promise.all([
@@ -101,9 +106,26 @@ export const useDataStore = create<DataState>()((set, get) => ({
 
     const unsub2 = onSocketEvent(
       SOCKET_EVENTS.ORDER_UPDATED,
-      (_data: unknown) => {
+      (data: unknown) => {
         // Refetch tables when orders change to get updated currentOrder
         get().fetchTables();
+        DeviceEventEmitter.emit("orderUpdated", data);
+      }
+    );
+
+    const unsub3 = onSocketEvent(
+      SOCKET_EVENTS.KOT_NEW,
+      (data: unknown) => {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        DeviceEventEmitter.emit("kotUpdated", data);
+      }
+    );
+
+    const unsub4 = onSocketEvent(
+      SOCKET_EVENTS.KOT_STATUS_UPDATE,
+      (data: unknown) => {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        DeviceEventEmitter.emit("kotUpdated", data);
       }
     );
 
@@ -111,6 +133,8 @@ export const useDataStore = create<DataState>()((set, get) => ({
     return () => {
       unsub1();
       unsub2();
+      unsub3();
+      unsub4();
     };
   },
 }));

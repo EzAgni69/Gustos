@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useUIStore } from "./store/useUIStore";
+import { useAuthStore } from "./store/useAuthStore";
+import { useMenuStore } from "./store/useMenuStore";
+import { useTableStore } from "./store/useTableStore";
+import { useShiftStore } from "./store/useShiftStore";
 import { TopNav } from "./components/layout/TopNav";
 import { BottomToolbar } from "./components/layout/BottomToolbar";
 import { CategorySidebar } from "./components/billing/CategorySidebar";
@@ -14,18 +18,40 @@ import { CustomerModal } from "./components/modals/CustomerModal";
 import { DiscountModal } from "./components/modals/DiscountModal";
 import { OpenItemModal } from "./components/modals/OpenItemModal";
 import { SplitBillModal } from "./components/modals/SplitBillModal";
+import { ShiftManagementModal } from "./components/modals/ShiftManagementModal";
+import { PrinterStatusModal } from "./components/modals/PrinterStatusModal";
+import { SyncQueueModal } from "./components/modals/SyncQueueModal";
+import { BillPreviewModal } from "./components/modals/BillPreviewModal";
+import { OnlineOrderModal } from "./components/modals/OnlineOrderModal";
+import { ItemCustomizerModal } from "./components/modals/ItemCustomizerModal";
+import { LoginScreen } from "./components/auth/LoginScreen";
+import { useSocket } from "./hooks/useSocket";
+import { useOfflineSync } from "./hooks/useOfflineSync";
 
 export function App() {
+  const { isAuthenticated } = useAuthStore();
+  
   // Activate global Petpooja F-Key shortcuts listener
   useKeyboardShortcuts();
+  useSocket();
+  useOfflineSync();
 
   const { activeView, setOnlineStatus } = useUIStore();
+  const { fetchMenu } = useMenuStore();
+  const { fetchTables } = useTableStore();
+  const { fetchActiveShift, fetchShiftWarning } = useShiftStore();
 
   // Check socket/connection status on boot
   useEffect(() => {
-    // We are running local server offline-first mode (zero latency)
-    setOnlineStatus(false);
-  }, [setOnlineStatus]);
+    fetchMenu();
+    fetchTables();
+    fetchActiveShift();
+    fetchShiftWarning();
+  }, [fetchMenu, fetchTables, fetchActiveShift, fetchShiftWarning]);
+
+  if (!isAuthenticated) {
+    return <LoginScreen />;
+  }
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-950 font-sans text-gray-100 select-none">
@@ -61,6 +87,12 @@ export function App() {
       <DiscountModal />
       <OpenItemModal />
       <SplitBillModal />
+      <ShiftManagementModal />
+      <PrinterStatusModal />
+      <SyncQueueModal />
+      <BillPreviewModal />
+      <OnlineOrderModal />
+      <ItemCustomizerModal />
     </div>
   );
 }

@@ -27,11 +27,13 @@ interface AuthState {
   user: AuthUser | null;
   isConnected: boolean;
   isLoading: boolean;
+  isHydrated: boolean;
 
   // Actions
   connectToServer: (ip: string) => Promise<void>;
   login: (pin: string) => Promise<AuthUser>;
-  logout: () => void;
+  logoutUser: () => void;
+  disconnectServer: () => void;
   restoreSession: () => void;
 }
 
@@ -42,6 +44,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isConnected: false,
       isLoading: false,
+      isHydrated: false,
 
       connectToServer: async (ip: string) => {
         set({ isLoading: true });
@@ -60,7 +63,7 @@ export const useAuthStore = create<AuthState>()(
           }
 
           // Connect Socket.IO
-          connectSocket(serverIp);
+          connectSocket(serverIp, get().user?.id);
 
           set({ serverIp, isConnected: true, isLoading: false });
         } catch (err) {
@@ -88,10 +91,15 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      logout: () => {
+      logoutUser: () => {
+        setCurrentUserId(null);
+        set({ user: null });
+      },
+
+      disconnectServer: () => {
         setCurrentUserId(null);
         disconnectSocket();
-        set({ user: null, isConnected: false });
+        set({ user: null, isConnected: false, serverIp: null });
       },
 
       restoreSession: () => {
@@ -102,7 +110,7 @@ export const useAuthStore = create<AuthState>()(
             setCurrentUserId(user.id);
           }
           // Reconnect socket
-          connectSocket(serverIp);
+          connectSocket(serverIp, user?.id);
           set({ isConnected: true });
         }
       },
@@ -115,6 +123,18 @@ export const useAuthStore = create<AuthState>()(
         serverIp: state.serverIp,
         user: state.user,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state?.serverIp) {
+          setBaseUrl(state.serverIp);
+          if (state.user) {
+            setCurrentUserId(state.user.id);
+          }
+          connectSocket(state.serverIp, state.user?.id);
+          useAuthStore.setState({ isConnected: true, isHydrated: true });
+        } else {
+          useAuthStore.setState({ isHydrated: true });
+        }
+      },
     }
   )
 );

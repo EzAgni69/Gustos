@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -41,8 +43,10 @@ import { apiFetch } from "@/lib/api-client";
 import { type Organization, updateOrganizationSchema, type UpdateOrganization } from "@gusto/api-contracts";
 
 export default function OrganizationsPage() {
+  const { toast } = useToast();
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   // Edit Modal State
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -59,6 +63,7 @@ export default function OrganizationsPage() {
 
   const loadOrganizations = async () => {
     setLoading(true);
+    setError("");
 
     try {
       // First get current user profile to get org ID
@@ -69,22 +74,15 @@ export default function OrganizationsPage() {
         
         if (orgRes.success && orgRes.data) {
           setOrganizations([orgRes.data]);
+        } else {
+          setError(orgRes.message || "Failed to load organization details.");
         }
       } else {
-        // Fallback for visual demo if server is offline
-        setOrganizations([
-          {
-            id: "1",
-            name: "Gusto Global Group",
-            slug: "gusto-global",
-            gstNumber: "22AAAAA0000A1Z5",
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-        ]);
+        setError(userRes.message || "Failed to load organization. Please check your connection.");
       }
-    } catch (error) {
-      console.error("Failed to load organization", error);
+    } catch (err) {
+      console.error("Failed to load organization", err);
+      setError("An unexpected error occurred while loading organization data.");
     }
     
     setLoading(false);
@@ -119,7 +117,7 @@ export default function OrganizationsPage() {
       setOrganizations(orgs => orgs.map(o => o.id === editingOrg.id ? res.data! : o));
       setIsEditModalOpen(false);
     } else {
-      alert(res.message || "Failed to update organization");
+      toast({ title: "Update failed", description: res.message || "Failed to update organization", variant: "error" });
     }
     setIsSubmitting(false);
   };
@@ -133,6 +131,13 @@ export default function OrganizationsPage() {
         </div>
         {/* We do not allow adding new organizations from this view as it's tenant scoped */}
       </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-medium flex items-center gap-2">
+          <span>⚠️</span>
+          <span>{error}</span>
+        </div>
+      )}
 
       <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
         <DialogContent className="sm:max-w-[425px]">

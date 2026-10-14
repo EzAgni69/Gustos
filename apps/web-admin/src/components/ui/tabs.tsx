@@ -16,14 +16,28 @@ function useTabs() {
   return context;
 }
 
-interface TabsProps extends React.HTMLAttributes<HTMLDivElement> {
-  value: string;
-  onValueChange: (value: string) => void;
+interface TabsProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "defaultValue"> {
+  defaultValue?: string;
+  value?: string;
+  onValueChange?: (value: string) => void;
 }
 
-function Tabs({ value, onValueChange, className, ...props }: TabsProps) {
+function Tabs({ defaultValue, value, onValueChange, className, ...props }: TabsProps) {
+  const [uncontrolledValue, setUncontrolledValue] = React.useState(defaultValue || "");
+  const isControlled = value !== undefined;
+  
+  const currentValue = isControlled ? value : uncontrolledValue;
+  const handleValueChange = (newValue: string) => {
+    if (!isControlled) {
+      setUncontrolledValue(newValue);
+    }
+    if (onValueChange) {
+      onValueChange(newValue);
+    }
+  };
+
   return (
-    <TabsContext.Provider value={{ value, onValueChange }}>
+    <TabsContext.Provider value={{ value: currentValue, onValueChange: handleValueChange }}>
       <div className={cn("w-full", className)} {...props} />
     </TabsContext.Provider>
   );

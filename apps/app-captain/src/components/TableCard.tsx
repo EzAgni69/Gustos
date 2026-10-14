@@ -8,10 +8,11 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { colors, fontSize, radius, spacing, fontWeight, shadow } from "../config/theme";
 import { StatusBadge } from "./StatusBadge";
-import type { TableResponse } from "../services/api";
+import type { TableResponse, ReservationResponse } from "../services/api";
 
 interface TableCardProps {
   table: TableResponse;
+  reservations?: ReservationResponse[];
   onPress: (table: TableResponse) => void;
 }
 
@@ -32,8 +33,13 @@ function getElapsedTime(createdAt: string): string {
   return `${hours}h ${mins}m`;
 }
 
-export function TableCard({ table, onPress }: TableCardProps) {
+export function TableCard({ table, reservations = [], onPress }: TableCardProps) {
   const accentColor = STATUS_COLORS[table.status] ?? colors.textSecondary;
+
+  // Find the next upcoming reservation for today
+  const upcomingRes = reservations
+    .filter(r => new Date(r.reservationTime).getTime() > Date.now())
+    .sort((a, b) => new Date(a.reservationTime).getTime() - new Date(b.reservationTime).getTime())[0];
 
   return (
     <Pressable
@@ -55,7 +61,14 @@ export function TableCard({ table, onPress }: TableCardProps) {
         </View>
 
         {/* Status */}
-        <StatusBadge status={table.status} />
+        <View style={styles.statusRow}>
+          <StatusBadge status={table.status} />
+          {upcomingRes && (
+            <Text style={styles.reservationBadge}>
+              📅 {new Date(upcomingRes.reservationTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+          )}
+        </View>
 
         {/* Section */}
         {table.section && (
@@ -70,7 +83,7 @@ export function TableCard({ table, onPress }: TableCardProps) {
             </Text>
             <View style={styles.orderMeta}>
               <Text style={styles.orderAmount}>
-                ₹{table.currentOrder.totalAmount.toFixed(0)}
+                ₹{Number(table.currentOrder.totalAmount).toFixed(0)}
               </Text>
               <Text style={styles.orderTime}>
                 {getElapsedTime(table.currentOrder.createdAt)}
@@ -121,6 +134,16 @@ const styles = StyleSheet.create({
   capacity: {
     fontSize: fontSize.sm,
     color: colors.textSecondary,
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  reservationBadge: {
+    fontSize: fontSize.xs,
+    color: colors.info,
+    fontWeight: fontWeight.bold,
   },
   section: {
     fontSize: fontSize.xs,

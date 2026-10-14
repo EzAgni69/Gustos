@@ -53,23 +53,23 @@ export const DiscountModal: React.FC = () => {
       tabIndex={0}
       className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm select-none outline-none"
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col">
+      <div className="bg-surface border border-border-hover rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="bg-gray-950 px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+        <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-base font-black text-white flex items-center gap-2">
+            <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
               <span>🏷️ APPLY BILL DISCOUNT</span>
-              <span className="text-[10px] font-mono bg-orange-600/20 text-orange-400 px-2 py-0.5 rounded border border-orange-500/30">
+              <span className="text-[10px] font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
                 F4
               </span>
             </h2>
-            <p className="text-xs text-gray-400 font-mono mt-0.5">
+            <p className="text-xs text-text-muted font-mono mt-0.5">
               Select flat amount or percentage discount off subtotal
             </p>
           </div>
           <button
             onClick={closeModal}
-            className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white flex items-center justify-center font-bold"
+            className="w-8 h-8 rounded-lg bg-surface-hover hover:bg-surface-hover text-text-muted hover:text-text-main flex items-center justify-center font-bold"
           >
             ✕
           </button>
@@ -78,13 +78,13 @@ export const DiscountModal: React.FC = () => {
         {/* Content */}
         <div className="p-6 space-y-4">
           {/* Type Switcher */}
-          <div className="grid grid-cols-2 gap-2 bg-gray-950 p-1 rounded-xl border border-gray-800">
+          <div className="grid grid-cols-2 gap-2 bg-background p-1 rounded-xl border border-border">
             <button
               onClick={() => setType("PERCENTAGE")}
               className={`py-2 rounded-lg text-xs font-bold transition-all ${
                 type === "PERCENTAGE"
-                  ? "bg-orange-600 text-white shadow"
-                  : "text-gray-400 hover:text-white"
+                  ? "bg-primary text-text-inverse shadow"
+                  : "text-text-muted hover:text-text-inverse"
               }`}
             >
               Percentage (%)
@@ -92,7 +92,7 @@ export const DiscountModal: React.FC = () => {
             <button
               onClick={() => setType("FLAT")}
               className={`py-2 rounded-lg text-xs font-bold transition-all ${
-                type === "FLAT" ? "bg-orange-600 text-white shadow" : "text-gray-400 hover:text-white"
+                type === "FLAT" ? "bg-primary text-text-inverse shadow" : "text-text-muted hover:text-text-inverse"
               }`}
             >
               Flat Amount (₹)
@@ -101,7 +101,7 @@ export const DiscountModal: React.FC = () => {
 
           {/* Value input */}
           <div>
-            <label className="block text-xs font-bold text-gray-300 mb-1 font-mono">
+            <label className="block text-xs font-bold text-text-main mb-1 font-mono">
               Discount {type === "PERCENTAGE" ? "Rate (%)" : "Amount (₹)"}:
             </label>
             <input
@@ -109,13 +109,13 @@ export const DiscountModal: React.FC = () => {
               value={value}
               onChange={(e) => setValue(Math.max(0, Number(e.target.value)))}
               autoFocus
-              className="w-full bg-gray-950 border border-gray-700 focus:border-orange-500 rounded-xl px-4 py-3 text-xl font-mono font-bold text-white focus:outline-none"
+              className="w-full bg-background border border-border-hover focus:border-primary rounded-xl px-4 py-3 text-xl font-mono font-bold text-text-main focus:outline-none"
             />
           </div>
 
           {/* Quick Presets */}
           <div>
-            <div className="text-xs text-gray-400 mb-2 font-mono">Quick Preset Options:</div>
+            <div className="text-xs text-text-muted mb-2 font-mono">Quick Preset Options:</div>
             <div className="flex flex-wrap gap-2">
               {type === "PERCENTAGE" ? (
                 <>
@@ -125,8 +125,8 @@ export const DiscountModal: React.FC = () => {
                       onClick={() => setValue(preset)}
                       className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold ${
                         value === preset
-                          ? "bg-orange-600/20 border-orange-500 text-orange-300"
-                          : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                          ? "bg-primary/20 border-primary text-primary-hover"
+                          : "bg-surface-hover border-border-hover text-text-main hover:bg-surface-hover"
                       }`}
                     >
                       {preset}% Off
@@ -141,8 +141,8 @@ export const DiscountModal: React.FC = () => {
                       onClick={() => setValue(preset)}
                       className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold ${
                         value === preset
-                          ? "bg-orange-600/20 border-orange-500 text-orange-300"
-                          : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                          ? "bg-primary/20 border-primary text-primary-hover"
+                          : "bg-surface-hover border-border-hover text-text-main hover:bg-surface-hover"
                       }`}
                     >
                       ₹{preset} Off
@@ -164,19 +164,19 @@ export const DiscountModal: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <div className="bg-gray-950 px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-3">
+        <div className="bg-background px-6 py-4 border-t border-border flex items-center justify-between gap-3">
           <button
             onClick={closeModal}
-            className="px-5 py-2.5 bg-gray-800 hover:bg-gray-750 text-gray-300 rounded-xl text-xs font-bold border border-gray-700"
+            className="px-5 py-2.5 bg-surface-hover hover:bg-surface-hover text-text-main rounded-xl text-xs font-bold border border-border-hover"
           >
             Cancel [Esc]
           </button>
           <button
             onClick={handleApply}
-            className="flex-1 bg-orange-600 hover:bg-orange-500 text-white font-black py-2.5 rounded-xl text-xs shadow-lg shadow-orange-600/30 flex items-center justify-center gap-1.5"
+            className="flex-1 bg-primary hover:bg-primary-hover text-text-inverse font-black py-2.5 rounded-xl text-xs shadow-lg shadow-primary/30 flex items-center justify-center gap-1.5"
           >
             <span>APPLY DISCOUNT</span>
-            <span className="text-[10px] bg-orange-700/80 px-1.5 py-0.5 rounded font-mono border border-orange-500/40">
+            <span className="text-[10px] bg-orange-700/80 px-1.5 py-0.5 rounded font-mono border border-primary">
               Enter
             </span>
           </button>

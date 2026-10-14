@@ -32,11 +32,16 @@ export const API = {
       `/api/orders/${orderId}/items/${itemId}`,
     HOLD: (id: string) => `/api/orders/${id}/hold`,
     CANCEL: (id: string) => `/api/orders/${id}/cancel`,
+    CHECKOUT: (id: string) => `/api/orders/${id}/checkout`,
+    INVOICE: (id: string) => `/api/orders/${id}/invoice`,
   },
   KOT: {
     FIRE: (orderId: string) => `/api/orders/${orderId}/kot`,
     LIST: "/api/kots",
     UPDATE_STATUS: (id: string) => `/api/kots/${id}/status`,
+  },
+  PRINT: {
+    BILL: (orderId: string) => `/api/print/bill/${orderId}`,
   },
 } as const;
 
@@ -57,14 +62,13 @@ export const COMMON_MODIFIERS = [
   "Extra spicy",
   "No onion",
   "No garlic",
-  "Extra cheese",
-  "Extra gravy",
-  "Half portion",
   "Jain",
-  "Sugar-free",
+  "Swaminarayan",
   "Less oil",
-  "Well done",
   "No ice",
+  "Extra crispy",
+  "Light on sauce",
+  "No chilli flakes",
 ] as const;
 
 // ─── Default Server Port ───

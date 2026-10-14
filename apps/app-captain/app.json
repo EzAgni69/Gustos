@@ -8,6 +8,12 @@
     "platforms": ["ios", "android"],
     "userInterfaceStyle": "dark",
     "backgroundColor": "#09090b",
+    "icon": "./assets/images/icon.png",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#09090b"
+    },
     "ios": {
       "bundleIdentifier": "com.gusto.captain",
       "infoPlist": {
@@ -21,8 +27,12 @@
       "package": "com.gusto.captain",
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#09090b"
       }
+    },
+    "web": {
+      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",

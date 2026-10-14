@@ -1,28 +1,76 @@
-import React, { useState } from "react";
-import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import React, { useState, useEffect } from "react";
+import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Image } from "react-native";
 import { useRouter } from "expo-router";
+import * as Network from 'expo-network';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthStore } from "../../src/stores/auth.store";
 import { colors, fontSize, radius, spacing, fontWeight } from "../../src/config/theme";
 
 export default function ConnectScreen() {
-  const [ip, setIp] = useState("");
+  const [ip, setIp] = useState(process.env.EXPO_PUBLIC_API_URL?.replace(/^https?:\/\//, '').replace(/\/api\/?$/, '') || "");
   const [error, setError] = useState<string | null>(null);
+  const [deviceIp, setDeviceIp] = useState<string | null>(null);
+  const [recentIps, setRecentIps] = useState<string[]>([]);
   const { connectToServer, isLoading } = useAuthStore();
   const router = useRouter();
 
-  const handleConnect = async () => {
-    if (!ip.trim()) {
+  useEffect(() => {
+    const loadNetworkInfo = async () => {
+      try {
+        const ipAddress = await Network.getIpAddressAsync();
+        setDeviceIp(ipAddress);
+        
+        const stored = await AsyncStorage.getItem('recent_server_ips');
+        if (stored) {
+          setRecentIps(JSON.parse(stored));
+        }
+      } catch (err) {
+        console.warn("Could not fetch device IP or recent IPs", err);
+      }
+    };
+    loadNetworkInfo();
+  }, []);
+
+  const saveRecentIp = async (connectedIp: string) => {
+    try {
+      const newRecents = [connectedIp, ...recentIps.filter(i => i !== connectedIp)].slice(0, 3);
+      setRecentIps(newRecents);
+      await AsyncStorage.setItem('recent_server_ips', JSON.stringify(newRecents));
+    } catch (err) {
+      console.warn("Could not save recent IP", err);
+    }
+  };
+
+  const handleConnect = async (ipToConnect: string = ip) => {
+    if (!ipToConnect.trim()) {
       setError("Please enter an IP address");
       return;
     }
 
+    // Auto-append port if missing
+    let finalIp = ipToConnect.trim();
+    if (!finalIp.includes(':')) {
+      finalIp += ':8080';
+    }
+    setIp(finalIp);
+
     setError(null);
     try {
-      await connectToServer(ip);
+      await connectToServer(finalIp);
+      await saveRecentIp(finalIp);
       // Let root layout handle navigation to login once connected
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to connect to server");
     }
+  };
+
+  const getSubnetSuggestion = () => {
+    if (!deviceIp) return null;
+    const parts = deviceIp.split('.');
+    if (parts.length === 4) {
+      return `${parts[0]}.${parts[1]}.${parts[2]}.`;
+    }
+    return null;
   };
 
   return (
@@ -30,10 +78,20 @@ export default function ConnectScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <View style={styles.content}>
-        <Text style={styles.emoji}>📡</Text>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Image
+          source={require("../../assets/images/logo.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
         <Text style={styles.title}>Connect to POS</Text>
         <Text style={styles.subtitle}>Enter the local IP address of the POS server.</Text>
+        
+        {deviceIp && (
+          <Text style={styles.deviceIpInfo}>
+            Your Device IP: {deviceIp}
+          </Text>
+        )}
 
         <View style={styles.form}>
           <TextInput
@@ -52,13 +110,22 @@ export default function ConnectScreen() {
           />
           {error && <Text style={styles.errorText}>{error}</Text>}
 
+          {getSubnetSuggestion() && ip === "" && (
+            <Pressable
+              style={styles.suggestionPill}
+              onPress={() => setIp(getSubnetSuggestion()!)}
+            >
+              <Text style={styles.suggestionText}>Start with: {getSubnetSuggestion()}</Text>
+            </Pressable>
+          )}
+
           <Pressable
             style={({ pressed }) => [
               styles.button,
               pressed && styles.buttonPressed,
               isLoading && styles.buttonDisabled,
             ]}
-            onPress={handleConnect}
+            onPress={() => handleConnect(ip)}
             disabled={isLoading}
           >
             {isLoading ? (
@@ -67,8 +134,24 @@ export default function ConnectScreen() {
               <Text style={styles.buttonText}>Connect</Text>
             )}
           </Pressable>
+
+          {recentIps.length > 0 && (
+            <View style={styles.recentSection}>
+              <Text style={styles.recentTitle}>Recent Servers</Text>
+              {recentIps.map((recentIp, idx) => (
+                <Pressable
+                  key={idx}
+                  style={styles.recentItem}
+                  onPress={() => handleConnect(recentIp)}
+                  disabled={isLoading}
+                >
+                  <Text style={styles.recentItemText}>{recentIp}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
         </View>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -84,8 +167,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: spacing.xxl,
   },
-  emoji: {
-    fontSize: 64,
+  logo: {
+    width: 140,
+    height: 80,
+    alignSelf: "center",
     marginBottom: spacing.lg,
   },
   title: {
@@ -138,5 +223,50 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: fontSize.lg,
     fontWeight: fontWeight.bold,
+  },
+  deviceIpInfo: {
+    fontSize: fontSize.sm,
+    color: colors.textTertiary,
+    marginBottom: spacing.xl,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  suggestionPill: {
+    backgroundColor: colors.bgInput,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.full,
+    alignSelf: 'flex-start',
+  },
+  suggestionText: {
+    color: colors.textSecondary,
+    fontSize: fontSize.sm,
+    fontWeight: fontWeight.medium,
+  },
+  recentSection: {
+    marginTop: spacing.xl,
+    paddingTop: spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderLight,
+  },
+  recentTitle: {
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.semibold,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
+  },
+  recentItem: {
+    backgroundColor: colors.bgInput,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    marginBottom: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+  },
+  recentItemText: {
+    color: colors.textPrimary,
+    fontSize: fontSize.md,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
 });

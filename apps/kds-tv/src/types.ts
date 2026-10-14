@@ -13,6 +13,10 @@ export type TimerStatus = "green" | "yellow" | "red";
 
 export type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 
+// ─── Hold & Fire Status ───
+
+export type HoldStatus = "HOLD" | "FIRE" | null;
+
 // ─── KOT Item (as received from Socket.IO / REST) ───
 
 export interface KDSKotItem {
@@ -20,6 +24,102 @@ export interface KDSKotItem {
   quantity: number;
   modifiers: string[];
   notes?: string | null;
+  categoryId?: string | null;
+  variantName?: string | null;
+}
+
+// ─── Station Configuration ───
+
+export interface StationConfig {
+  id: string;
+  name: string;
+  shortName: string;
+  icon: string;
+  categories: string[];
+}
+
+export const KDS_STATIONS: StationConfig[] = [
+  {
+    id: "pizza-oven",
+    name: "Pizza Oven",
+    shortName: "PIZZA OVEN",
+    icon: "🍕",
+    categories: ["cat-pizza-reg", "cat-pizza-prem", "cat-calzones", "cat-combos"],
+  },
+  {
+    id: "pasta-starters",
+    name: "Pasta & Starters",
+    shortName: "PASTA & STARTERS",
+    icon: "🍝",
+    categories: ["cat-pasta", "cat-starters", "cat-sandwiches", "cat-bruschetta"],
+  },
+  {
+    id: "beverages-pantry",
+    name: "Beverages & Pantry",
+    shortName: "PANTRY & DRINKS",
+    icon: "🍹",
+    categories: ["cat-refreshments", "cat-salads", "cat-desserts"],
+  },
+];
+
+/**
+ * Determine which KDS station handles a given item.
+ */
+export function getItemStationId(item: KDSKotItem): string {
+  if (item.categoryId) {
+    for (const st of KDS_STATIONS) {
+      if (st.categories.includes(item.categoryId)) {
+        return st.id;
+      }
+    }
+  }
+  // Fallback by name heuristics if categoryId is missing
+  const name = item.name.toLowerCase();
+  if (
+    name.includes("pizza") ||
+    name.includes("calzone") ||
+    name.includes("8\"") ||
+    name.includes("12\"") ||
+    name.includes("margherita") ||
+    name.includes("marinara") ||
+    name.includes("burrata")
+  ) {
+    return "pizza-oven";
+  }
+  if (
+    name.includes("pasta") ||
+    name.includes("spaghetti") ||
+    name.includes("penne") ||
+    name.includes("fettuccine") ||
+    name.includes("tasca") ||
+    name.includes("sandwich") ||
+    name.includes("bruschetta") ||
+    name.includes("starter") ||
+    name.includes("garlic bread") ||
+    name.includes("crostini") ||
+    name.includes("fries")
+  ) {
+    return "pasta-starters";
+  }
+  if (
+    name.includes("mojito") ||
+    name.includes("water") ||
+    name.includes("soda") ||
+    name.includes("beverage") ||
+    name.includes("tea") ||
+    name.includes("coffee") ||
+    name.includes("coke") ||
+    name.includes("sprite") ||
+    name.includes("fanta") ||
+    name.includes("salad") ||
+    name.includes("dessert") ||
+    name.includes("tiramisu") ||
+    name.includes("pana cotta") ||
+    name.includes("brownie")
+  ) {
+    return "beverages-pantry";
+  }
+  return "pasta-starters";
 }
 
 // ─── KOT (as displayed on the KDS) ───
@@ -35,6 +135,12 @@ export interface KDSKot {
   items: KDSKotItem[];
   status: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED";
   createdAt: string; // ISO timestamp
+}
+
+// ─── Completed KOT (for history / recall) ───
+
+export interface CompletedKot extends KDSKot {
+  completedAt: string; // ISO timestamp when the KOT was bumped
 }
 
 // ─── Socket.IO Event Payloads ───
@@ -77,6 +183,8 @@ export interface KotListItem {
     quantity: number;
     modifiers: string[];
     notes: string | null;
+    categoryId?: string | null;
+    variantName?: string | null;
   }>;
 }
 
@@ -99,4 +207,69 @@ export function formatElapsed(elapsedSeconds: number): string {
   const mins = Math.floor(elapsedSeconds / 60);
   const secs = elapsedSeconds % 60;
   return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+}
+
+// ─── Course Ordering (for Hold & Fire) ───
+
+/**
+ * Station → course precedence. Lower number = earlier course.
+ * KOTs with higher-numbered courses will show "HOLD" until all
+ * lower-numbered courses for the same order are READY/SERVED.
+ *
+ * This can be overridden via VITE_COURSE_ORDER env var as JSON,
+ * e.g.: {"Starters": 1, "Soup": 1, "Salad": 1, "Main Course": 2, "Grill": 2, "Desserts": 3}
+ */
+const DEFAULT_COURSE_ORDER: Record<string, number> = {
+  "Starters": 1,
+  "Appetizers": 1,
+  "Soup": 1,
+  "Salad": 1,
+  "Beverages": 1,
+  "Main Course": 2,
+  "Mains": 2,
+  "Grill": 2,
+  "Tandoor": 2,
+  "Wok": 2,
+  "Pasta": 2,
+  "Rice": 2,
+  "Breads": 2,
+  "Desserts": 3,
+  "Sweets": 3,
+};
+
+function loadCourseOrder(): Record<string, number> {
+  try {
+    const envVal =
+      typeof import.meta !== "undefined" &&
+      (import.meta as unknown as Record<string, Record<string, string>>).env
+        ?.VITE_COURSE_ORDER;
+    if (envVal) return JSON.parse(envVal);
+  } catch {
+    // Fall back to defaults
+  }
+  return DEFAULT_COURSE_ORDER;
+}
+
+export const COURSE_ORDER = loadCourseOrder();
+
+/**
+ * Get the course number for a station name.
+ * Returns 0 (highest priority / no hold) if station is unknown or null.
+ */
+export function getCourseNumber(station: string | null | undefined): number {
+  if (!station) return 0;
+  // Case-insensitive lookup
+  const key = Object.keys(COURSE_ORDER).find(
+    (k) => k.toLowerCase() === station.toLowerCase()
+  );
+  return key ? COURSE_ORDER[key]! : 0;
+}
+
+// ─── Bump Queue Item (for offline persistence) ───
+
+export interface BumpQueueItem {
+  kotId: string;
+  targetStatus: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED";
+  timestamp: string;
+  retryCount: number;
 }

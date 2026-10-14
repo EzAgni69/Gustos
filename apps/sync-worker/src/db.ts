@@ -9,9 +9,11 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const connectionString =
-  process.env.DATABASE_URL ||
-  "postgres://postgres:postgres@localhost:5432/gustos_cloud";
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error("DATABASE_URL environment variable is required");
+}
 
 // Create postgres connection
 const client = postgres(connectionString, { max: 5 });

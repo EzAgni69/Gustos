@@ -66,3 +66,9 @@ pnpm typecheck    # TypeScript check across all workspaces
 pnpm lint         # Lint all workspaces
 pnpm clean        # Clean all build artifacts
 ```
+
+## Database Migration Strategy (CI/CD)
+
+For consistent and safe database schemas across environments:
+- **Local Development:** Run `pnpm db:push` to rapidly prototype and push schema changes to local SQLite/Postgres.
+- **Production Deployments:** We employ a strict migration-based approach. The CI/CD pipeline (or deployment orchestrator) must execute `pnpm db:migrate` (which runs `drizzle-kit migrate`) against the production PostgreSQL instance before the new application versions boot. This prevents schema corruption and ensures deterministic rollouts.

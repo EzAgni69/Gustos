@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { db } from "../lib/db";
 
 export type TableStatus = "VACANT" | "OCCUPIED" | "BILLED" | "RESERVED";
 
@@ -18,6 +19,7 @@ export interface POSTable {
   assignedWaiter?: string;
   seatedSince?: Date;
   orderNumber?: string;
+  lockedBy?: string;
 }
 
 export interface TableStoreState {
@@ -28,97 +30,23 @@ export interface TableStoreState {
   // Actions
   setSelectedArea: (areaId: string | null) => void;
   setTableStatus: (tableId: string, status: TableStatus, billAmount?: number, waiter?: string, orderNumber?: string) => void;
+  setTableLock: (tableId: string, lockedBy?: string) => void;
   transferTable: (fromTableId: string, toTableId: string) => void;
+  fetchTables: () => Promise<void>;
 }
 
-const MOCK_AREAS: TableArea[] = [
-  { id: "SEC-AC", name: "AC Dining Hall", tableCount: 10 },
-  { id: "SEC-GD", name: "Open Garden Area", tableCount: 6 },
-  { id: "SEC-BR", name: "Bar & Lounge", tableCount: 4 },
-];
 
-const MOCK_TABLES: POSTable[] = [
-  // AC Section (10 tables)
-  { id: "table-ac-1", areaId: "SEC-AC", tableNumber: "T-01 (AC)", capacity: 2, status: "VACANT" },
-  { id: "table-ac-2", areaId: "SEC-AC", tableNumber: "T-02 (AC)", capacity: 2, status: "RESERVED" },
-  { id: "table-ac-3", areaId: "SEC-AC", tableNumber: "T-03 (AC)", capacity: 4, status: "VACANT" },
-  {
-    id: "table-ac-4",
-    areaId: "SEC-AC",
-    tableNumber: "T-04 (AC)",
-    capacity: 4,
-    status: "OCCUPIED",
-    currentBillAmount: 945,
-    assignedWaiter: "Capt. Rahul",
-    seatedSince: new Date(Date.now() - 32 * 60 * 1000),
-    orderNumber: "OUT-20260715-0042",
-  },
-  { id: "table-ac-5", areaId: "SEC-AC", tableNumber: "T-05 (AC)", capacity: 4, status: "VACANT" },
-  {
-    id: "table-ac-6",
-    areaId: "SEC-AC",
-    tableNumber: "T-06 (AC)",
-    capacity: 6,
-    status: "BILLED",
-    currentBillAmount: 2480,
-    assignedWaiter: "Capt. Sneha",
-    seatedSince: new Date(Date.now() - 65 * 60 * 1000),
-    orderNumber: "OUT-20260715-0036",
-  },
-  { id: "table-ac-7", areaId: "SEC-AC", tableNumber: "T-07 (AC)", capacity: 6, status: "VACANT" },
-  { id: "table-ac-8", areaId: "SEC-AC", tableNumber: "T-08 (AC)", capacity: 8, status: "VACANT" },
-  {
-    id: "table-ac-9",
-    areaId: "SEC-AC",
-    tableNumber: "T-09 (AC)",
-    capacity: 8,
-    status: "OCCUPIED",
-    currentBillAmount: 3950,
-    assignedWaiter: "Capt. Vikram",
-    seatedSince: new Date(Date.now() - 48 * 60 * 1000),
-    orderNumber: "OUT-20260715-0038",
-  },
-  { id: "table-ac-10", areaId: "SEC-AC", tableNumber: "T-10 (AC)", capacity: 12, status: "VACANT" },
 
-  // Garden Section (6 tables)
-  { id: "table-gd-1", areaId: "SEC-GD", tableNumber: "G-01 (Garden)", capacity: 4, status: "VACANT" },
-  { id: "table-gd-2", areaId: "SEC-GD", tableNumber: "G-02 (Garden)", capacity: 4, status: "VACANT" },
-  {
-    id: "table-gd-3",
-    areaId: "SEC-GD",
-    tableNumber: "G-03 (Garden)",
-    capacity: 6,
-    status: "OCCUPIED",
-    currentBillAmount: 1820,
-    assignedWaiter: "Capt. Sneha",
-    seatedSince: new Date(Date.now() - 22 * 60 * 1000),
-    orderNumber: "OUT-20260715-0043",
-  },
-  { id: "table-gd-4", areaId: "SEC-GD", tableNumber: "G-04 (Garden)", capacity: 6, status: "VACANT" },
-  { id: "table-gd-5", areaId: "SEC-GD", tableNumber: "G-05 (Garden)", capacity: 8, status: "RESERVED" },
-  { id: "table-gd-6", areaId: "SEC-GD", tableNumber: "G-06 (Garden)", capacity: 10, status: "VACANT" },
-
-  // Bar & Lounge (4 tables)
-  {
-    id: "table-br-1",
-    areaId: "SEC-BR",
-    tableNumber: "B-01 (Bar)",
-    capacity: 2,
-    status: "OCCUPIED",
-    currentBillAmount: 1450,
-    assignedWaiter: "Capt. Vikram",
-    seatedSince: new Date(Date.now() - 40 * 60 * 1000),
-    orderNumber: "OUT-20260715-0041",
-  },
-  { id: "table-br-2", areaId: "SEC-BR", tableNumber: "B-02 (Bar)", capacity: 4, status: "VACANT" },
-  { id: "table-br-3", areaId: "SEC-BR", tableNumber: "B-03 (Bar)", capacity: 4, status: "VACANT" },
-  { id: "table-br-4", areaId: "SEC-BR", tableNumber: "B-04 (Bar)", capacity: 6, status: "VACANT" },
-];
+function normalizeTableStatus(status: unknown): TableStatus {
+  if (status === "AVAILABLE" || status === "VACANT") return "VACANT";
+  if (status === "OCCUPIED" || status === "BILLED" || status === "RESERVED") return status;
+  return "VACANT";
+}
 
 export const useTableStore = create<TableStoreState>((set, get) => ({
-  areas: MOCK_AREAS,
-  tables: MOCK_TABLES,
-  selectedAreaId: MOCK_AREAS[0]?.id ?? null,
+  areas: [],
+  tables: [],
+  selectedAreaId: null,
 
   setSelectedArea: (areaId) => set({ selectedAreaId: areaId }),
 
@@ -135,6 +63,14 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
               orderNumber: orderNumber ?? t.orderNumber,
             }
           : t
+      ),
+    });
+  },
+
+  setTableLock: (tableId, lockedBy) => {
+    set({
+      tables: get().tables.map((t) =>
+        t.id === tableId ? { ...t, lockedBy } : t
       ),
     });
   },
@@ -162,5 +98,71 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         return t;
       }),
     });
+  },
+
+  fetchTables: async () => {
+    try {
+      // 1. Load from IndexedDB
+      const cachedAreas = await db.areas.toArray();
+      const cachedTables = await db.posTables.toArray();
+      if (cachedAreas.length > 0 && cachedTables.length > 0) {
+        set({
+          areas: cachedAreas,
+          tables: cachedTables,
+          selectedAreaId: get().selectedAreaId || cachedAreas[0]?.id
+        });
+      }
+
+      // 2. Fetch from network
+      const { apiClient } = await import("../api/client");
+      const res = await apiClient<{ success: boolean; data: any[] }>("/tables").catch(() => null);
+      
+      if (res?.success) {
+        const backendTables = res.data;
+        
+        // Map backend tables to POSTable
+        const tables: POSTable[] = backendTables.map(t => ({
+          id: t.id,
+          areaId: t.section || "DEFAULT",
+          tableNumber: t.name,
+          capacity: t.capacity,
+          status: normalizeTableStatus(t.status),
+          currentBillAmount: t.currentOrder?.totalAmount,
+          assignedWaiter: t.currentOrder?.waiterName,
+          seatedSince: t.currentOrder ? new Date(t.currentOrder.createdAt) : undefined,
+          orderNumber: t.currentOrder?.orderNumber,
+        }));
+
+        // Deduce areas from tables
+        const areaMap = new Map<string, TableArea>();
+        tables.forEach(t => {
+          if (!areaMap.has(t.areaId)) {
+            areaMap.set(t.areaId, {
+              id: t.areaId,
+              name: t.areaId === "DEFAULT" ? "Main Area" : t.areaId,
+              tableCount: 0
+            });
+          }
+          areaMap.get(t.areaId)!.tableCount += 1;
+        });
+
+        const areas = Array.from(areaMap.values());
+        
+        await db.transaction('rw', db.areas, db.posTables, async () => {
+          await db.areas.clear();
+          await db.areas.bulkAdd(areas);
+          await db.posTables.clear();
+          await db.posTables.bulkAdd(tables);
+        });
+
+        set({
+          tables,
+          areas,
+          selectedAreaId: get().selectedAreaId || (areas.length > 0 ? areas[0]?.id : null),
+        });
+      }
+    } catch (err) {
+      console.error("Failed to fetch tables", err);
+    }
   },
 }));

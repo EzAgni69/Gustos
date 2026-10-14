@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Gusto KDS</string>
+    <string name="title_activity_main">Gusto KDS</string>
+    <string name="package_name">com.gusto.kds</string>
+    <string name="custom_url_scheme">com.gusto.kds</string>
+</resources>

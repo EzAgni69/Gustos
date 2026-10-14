@@ -1,6 +1,7 @@
 import React from "react";
 import { useCartStore } from "../../store/useCartStore";
 import { useUIStore } from "../../store/useUIStore";
+import { CashIcon, SplitIcon } from "../common/PaymentIcons";
 
 export const OrderCart: React.FC = () => {
   const {
@@ -18,15 +19,16 @@ export const OrderCart: React.FC = () => {
     clearCart,
     getTotals,
     holdCurrentBill,
+    fireKOT,
   } = useCartStore();
 
   const { openModal, showNotification } = useUIStore();
   const totals = getTotals();
 
   return (
-    <aside className="w-80 sm:w-96 bg-gray-900 border-l border-gray-800 flex flex-col h-full select-none shrink-0 shadow-2xl">
+    <aside className="w-80 sm:w-96 bg-surface border-l border-border flex flex-col h-full select-none shrink-0 shadow-2xl">
       {/* ─── Cart Header: Table, Mode & Pax ─── */}
-      <div className="bg-gray-950 px-4 py-3 border-b border-gray-800 space-y-2">
+      <div className="bg-background px-4 py-3 border-b border-border space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base">
@@ -39,10 +41,10 @@ export const OrderCart: React.FC = () => {
                     : "⚡"}
             </span>
             <div>
-              <div className="text-sm font-extrabold text-white">
+              <div className="text-sm font-extrabold text-text-inverse">
                 {orderMode === "DINE_IN" ? tableNumber || "Table Not Selected" : orderMode}
               </div>
-              <div className="text-[11px] text-gray-400 font-mono">
+              <div className="text-[11px] text-text-muted font-mono">
                 {assignedWaiter} • #OUT-20260715-0042
               </div>
             </div>
@@ -50,18 +52,18 @@ export const OrderCart: React.FC = () => {
 
           {/* Cover / Pax Stepper for Dine-In */}
           {orderMode === "DINE_IN" && (
-            <div className="flex items-center bg-gray-900 border border-gray-750 rounded-lg p-1 gap-1">
+            <div className="flex items-center bg-surface border border-border rounded-lg p-1 gap-1">
               <button
                 onClick={() => setPaxCount(paxCount - 1)}
-                className="w-5 h-5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded text-xs flex items-center justify-center font-bold"
+                className="w-5 h-5 bg-surface-hover hover:bg-surface-hover text-text-main rounded text-xs flex items-center justify-center font-bold"
                 title="Decrease covers"
               >
                 -
               </button>
-              <span className="text-xs font-bold text-orange-400 px-1 font-mono">{paxCount} Pax</span>
+              <span className="text-xs font-bold text-primary-hover px-1 font-mono">{paxCount} Pax</span>
               <button
                 onClick={() => setPaxCount(paxCount + 1)}
-                className="w-5 h-5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded text-xs flex items-center justify-center font-bold"
+                className="w-5 h-5 bg-surface-hover hover:bg-surface-hover text-text-main rounded text-xs flex items-center justify-center font-bold"
                 title="Increase covers"
               >
                 +
@@ -73,16 +75,16 @@ export const OrderCart: React.FC = () => {
         {/* Customer / CRM Link Pill [F9] */}
         <div className="flex items-center justify-between pt-1 border-t border-gray-900 text-xs">
           {customer ? (
-            <div className="flex items-center justify-between w-full bg-orange-600/10 border border-orange-500/30 px-2.5 py-1 rounded-md text-orange-300">
+            <div className="flex items-center justify-between w-full bg-primary/10 border border-primary px-2.5 py-1 rounded-md text-primary-hover">
               <div className="truncate flex items-center gap-1.5 font-medium">
                 <span>👤 {customer.name}</span>
-                <span className="text-[10px] bg-orange-600/30 px-1 rounded font-mono">
+                <span className="text-[10px] bg-primary/30 px-1 rounded font-mono">
                   {customer.loyaltyPoints ?? 0} Pts
                 </span>
               </div>
               <button
                 onClick={() => openModal("CUSTOMER")}
-                className="text-[11px] text-gray-400 hover:text-white ml-2 shrink-0"
+                className="text-[11px] text-text-muted hover:text-text-inverse ml-2 shrink-0"
               >
                 Edit
               </button>
@@ -90,10 +92,10 @@ export const OrderCart: React.FC = () => {
           ) : (
             <button
               onClick={() => openModal("CUSTOMER")}
-              className="w-full flex items-center justify-between bg-gray-900 hover:bg-gray-800 border border-dashed border-gray-700 px-2.5 py-1 rounded-md text-gray-400 hover:text-white transition-colors"
+              className="w-full flex items-center justify-between bg-surface hover:bg-surface-hover border border-dashed border-border-hover px-2.5 py-1 rounded-md text-text-muted hover:text-text-main transition-colors"
             >
               <span>+ Link Customer / Loyalty CRM</span>
-              <span className="text-[10px] font-mono text-gray-500">[F9]</span>
+              <span className="text-[10px] font-mono text-text-muted">[F9]</span>
             </button>
           )}
         </div>
@@ -102,27 +104,42 @@ export const OrderCart: React.FC = () => {
       {/* ─── Cart Items List ─── */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2.5 divide-y divide-gray-800/60">
         {items.map((item) => {
-          const itemSubtotal = Math.round(item.unitPrice * item.quantity * 100) / 100;
+          const addOnsTotal = item.addOns?.reduce((sum, ao) => sum + ao.unitPrice * ao.quantity, 0) ?? 0;
+          const itemSubtotal = Math.round((item.unitPrice + addOnsTotal) * item.quantity * 100) / 100;
 
           return (
             <div key={item.cartItemId} className="pt-2 first:pt-0 group flex flex-col gap-1.5">
               <div className="flex items-start justify-between gap-2">
                 {/* Item Name & Quantity Stepper */}
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs font-bold text-gray-100 group-hover:text-white leading-snug">
+                  <div className="text-xs font-bold text-text-main group-hover:text-text-inverse leading-snug flex items-center gap-1.5">
                     {item.menuItemName}
+                    {item.isSaved && (
+                      <span className="text-[9px] bg-secondary/20 text-secondary-hover px-1 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap">
+                        🔥 FIRED
+                      </span>
+                    )}
                   </div>
-                  <div className="text-[11px] text-gray-400 font-mono mt-0.5">
-                    ₹{item.unitPrice} each
+                  <div className="text-[11px] text-text-muted font-mono mt-0.5 flex flex-col">
+                    <span>₹{item.unitPrice} each</span>
+                    {item.addOns && item.addOns.length > 0 && (
+                      <div className="mt-0.5 flex flex-col gap-0.5">
+                        {item.addOns.map((ao, idx) => (
+                          <span key={idx} className="text-[10px] text-primary-hover">
+                            + {ao.quantity}× {ao.name} (₹{ao.unitPrice})
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 {/* Line Total & Remove */}
                 <div className="text-right shrink-0">
-                  <div className="text-xs font-black text-gray-100 font-mono">₹{itemSubtotal}</div>
+                  <div className="text-xs font-black text-text-main font-mono">₹{itemSubtotal}</div>
                   <button
                     onClick={() => removeItem(item.cartItemId)}
-                    className="text-[11px] text-gray-500 hover:text-rose-400 transition-colors mt-0.5 font-mono"
+                    className="text-[11px] text-text-muted hover:text-rose-400 transition-colors mt-0.5 font-mono"
                     title="Remove item from bill"
                   >
                     × Remove
@@ -132,19 +149,19 @@ export const OrderCart: React.FC = () => {
 
               {/* Quantity Control Stepper & Modifiers Button */}
               <div className="flex items-center justify-between gap-2 mt-0.5">
-                <div className="flex items-center bg-gray-950 border border-gray-800 rounded-md p-0.5 gap-1">
+                <div className="flex items-center bg-background border border-border rounded-md p-0.5 gap-1">
                   <button
                     onClick={() => updateQuantity(item.cartItemId, -1)}
-                    className="w-6 h-6 bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white rounded flex items-center justify-center font-bold text-xs"
+                    className="w-6 h-6 bg-surface hover:bg-surface-hover text-text-main hover:text-text-main rounded flex items-center justify-center font-bold text-xs"
                   >
                     -
                   </button>
-                  <span className="w-6 text-center text-xs font-bold text-orange-400 font-mono">
+                  <span className="w-6 text-center text-xs font-bold text-primary-hover font-mono">
                     {item.quantity}
                   </span>
                   <button
                     onClick={() => updateQuantity(item.cartItemId, +1)}
-                    className="w-6 h-6 bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white rounded flex items-center justify-center font-bold text-xs"
+                    className="w-6 h-6 bg-surface hover:bg-surface-hover text-text-main hover:text-text-main rounded flex items-center justify-center font-bold text-xs"
                   >
                     +
                   </button>
@@ -153,13 +170,13 @@ export const OrderCart: React.FC = () => {
                 {/* Modifiers display or toggle */}
                 <div className="flex items-center gap-1.5 overflow-hidden">
                   {item.modifiers && item.modifiers.length > 0 && (
-                    <span className="text-[10px] bg-orange-500/10 text-orange-300 border border-orange-500/20 px-1.5 py-0.5 rounded truncate max-w-[150px]">
+                    <span className="text-[10px] bg-primary-hover/10 text-primary-hover border border-primary px-1.5 py-0.5 rounded truncate max-w-[150px]">
                       {item.modifiers.join(", ")}
                     </span>
                   )}
                   <button
                     onClick={() => openModal("MODIFIERS", item.cartItemId)}
-                    className="text-[10px] bg-gray-800 hover:bg-gray-750 text-gray-400 hover:text-white px-1.5 py-0.5 rounded border border-gray-700 shrink-0"
+                    className="text-[10px] bg-surface-hover hover:bg-surface-hover text-text-muted hover:text-text-main px-1.5 py-0.5 rounded border border-border-hover shrink-0"
                     title="Customize item [Alt+M]"
                   >
                     {item.modifiers && item.modifiers.length > 0 ? "Edit Mods" : "+ Note/Mod"}
@@ -171,9 +188,9 @@ export const OrderCart: React.FC = () => {
         })}
 
         {items.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 py-16">
+          <div className="h-full flex flex-col items-center justify-center text-center text-text-muted py-16">
             <div className="text-4xl mb-2">🛒</div>
-            <p className="text-xs font-semibold text-gray-400">Cart is empty</p>
+            <p className="text-xs font-semibold text-text-muted">Cart is empty</p>
             <p className="text-[11px] text-gray-600 mt-1 max-w-[200px]">
               Tap items from grid or punch Short-Code in top search + Enter
             </p>
@@ -182,29 +199,29 @@ export const OrderCart: React.FC = () => {
       </div>
 
       {/* ─── Cart Totals Summary (@gusto/core-logic accuracy) ─── */}
-      <div className="bg-gray-950 border-t border-gray-800 p-3 space-y-1.5 text-xs">
-        <div className="flex justify-between text-gray-400">
+      <div className="bg-background border-t border-border p-3 space-y-1.5 text-xs">
+        <div className="flex justify-between text-text-muted">
           <span>Subtotal ({totals.itemCount} items)</span>
-          <span className="font-mono text-gray-200">₹{totals.subtotal}</span>
+          <span className="font-mono text-text-main">₹{totals.subtotal}</span>
         </div>
 
         {/* Discount Line */}
-        <div className="flex justify-between items-center text-gray-400">
+        <div className="flex justify-between items-center text-text-muted">
           <div className="flex items-center gap-1.5">
             <span>Discount</span>
             <button
               onClick={() => openModal("DISCOUNT")}
-              className="text-[10px] bg-gray-900 hover:bg-gray-800 text-orange-400 border border-gray-800 px-1.5 py-0.2 rounded font-mono"
+              className="text-[10px] bg-surface hover:bg-surface-hover text-primary-hover border border-border px-1.5 py-0.2 rounded font-mono"
             >
               [F4]
             </button>
           </div>
           {discount ? (
-            <div className="flex items-center gap-1 text-emerald-400 font-mono">
+            <div className="flex items-center gap-1 text-secondary-hover font-mono">
               <span>-₹{totals.discountAmount}</span>
               <button
                 onClick={() => setDiscount(undefined)}
-                className="text-gray-500 hover:text-rose-400 ml-1 font-sans font-bold"
+                className="text-text-muted hover:text-rose-400 ml-1 font-sans font-bold"
                 title="Remove discount"
               >
                 ×
@@ -213,7 +230,7 @@ export const OrderCart: React.FC = () => {
           ) : (
             <button
               onClick={() => openModal("DISCOUNT")}
-              className="text-gray-500 hover:text-gray-300 font-mono text-[11px]"
+              className="text-text-muted hover:text-text-main font-mono text-[11px]"
             >
               Add Discount
             </button>
@@ -222,20 +239,36 @@ export const OrderCart: React.FC = () => {
 
         {/* GST Tax Breakdown */}
         {totals.taxBreakdown.map((tax, idx) => (
-          <div key={idx} className="flex justify-between text-[11px] text-gray-500 font-mono">
+          <div key={idx} className="flex justify-between text-[11px] text-text-muted font-mono">
             <span>GST ({tax.taxRate}%) — CGST + SGST</span>
             <span>₹{tax.totalTax}</span>
           </div>
         ))}
 
-        <div className="border-t border-gray-800/80 pt-2 flex items-center justify-between font-extrabold">
-          <span className="text-sm text-gray-100">NET PAYABLE</span>
-          <span className="text-xl text-orange-400 font-mono">₹{totals.grandTotal}</span>
+        <div className="border-t border-border/80 pt-2 flex items-center justify-between font-extrabold">
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm text-text-main">NET PAYABLE</span>
+            <button
+              onClick={() => {
+                if (items.length === 0) {
+                  showNotification("⚠️ Cart is empty. Add items before viewing bill paper.");
+                  return;
+                }
+                openModal("BILL_PREVIEW");
+              }}
+              className="text-[10px] bg-primary/10 hover:bg-primary/20 text-primary-hover border border-primary/30 px-2 py-0.5 rounded font-mono font-bold flex items-center gap-1 transition-all active:scale-95"
+              title="Preview 80mm thermal bill paper with 3D backside roll [F11]"
+            >
+              <span>🧾 Bill Paper</span>
+              <span className="text-[9px] opacity-75">[F11]</span>
+            </button>
+          </div>
+          <span className="text-xl text-primary-hover font-mono">₹{totals.grandTotal}</span>
         </div>
       </div>
 
-      {/* ─── Bottom Action Bar (Hold F3, Clear, Settle F12) ─── */}
-      <div className="bg-gray-900 border-t border-gray-800 p-3 grid grid-cols-2 gap-2">
+      {/* ─── Bottom Action Bar (Hold F3, Fire KOT, Split, Settle F12) ─── */}
+      <div className="bg-surface border-t border-border p-3 grid grid-cols-3 gap-2">
         <button
           onClick={() => {
             if (items.length > 0) {
@@ -245,24 +278,47 @@ export const OrderCart: React.FC = () => {
               openModal("HOLD_BILLS");
             }
           }}
-          className="bg-gray-800 hover:bg-gray-750 border border-gray-700 text-gray-200 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+          className="bg-surface-hover hover:bg-surface-hover border border-border-hover text-text-main py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
         >
-          <span>⏸️ Hold Bill</span>
-          <span className="text-[10px] text-gray-500 font-mono">[F3]</span>
+          <span>⏸️ Hold / Park</span>
+          <span className="text-[10px] text-text-muted font-mono">[F3]</span>
+        </button>
+
+        <button
+          onClick={async () => {
+            if (items.length > 0 && items.some(i => !i.isSaved)) {
+              await fireKOT();
+              showNotification("🔥 KOT Fired to Kitchen!");
+            } else if (items.length === 0) {
+              showNotification("⚠️ Cart is empty. Cannot fire KOT.");
+            } else {
+              showNotification("ℹ️ All items are already fired to KOT.");
+            }
+          }}
+          className={`border py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all ${
+            items.some(i => !i.isSaved) 
+              ? "bg-highlight hover:bg-highlight-hover text-text-inverse border-highlight/50 shadow-md shadow-amber-600/20" 
+              : "bg-surface-hover border-border-hover text-text-muted cursor-not-allowed"
+          }`}
+        >
+          <span>🔥 Fire KOT</span>
         </button>
 
         <button
           onClick={() => {
-            if (items.length > 0) {
-              if (window.confirm("Are you sure you want to clear current order items?")) {
-                clearCart();
-                showNotification("🗑️ Cart cleared");
-              }
+            if (items.length === 0) {
+              showNotification("⚠️ Cart is empty. Cannot split bill.");
+              return;
             }
+            openModal("SPLIT_BILL");
           }}
-          className="bg-gray-800 hover:bg-rose-900/30 border border-gray-700 hover:border-rose-500/40 text-gray-400 hover:text-rose-300 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+          className="bg-surface-hover hover:bg-surface-hover border border-border-hover text-text-main py-2 rounded-lg text-xs font-bold flex flex-col items-center justify-center gap-0.5 active:scale-[0.98] transition-all"
         >
-          <span>🗑️ Clear</span>
+          <div className="flex items-center gap-1.5">
+            <SplitIcon className="w-4 h-4" />
+            <span>Split</span>
+          </div>
+          <span className="text-[10px] text-text-muted font-mono">[F6]</span>
         </button>
 
         <button
@@ -273,10 +329,11 @@ export const OrderCart: React.FC = () => {
             }
             openModal("PAYMENT");
           }}
-          className="col-span-2 bg-orange-600 hover:bg-orange-500 text-white font-black py-3 rounded-xl text-sm shadow-xl shadow-orange-600/30 flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+          className="col-span-3 bg-primary hover:bg-primary-hover text-text-inverse font-black py-3 rounded-xl text-sm shadow-xl shadow-primary/30 flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
         >
-          <span>💵 SETTLE & PAY</span>
-          <span className="bg-orange-700/80 px-2 py-0.5 rounded text-xs font-mono border border-orange-500/40">
+          <CashIcon className="w-5 h-5 shrink-0" />
+          <span>SETTLE & PAY</span>
+          <span className="bg-orange-700/80 px-2 py-0.5 rounded text-xs font-mono border border-primary">
             F12 / Enter
           </span>
         </button>

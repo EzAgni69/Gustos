@@ -110,18 +110,70 @@ export default function CartScreen() {
         <Text style={styles.sectionTitle}>Items ({items.reduce((s, i) => s + i.quantity, 0)})</Text>
         <View style={styles.itemsCard}>
           {items.map((item) => (
-            <View key={item.menuItemId} style={styles.itemRow}>
+            <View key={item.cartKey} style={styles.itemRow}>
               <View style={styles.itemDetails}>
-                <Text style={styles.itemName}>{item.menuItemName}</Text>
-                {item.modifiers.length > 0 && (
-                  <Text style={styles.itemModifiers}>{item.modifiers.join(", ")}</Text>
+                <View style={styles.itemNameRow}>
+                  <Text style={styles.itemName}>{item.menuItemName}</Text>
+                  {item.variantName ? (
+                    <View style={styles.variantBadge}>
+                      <Text style={styles.variantBadgeText}>
+                        {item.variantName === '12"' ? '12" L' : item.variantName === '8"' ? '8" R' : item.variantName}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                {item.addOns.length > 0 && (
+                  <View style={styles.addOnsList}>
+                    {item.addOns.map((ao) => (
+                      <Text key={ao.name} style={styles.addOnText}>
+                        + {ao.name} ×{ao.quantity} (₹{(ao.unitPrice * ao.quantity).toFixed(0)})
+                      </Text>
+                    ))}
+                  </View>
                 )}
-                <Text style={styles.itemPrice}>₹{(item.unitPrice * item.quantity).toFixed(0)}</Text>
+
+                {item.modifiers.length > 0 && (
+                  <View style={styles.modifiersWrap}>
+                    {item.modifiers.map((m, idx) => {
+                      const isHalf = m.startsWith("L:") && m.includes("R:");
+                      const isDrink = m.startsWith("Drink:");
+                      return (
+                        <View
+                          key={idx}
+                          style={[
+                            styles.modPill,
+                            isHalf && styles.modPillHalf,
+                            isDrink && styles.modPillDrink,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.modPillText,
+                              isHalf && styles.modPillTextHalf,
+                              isDrink && styles.modPillTextDrink,
+                            ]}
+                          >
+                            {m}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {item.notes ? (
+                  <Text style={styles.itemNotes}>📝 {item.notes}</Text>
+                ) : null}
+
+                <Text style={styles.itemPrice}>
+                  ₹{((item.unitPrice + item.addOns.reduce((s, a) => s + a.unitPrice * a.quantity, 0)) * item.quantity).toFixed(0)}
+                </Text>
               </View>
               <View style={styles.itemActions}>
                 <QuantityStepper 
                   quantity={item.quantity} 
-                  onChange={(q) => updateQuantity(item.menuItemId, q)} 
+                  onChange={(q) => updateQuantity(item.cartKey, q)} 
                 />
               </View>
             </View>
@@ -148,7 +200,7 @@ export default function CartScreen() {
         <View style={styles.totalsCard}>
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Subtotal</Text>
-            <Text style={styles.totalValue}>₹{getSubtotal().toFixed(0)}</Text>
+            <Text style={styles.totalValue}>₹{Number(getSubtotal()).toFixed(0)}</Text>
           </View>
           <Text style={styles.taxNote}>+ Taxes calculated upon order creation</Text>
         </View>
@@ -191,8 +243,20 @@ const styles = StyleSheet.create({
   itemsCard: { backgroundColor: colors.bgCard, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
   itemRow: { flexDirection: "row", padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.borderLight },
   itemDetails: { flex: 1, justifyContent: "center" },
+  itemNameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
   itemName: { fontSize: fontSize.md, color: colors.textPrimary, fontWeight: fontWeight.semibold },
-  itemModifiers: { fontSize: fontSize.sm, color: colors.textTertiary, marginTop: 4 },
+  variantBadge: { backgroundColor: colors.accentBg, paddingHorizontal: spacing.xs, paddingVertical: 1, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.accent },
+  variantBadgeText: { fontSize: 10, color: colors.accent, fontWeight: fontWeight.bold },
+  addOnsList: { marginTop: 4 },
+  addOnText: { fontSize: fontSize.xs, color: colors.info, marginTop: 1 },
+  modifiersWrap: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 },
+  modPill: { backgroundColor: colors.bgInput, paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.sm },
+  modPillHalf: { backgroundColor: "rgba(249, 115, 22, 0.15)", borderWidth: 1, borderColor: colors.accent },
+  modPillDrink: { backgroundColor: "rgba(59, 130, 246, 0.15)", borderWidth: 1, borderColor: colors.info },
+  modPillText: { fontSize: 11, color: colors.textSecondary },
+  modPillTextHalf: { color: colors.accent, fontWeight: fontWeight.semibold },
+  modPillTextDrink: { color: colors.info, fontWeight: fontWeight.semibold },
+  itemNotes: { fontSize: fontSize.sm, color: colors.warning, fontStyle: "italic", marginTop: 2 },
   itemPrice: { fontSize: fontSize.md, color: colors.textSecondary, marginTop: 4 },
   itemActions: { justifyContent: "center" },
   notesInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.borderLight, borderRadius: radius.md, padding: spacing.md, color: colors.textPrimary, minHeight: 80, fontSize: fontSize.md, textAlignVertical: "top" },

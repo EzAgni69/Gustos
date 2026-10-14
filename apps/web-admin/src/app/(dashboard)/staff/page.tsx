@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -38,13 +41,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Users, Plus, MoreHorizontal, Loader2, Edit, Trash2 } from "lucide-react";
+import { Users, Plus, MoreHorizontal, Loader2, Edit, Trash2, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 
 export default function StaffPage() {
+  const { toast } = useToast();
   const [staff, setStaff] = useState<User[]>([]);
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -66,8 +73,9 @@ export default function StaffPage() {
 
   const loadData = async () => {
     setLoading(true);
+    setError("");
     const [staffRes, outletsRes] = await Promise.all([
-      apiFetch<User[]>("/users"),
+      apiFetch<User[]>(`/users?page=${page}&limit=20`),
       apiFetch<Outlet[]>("/outlets")
     ]);
 
@@ -77,27 +85,18 @@ export default function StaffPage() {
 
     if (staffRes.success && staffRes.data) {
       setStaff(staffRes.data);
+      if ((staffRes as any).pagination) {
+        setTotalPages((staffRes as any).pagination.totalPages);
+      }
     } else {
-      // Mock fallback data for visual demo if server is offline
-      setStaff([
-        {
-          id: "1",
-          organizationId: "org-1",
-          name: "Ravi Kumar",
-          email: "ravi.kumar@gusto.com",
-          role: "MANAGER",
-          isActive: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ]);
+      setError(staffRes.message || "Failed to load staff members. Please check your connection.");
     }
     setLoading(false);
   };
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [page]);
 
   const openCreateModal = () => {
     setEditingUser(null);
@@ -149,7 +148,7 @@ export default function StaffPage() {
         setStaff(staff.map(s => s.id === editingUser.id ? res.data! : s));
         setIsModalOpen(false);
       } else {
-        alert(res.message || "Failed to update employee");
+        toast({ title: "Update failed", description: res.message || "Failed to update employee", variant: "error" });
       }
     } else {
       // Create
@@ -168,7 +167,7 @@ export default function StaffPage() {
         setStaff([...staff, res.data]);
         setIsModalOpen(false);
       } else {
-        alert(res.message || "Failed to create employee");
+        toast({ title: "Creation failed", description: res.message || "Failed to create employee", variant: "error" });
       }
     }
 
@@ -183,7 +182,7 @@ export default function StaffPage() {
       // Update status to inactive locally since it's a soft delete
       setStaff(staff.map(s => s.id === id ? { ...s, isActive: false } : s));
     } else {
-      alert(res.message || "Failed to deactivate employee");
+      toast({ title: "Deactivation failed", description: res.message || "Failed to deactivate employee", variant: "error" });
     }
   };
 
@@ -304,80 +303,138 @@ export default function StaffPage() {
         </Dialog>
       </div>
 
-      <Card className="shadow-xs border-gray-100">
-        <CardHeader className="bg-gray-50/50 border-b border-gray-100">
-          <div className="flex items-center gap-2">
-            <Users className="w-5 h-5 text-blue-600" />
-            <div>
-              <CardTitle className="text-lg">Team Members</CardTitle>
-              <CardDescription>A complete list of registered staff members.</CardDescription>
+      <Tabs defaultValue="staff" className="w-full">
+        <TabsList className="mb-4">
+          <TabsTrigger value="staff" className="gap-2">
+            <Users className="w-4 h-4" />
+            Staff Members
+          </TabsTrigger>
+          <TabsTrigger value="roles" className="gap-2">
+            <ShieldCheck className="w-4 h-4" />
+            Role & Permissions Matrix
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="staff">
+          {error && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-medium flex items-center gap-2">
+              <span>⚠️</span>
+              <span>{error}</span>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="p-8 text-center text-gray-500 flex items-center justify-center gap-2">
-              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-              Loading staff members...
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-gray-50 hover:bg-gray-50">
-                  <TableHead className="w-[250px]">Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {staff.map((employee) => (
-                  <TableRow key={employee.id}>
-                    <TableCell className="font-medium text-gray-900">{employee.name}</TableCell>
-                    <TableCell className="text-gray-500">{employee.email || "—"}</TableCell>
-                    <TableCell>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">
-                        {employee.role}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          employee.isActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-800"
-                        }`}
-                      >
-                        {employee.isActive ? "Active" : "Inactive"}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger>
-                          <Button variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600">
-                            <MoreHorizontal className="w-4 h-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openEditModal(employee)}>
-                            <Edit className="w-4 h-4 mr-2" />
-                            Edit
-                          </DropdownMenuItem>
-                          {employee.isActive && (
-                            <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteEmployee(employee.id)}>
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Deactivate
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
           )}
-        </CardContent>
-      </Card>
+          <Card className="shadow-xs border-gray-100">
+            <CardHeader className="bg-gray-50/50 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-blue-600" />
+                <div>
+                  <CardTitle className="text-lg">Team Members</CardTitle>
+                  <CardDescription>A complete list of registered staff members.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {loading ? (
+                <div className="p-8 text-center text-gray-500 flex items-center justify-center gap-2">
+                  <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                  Loading staff members...
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-gray-50 hover:bg-gray-50">
+                      <TableHead className="w-[250px]">Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {staff.map((employee) => (                      <TableRow key={employee.id}>
+                        <TableCell className="font-medium text-gray-900">{employee.name}</TableCell>
+                        <TableCell className="text-gray-500">{employee.email || "—"}</TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">
+                            {employee.role}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              employee.isActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-800"
+                            }`}
+                          >
+                            {employee.isActive ? "Active" : "Inactive"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger>
+                              <Button variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600">
+                                <MoreHorizontal className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => openEditModal(employee)}>
+                                <Edit className="w-4 h-4 mr-2" />
+                                Edit
+                              </DropdownMenuItem>
+                              {employee.isActive && (
+                                <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteEmployee(employee.id)}>
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  Deactivate
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between px-6 py-3 border-t border-gray-100">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="roles">
+          <Card className="shadow-xs border-gray-100">
+            <CardHeader className="bg-gray-50/50 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-blue-600" />
+                <div>
+                  <CardTitle className="text-lg">Permission Matrix</CardTitle>
+                  <CardDescription>Configure specific permissions for each role dynamically.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-8 text-center text-gray-500">
+              Permission UI editor coming soon.
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

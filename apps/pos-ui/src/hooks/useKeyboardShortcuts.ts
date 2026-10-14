@@ -116,6 +116,15 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // ─── F11 / Alt+B : 80mm Bill Paper Preview (Front/Back) ───
+      if (e.key === "F11" || (e.altKey && e.key.toLowerCase() === "b")) {
+        e.preventDefault();
+        if (activeModal === "BILL_PREVIEW") closeModal();
+        else if (items.length > 0) openModal("BILL_PREVIEW");
+        else showNotification("⚠️ Add items to bill before viewing bill paper.");
+        return;
+      }
+
       // ─── F12 / Ctrl+Enter : Settle & Pay (Payment Modal) ───
       if (e.key === "F12" || (e.ctrlKey && e.key === "Enter")) {
         e.preventDefault();

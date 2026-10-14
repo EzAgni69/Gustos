@@ -4,22 +4,40 @@
  * Manages the cart (items being assembled before order creation)
  * and a queue of pending orders for offline resilience.
  * Persisted to AsyncStorage so orders aren't lost in Wi-Fi dead zones.
+ *
+ * Cart items are keyed by a composite key (menuItemId + variantName)
+ * so that the same item with different variants creates separate lines.
  */
 
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { asyncStorageAdapter } from "../lib/storage";
-import type { MenuItemResponse, AddItemInput } from "../services/api";
+import type { MenuItemResponse, AddItemInput, AddItemAddOn } from "../services/api";
+
+export interface CartItemAddOn {
+  name: string;
+  quantity: number;
+  unitPrice: number;
+}
 
 export interface CartItem {
+  /** Composite key: menuItemId or menuItemId::variantName */
+  cartKey: string;
   menuItemId: string;
   menuItemName: string;
+  variantName: string;
   quantity: number;
   unitPrice: number;
   gstRate: string;
   isVeg: boolean;
   modifiers: string[];
+  addOns: CartItemAddOn[];
   notes: string;
+}
+
+/** Build a composite key for cart deduplication */
+export function buildCartKey(menuItemId: string, variantName?: string): string {
+  return variantName ? `${menuItemId}::${variantName}` : menuItemId;
 }
 
 interface CartState {
@@ -41,10 +59,21 @@ interface CartState {
   setExistingOrder: (orderId: string) => void;
 
   addItem: (menuItem: MenuItemResponse) => void;
-  removeItem: (menuItemId: string) => void;
-  updateQuantity: (menuItemId: string, quantity: number) => void;
-  setItemModifiers: (menuItemId: string, modifiers: string[]) => void;
-  setItemNotes: (menuItemId: string, notes: string) => void;
+  /** Add or update an item with full customization (variant, add-ons, modifiers, notes) */
+  upsertItem: (params: {
+    menuItem: MenuItemResponse;
+    variantName?: string;
+    variantPrice?: number;
+    quantity: number;
+    modifiers: string[];
+    addOns: CartItemAddOn[];
+    notes: string;
+  }) => void;
+  removeItem: (cartKey: string) => void;
+  updateQuantity: (cartKey: string, quantity: number) => void;
+  setItemModifiers: (cartKey: string, modifiers: string[]) => void;
+  setItemAddOns: (cartKey: string, addOns: CartItemAddOn[]) => void;
+  setItemNotes: (cartKey: string, notes: string) => void;
 
   clearCart: () => void;
 
@@ -72,12 +101,13 @@ export const useCartStore = create<CartState>()(
 
       addItem: (menuItem) => {
         const { items } = get();
-        const existing = items.find((i) => i.menuItemId === menuItem.id);
+        const cartKey = buildCartKey(menuItem.id);
+        const existing = items.find((i) => i.cartKey === cartKey);
 
         if (existing) {
           set({
             items: items.map((i) =>
-              i.menuItemId === menuItem.id
+              i.cartKey === cartKey
                 ? { ...i, quantity: i.quantity + 1 }
                 : i
             ),
@@ -87,13 +117,16 @@ export const useCartStore = create<CartState>()(
             items: [
               ...items,
               {
+                cartKey,
                 menuItemId: menuItem.id,
                 menuItemName: menuItem.name,
+                variantName: "",
                 quantity: 1,
                 unitPrice: menuItem.price,
                 gstRate: menuItem.gstRate,
                 isVeg: menuItem.isVeg,
                 modifiers: [],
+                addOns: [],
                 notes: "",
               },
             ],
@@ -101,34 +134,86 @@ export const useCartStore = create<CartState>()(
         }
       },
 
-      removeItem: (menuItemId) => {
-        set({ items: get().items.filter((i) => i.menuItemId !== menuItemId) });
+      upsertItem: ({ menuItem, variantName, variantPrice, quantity, modifiers, addOns, notes }) => {
+        const { items } = get();
+        const cartKey = buildCartKey(menuItem.id, variantName);
+        const existing = items.find((i) => i.cartKey === cartKey);
+
+        if (existing) {
+          // Update existing line
+          set({
+            items: items.map((i) =>
+              i.cartKey === cartKey
+                ? {
+                    ...i,
+                    quantity,
+                    unitPrice: variantPrice ?? menuItem.price,
+                    modifiers,
+                    addOns,
+                    notes,
+                  }
+                : i
+            ),
+          });
+        } else if (quantity > 0) {
+          // Add new line
+          set({
+            items: [
+              ...items,
+              {
+                cartKey,
+                menuItemId: menuItem.id,
+                menuItemName: menuItem.name,
+                variantName: variantName || "",
+                quantity,
+                unitPrice: variantPrice ?? menuItem.price,
+                gstRate: menuItem.gstRate,
+                isVeg: menuItem.isVeg,
+                modifiers,
+                addOns,
+                notes,
+              },
+            ],
+          });
+        }
       },
 
-      updateQuantity: (menuItemId, quantity) => {
+      removeItem: (cartKey) => {
+        set({ items: get().items.filter((i) => i.cartKey !== cartKey) });
+      },
+
+      updateQuantity: (cartKey, quantity) => {
         if (quantity <= 0) {
-          get().removeItem(menuItemId);
+          get().removeItem(cartKey);
           return;
         }
         set({
           items: get().items.map((i) =>
-            i.menuItemId === menuItemId ? { ...i, quantity } : i
+            i.cartKey === cartKey ? { ...i, quantity } : i
           ),
         });
       },
 
-      setItemModifiers: (menuItemId, modifiers) => {
+      setItemModifiers: (cartKey, modifiers) => {
         set({
           items: get().items.map((i) =>
-            i.menuItemId === menuItemId ? { ...i, modifiers } : i
+            i.cartKey === cartKey ? { ...i, modifiers } : i
           ),
         });
       },
 
-      setItemNotes: (menuItemId, notes) => {
+      setItemAddOns: (cartKey, addOns) => {
         set({
           items: get().items.map((i) =>
-            i.menuItemId === menuItemId ? { ...i, notes } : i
+            i.cartKey === cartKey ? { ...i, addOns } : i
+          ),
+        });
+      },
+
+      setItemNotes: (cartKey, notes) => {
+        set({
+          items: get().items.map((i) =>
+            i.cartKey === cartKey ? { ...i, notes } : i
           ),
         });
       },
@@ -146,18 +231,40 @@ export const useCartStore = create<CartState>()(
       getItemCount: () => get().items.reduce((sum, i) => sum + i.quantity, 0),
 
       getSubtotal: () =>
-        get().items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0),
+        get().items.reduce((sum, i) => {
+          let lineTotal = i.unitPrice * i.quantity;
+          // Include add-on costs
+          for (const addon of i.addOns) {
+            lineTotal += addon.unitPrice * addon.quantity * i.quantity;
+          }
+          return sum + lineTotal;
+        }, 0),
 
       toAddItemInputs: (): AddItemInput[] =>
-        get().items.map((item) => ({
-          menuItemId: item.menuItemId,
-          menuItemName: item.menuItemName,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          gstRate: item.gstRate,
-          modifiers: item.modifiers.length > 0 ? item.modifiers : undefined,
-          notes: item.notes || undefined,
-        })),
+        get().items.map((item) => {
+          // Build add-on inputs with calculated amount
+          const addOnInputs: AddItemAddOn[] | undefined =
+            item.addOns.length > 0
+              ? item.addOns.map((a) => ({
+                  name: a.name,
+                  quantity: a.quantity,
+                  unitPrice: a.unitPrice,
+                  amount: Math.round(a.unitPrice * a.quantity * 100) / 100,
+                }))
+              : undefined;
+
+          return {
+            menuItemId: item.menuItemId,
+            menuItemName: item.menuItemName,
+            variantName: item.variantName || undefined,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            gstRate: item.gstRate,
+            modifiers: item.modifiers.length > 0 ? item.modifiers : undefined,
+            addOns: addOnInputs,
+            notes: item.notes || undefined,
+          };
+        }),
     }),
     {
       name: "gusto-captain-cart",

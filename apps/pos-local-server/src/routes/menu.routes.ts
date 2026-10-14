@@ -55,7 +55,12 @@ router.get("/items", (req, res) => {
     items = items.filter((item) => item.isAvailable);
   }
 
-  res.json({ success: true, data: items });
+  const itemsWithShortCode = items.map((item) => ({
+    ...item,
+    shortCode: String(item.sortOrder),
+  }));
+
+  res.json({ success: true, data: itemsWithShortCode });
 });
 
 /**

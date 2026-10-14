@@ -1,5 +1,7 @@
 "use client";
 
+import { useToast } from "@/lib/toast";
+
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -85,12 +87,15 @@ const updateOrderSchema = z.object({
 type UpdateOrderForm = z.infer<typeof updateOrderSchema>;
 
 export default function OrdersPage() {
+  const { toast } = useToast();
   const [orders, setOrders] = useState<Order[]>([]);
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [currentOutletId, setCurrentOutletId] = useState("");
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("ALL");
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -98,6 +103,7 @@ export default function OrdersPage() {
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
 
   const form = useForm<UpdateOrderForm>({
+    // @ts-ignore: Zod type mismatch across package boundaries
     resolver: zodResolver(updateOrderSchema),
     defaultValues: {
       status: "PLACED",
@@ -118,9 +124,12 @@ export default function OrdersPage() {
         setCurrentOutletId(initialOutletId);
       }
 
-      const ordersRes = await apiFetch<Order[]>(`/orders?outletId=${initialOutletId}&limit=100`);
+      const ordersRes = await apiFetch<Order[]>(`/orders?outletId=${initialOutletId}&page=${page}&limit=20`);
       if (ordersRes.success && ordersRes.data) {
         setOrders(ordersRes.data);
+        if ((ordersRes as any).pagination) {
+          setTotalPages((ordersRes as any).pagination.totalPages);
+        }
       }
     }
 
@@ -129,7 +138,7 @@ export default function OrdersPage() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [page]);
 
   const filteredOrders =
     activeTab === "ALL"
@@ -177,7 +186,7 @@ export default function OrdersPage() {
       setOrders(orders.map(o => o.id === editingOrder.id ? res.data! : o));
       setIsModalOpen(false);
     } else {
-      alert(res.message || "Failed to update order");
+      toast({ title: "Update failed", description: res.message || "Failed to update order", variant: "error" });
     }
     setIsSubmitting(false);
   };
@@ -188,7 +197,7 @@ export default function OrdersPage() {
     if (res.success) {
       setOrders(orders.filter(o => o.id !== id));
     } else {
-      alert(res.message || "Failed to delete order");
+      toast({ title: "Delete failed", description: res.message || "Failed to delete order", variant: "error" });
     }
   };
 
@@ -592,6 +601,27 @@ export default function OrdersPage() {
                   </Table>
                 )}
               </CardContent>
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-6 py-3 border-t border-gray-100">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                  >
+                    Previous
+                  </Button>
+                  <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                    disabled={page === totalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
             </Card>
           </TabsContent>
         ))}
