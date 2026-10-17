@@ -9,6 +9,7 @@ dist-packages/
 .expo/
 out/
 build/
+*.tsbuildinfo
 
 # Turbo
 .turbo/
