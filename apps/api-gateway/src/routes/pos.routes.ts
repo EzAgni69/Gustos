@@ -34,17 +34,23 @@ export async function posRoutes(fastify: FastifyInstance) {
 
   // ─── POS PIN Login (For MVP Development) ───
   fastify.post("/api/v1/pos/pin-login", async (request, reply) => {
-    const { pin } = request.body as { pin: string };
+    const { pin, userId } = request.body as { pin: string; userId?: string };
     
     if (!pin) {
       return reply.status(400).send(error("PIN is required"));
     }
 
+    const whereConditions = [
+      eq(cloudSchema.users.pin, pin),
+      eq(cloudSchema.users.isActive, true),
+    ];
+
+    if (userId) {
+      whereConditions.push(eq(cloudSchema.users.id, userId));
+    }
+
     const user = await db.query.users.findFirst({
-      where: and(
-        eq(cloudSchema.users.pin, pin),
-        eq(cloudSchema.users.isActive, true)
-      ),
+      where: and(...whereConditions),
     });
 
     if (!user) {

@@ -82,6 +82,7 @@ export interface CartStoreState {
   holdCurrentBill: (reason?: string) => Promise<void>;
   fetchHeldBills: () => Promise<void>;
   retrieveHeldBill: (heldBillId: string) => Promise<void>;
+  loadTableOrder: (tableId: string, tableNumber?: string, orderId?: string) => Promise<boolean>;
   fireKOT: () => Promise<void>;
   checkoutOrder: (payload: {
     paymentMode: string;
@@ -95,6 +96,19 @@ export interface CartStoreState {
 }
 
 let cartIdCounter = 1;
+
+function safeParseJson<T>(val: any, fallback: T): T {
+  if (val === null || val === undefined) return fallback;
+  if (Array.isArray(val) || (typeof val === "object" && val !== null)) return val as T;
+  if (typeof val === "string") {
+    try {
+      return JSON.parse(val);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
 
 export const useCartStore = create<CartStoreState>((set, get) => ({
   activeOrderId: null,
@@ -405,50 +419,62 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
 
   fetchHeldBills: async () => {
     try {
-      const [draftRes, progressRes] = await Promise.all([
-        apiClient<{ success: boolean; data: any[] }>("/orders?status=DRAFT"),
-        apiClient<{ success: boolean; data: any[] }>("/orders?status=IN_PROGRESS")
-      ]);
-      
+      // Query all active orders first
+      const activeRes = await apiClient<{ success: boolean; data: any[] }>("/orders?active=true").catch(() => null);
       let allOrders: any[] = [];
-      if (draftRes.success) allOrders = [...allOrders, ...draftRes.data];
-      if (progressRes.success) allOrders = [...allOrders, ...progressRes.data];
+      if (activeRes?.success && Array.isArray(activeRes.data)) {
+        allOrders = activeRes.data;
+      } else {
+        const [draftRes, progressRes, placedRes] = await Promise.all([
+          apiClient<{ success: boolean; data: any[] }>("/orders?status=DRAFT").catch(() => ({ success: false, data: [] })),
+          apiClient<{ success: boolean; data: any[] }>("/orders?status=IN_PROGRESS").catch(() => ({ success: false, data: [] })),
+          apiClient<{ success: boolean; data: any[] }>("/orders?status=PLACED").catch(() => ({ success: false, data: [] })),
+        ]);
+        if (draftRes.success) allOrders.push(...draftRes.data);
+        if (progressRes.success) allOrders.push(...progressRes.data);
+        if (placedRes.success) allOrders.push(...placedRes.data);
+      }
+
+      // Map table names from useTableStore so bills display human-friendly table numbers
+      const { useTableStore } = await import("./useTableStore");
+      const tables = useTableStore.getState().tables;
+      const tableMap = new Map(tables.map(t => [t.id, t.tableNumber]));
 
       const bills: HeldBill[] = allOrders.map(order => ({
-          id: order.id,
-          orderNumber: order.orderNumber,
-          orderMode: order.orderMode as OrderMode,
-          tableId: order.tableId,
-          tableNumber: order.tableId, // backend doesn't return table name in order list, UI will map it if needed
-          paxCount: order.paxCount,
-          assignedWaiter: order.waiterName || "Counter",
-          customer: order.customerName ? { name: order.customerName, phone: order.customerPhone || "" } : null,
-          items: (order.items || []).map((i: any) => ({
-            cartItemId: i.id,
-            menuItemId: i.menuItemId,
-            menuItemName: i.menuItemName,
-            variantName: i.variantName,
-            quantity: i.quantity,
-            unitPrice: i.unitPrice,
-            gstRate: i.gstRate,
-            modifiers: i.modifiers ? JSON.parse(i.modifiers) : undefined,
-            addOns: i.addOns ? JSON.parse(i.addOns) : undefined,
-            notes: i.notes,
-            isSaved: true,
-          })),
-          discount: order.discountType ? { type: order.discountType, value: order.discountValue } : undefined,
-          heldAt: new Date(order.createdAt),
-          reason: order.notes,
-        }));
-        set({ heldBills: bills });
+        id: order.id,
+        orderNumber: order.orderNumber,
+        orderMode: order.orderMode as OrderMode,
+        tableId: order.tableId,
+        tableNumber: order.tableId ? (tableMap.get(order.tableId) || order.tableNumber || `Table ${order.tableId}`) : null,
+        paxCount: order.paxCount || 1,
+        assignedWaiter: order.waiterName || "Counter",
+        customer: order.customerName ? { name: order.customerName, phone: order.customerPhone || "" } : null,
+        items: (order.items || []).map((i: any) => ({
+          cartItemId: i.id,
+          menuItemId: i.menuItemId,
+          menuItemName: i.menuItemName,
+          variantName: i.variantName,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          gstRate: i.gstRate,
+          modifiers: safeParseJson<string[]>(i.modifiers, []),
+          addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
+          notes: i.notes || "",
+          isSaved: true,
+        })),
+        discount: order.discountType ? { type: order.discountType, value: order.discountValue } : undefined,
+        heldAt: new Date(order.createdAt),
+        reason: order.notes,
+      }));
+      set({ heldBills: bills });
     } catch (e) {
       console.error("Failed to fetch held bills", e);
     }
   },
 
   retrieveHeldBill: async (heldBillId) => {
-    // If current cart has items, hold it first automatically
-    if (get().items.length > 0 && get().activeOrderId !== heldBillId) {
+    // If current cart has unsaved items, hold it first automatically
+    if (get().items.length > 0 && get().activeOrderId !== heldBillId && get().items.some(i => !i.isSaved)) {
       await get().holdCurrentBill("Auto-held during retrieval");
     }
 
@@ -460,21 +486,28 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           cartItemId: i.id, // Use backend order_item.id
           menuItemId: i.menuItemId,
           menuItemName: i.menuItemName,
+          variantName: i.variantName,
           quantity: i.quantity,
           unitPrice: i.unitPrice,
           gstRate: i.gstRate,
-          modifiers: i.modifiers ? JSON.parse(i.modifiers) : undefined,
-          notes: i.notes,
+          modifiers: safeParseJson<string[]>(i.modifiers, []),
+          addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
+          notes: i.notes || "",
           isSaved: true,
         }));
+
+        const { useTableStore } = await import("./useTableStore");
+        const tables = useTableStore.getState().tables;
+        const foundTable = tables.find(t => t.id === order.tableId);
+        const resolvedTableNumber = foundTable?.tableNumber || order.tableNumber || (order.tableId ? `Table ${order.tableId}` : null);
 
         set({
           activeOrderId: order.id,
           orderNumber: order.orderNumber,
-          orderMode: order.orderMode as OrderMode,
-          tableId: order.tableId,
-          tableNumber: order.tableId, // We might need to look this up from table store for the name
-          paxCount: order.paxCount,
+          orderMode: (order.orderMode as OrderMode) || "DINE_IN",
+          tableId: order.tableId || null,
+          tableNumber: resolvedTableNumber,
+          paxCount: order.paxCount || 1,
           assignedWaiter: order.waiterName || "Counter",
           customer: order.customerName ? { name: order.customerName, phone: order.customerPhone || "" } : null,
           items: mappedItems,
@@ -483,6 +516,71 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
       }
     } catch (e) {
       console.error("Failed to retrieve order", e);
+    }
+  },
+
+  loadTableOrder: async (tableId: string, tableNumber?: string, orderId?: string) => {
+    const { activeOrderId, items } = get();
+    const { useTableStore } = await import("./useTableStore");
+    const tableStore = useTableStore.getState();
+    const targetTable = tableStore.tables.find(t => t.id === tableId);
+    const resolvedTableNumber = tableNumber || targetTable?.tableNumber || tableId;
+
+    // If there's unsaved work on a different table/order, hold it first if applicable
+    if (items.length > 0 && activeOrderId && activeOrderId !== orderId && items.some(i => !i.isSaved)) {
+      await get().holdCurrentBill("Auto-held during table switch");
+    }
+
+    // Determine orderId to fetch
+    let targetOrderId = orderId || targetTable?.currentOrderId;
+
+    // If we don't have targetOrderId, query backend for active order on this table
+    if (!targetOrderId) {
+      try {
+        const res = await apiClient<{ success: boolean; data: any }>(`/tables/${tableId}/order`);
+        if (res.success && res.data) {
+          targetOrderId = res.data.id;
+        }
+      } catch {
+        try {
+          const orderListRes = await apiClient<{ success: boolean; data: any[] }>(`/orders?tableId=${tableId}&active=true`);
+          if (orderListRes.success && orderListRes.data?.length > 0) {
+            const activeOrder = orderListRes.data[0];
+            if (activeOrder) {
+              targetOrderId = activeOrder.id;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to query order for table", err);
+        }
+      }
+    }
+
+    if (targetOrderId) {
+      // Retrieve full order
+      await get().retrieveHeldBill(targetOrderId);
+      set({
+        orderMode: "DINE_IN",
+        tableId,
+        tableNumber: resolvedTableNumber,
+      });
+      return true;
+    } else {
+      // Vacant table: initialize a clean cart for this table
+      set({
+        activeOrderId: null,
+        orderNumber: null,
+        orderMode: "DINE_IN",
+        tableId,
+        tableNumber: resolvedTableNumber,
+        items: [],
+        discount: undefined,
+        customer: null,
+        paxCount: targetTable?.capacity || 1,
+        assignedWaiter: targetTable?.assignedWaiter || "Counter",
+        isProcessingPayment: false,
+      });
+      return false;
     }
   },
 
@@ -572,7 +670,15 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         } catch (printError) {
           console.error("Failed to print bill", printError);
         }
+        const finalTableId = get().tableId;
+        set({ isProcessingPayment: false });
         get().clearCart();
+        if (finalTableId) {
+          import("./useTableStore").then(({ useTableStore }) => {
+            useTableStore.getState().setTableStatus(finalTableId, "VACANT");
+            useTableStore.getState().fetchTables();
+          }).catch(() => {});
+        }
         return { success: true, printed, invoiceNumber: res.data?.invoiceNumber };
       }
       set({ isProcessingPayment: false });

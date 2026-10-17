@@ -6,12 +6,15 @@ import { CashIcon, SplitIcon } from "../common/PaymentIcons";
 export const OrderCart: React.FC = () => {
   const {
     orderMode,
+    tableId,
     tableNumber,
     paxCount,
     setPaxCount,
     assignedWaiter,
     customer,
     items,
+    activeOrderId,
+    orderNumber,
     updateQuantity,
     removeItem,
     discount,
@@ -20,6 +23,7 @@ export const OrderCart: React.FC = () => {
     getTotals,
     holdCurrentBill,
     fireKOT,
+    loadTableOrder,
   } = useCartStore();
 
   const { openModal, showNotification } = useUIStore();
@@ -41,11 +45,20 @@ export const OrderCart: React.FC = () => {
                     : "⚡"}
             </span>
             <div>
-              <div className="text-sm font-extrabold text-text-inverse">
-                {orderMode === "DINE_IN" ? tableNumber || "Table Not Selected" : orderMode}
+              <div className="text-sm font-extrabold text-text-inverse flex items-center gap-1.5">
+                <span>{orderMode === "DINE_IN" ? tableNumber || "Table Not Selected" : orderMode}</span>
+                {activeOrderId && (
+                  <span className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-mono">
+                    ACTIVE
+                  </span>
+                )}
               </div>
-              <div className="text-[11px] text-text-muted font-mono">
-                {assignedWaiter} • #OUT-20260715-0042
+              <div className="text-[11px] text-text-muted font-mono flex items-center gap-1">
+                <span>{assignedWaiter || "Counter"}</span>
+                <span>•</span>
+                <span className={orderNumber ? "text-primary-hover font-bold" : "text-text-muted"}>
+                  {orderNumber ? `#${orderNumber}` : "New Bill"}
+                </span>
               </div>
             </div>
           </div>
@@ -188,12 +201,30 @@ export const OrderCart: React.FC = () => {
         })}
 
         {items.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center text-text-muted py-16">
+          <div className="h-full flex flex-col items-center justify-center text-center text-text-muted py-16 px-4">
             <div className="text-4xl mb-2">🛒</div>
-            <p className="text-xs font-semibold text-text-muted">Cart is empty</p>
-            <p className="text-[11px] text-gray-600 mt-1 max-w-[200px]">
+            <p className="text-xs font-semibold text-text-muted">
+              {tableNumber ? `No items in ${tableNumber} cart` : "Cart is empty"}
+            </p>
+            <p className="text-[11px] text-gray-500 mt-1 max-w-[200px]">
               Tap items from grid or punch Short-Code in top search + Enter
             </p>
+            {tableId && (
+              <button
+                onClick={async () => {
+                  showNotification("🔄 Checking table for active orders...");
+                  const found = await loadTableOrder(tableId, tableNumber || undefined);
+                  if (found) {
+                    showNotification("✅ Active order loaded from table!");
+                  } else {
+                    showNotification("ℹ️ Table currently has no active order.");
+                  }
+                }}
+                className="mt-3 px-3 py-1.5 bg-surface hover:bg-surface-hover border border-border-hover rounded-lg text-xs font-mono text-primary-hover flex items-center gap-1.5 transition-all shadow-sm"
+              >
+                <span>🔄 Sync Table Order</span>
+              </button>
+            )}
           </div>
         )}
       </div>

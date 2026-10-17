@@ -53,6 +53,9 @@ export const SOCKET_EVENTS = {
   ORDER_UPDATED: "order:updated",
   KOT_NEW: "kot:new",
   KOT_STATUS_UPDATE: "kot:status-update",
+  SYNC_MENU_UPDATED: "sync:menu-updated",
+  SYNC_TABLES_UPDATED: "sync:tables-updated",
+  SYNC_USERS_UPDATED: "sync:users-updated",
 } as const;
 
 // ─── Common Modifiers (hardcoded for now — will come from server later) ───

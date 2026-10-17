@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { Tabs } from "expo-router";
 import { Platform, Pressable, Text, View, Image } from "react-native";
-import { SymbolView } from "expo-symbols";
+import { Ionicons } from "@expo/vector-icons";
 import { useDataStore } from "../../src/stores/data.store";
 import { useCartStore } from "../../src/stores/cart.store";
 import { useAuthStore } from "../../src/stores/auth.store";
@@ -70,7 +70,7 @@ export default function TabsLayout() {
         options={{
           title: "Home",
           tabBarIcon: ({ color, focused }) => (
-            <SymbolView name={focused ? "house.fill" : "house"} tintColor={color} size={24} fallback={<>🏠</>} />
+            <Ionicons name={focused ? "home" : "home-outline"} size={22} color={color} />
           ),
         }}
       />
@@ -79,7 +79,7 @@ export default function TabsLayout() {
         options={{
           title: "Tables",
           tabBarIcon: ({ color, focused }) => (
-            <SymbolView name={focused ? "square.grid.2x2.fill" : "square.grid.2x2"} tintColor={color} size={24} fallback={<>🧊</>} />
+            <Ionicons name={focused ? "grid" : "grid-outline"} size={22} color={color} />
           ),
         }}
       />
@@ -88,7 +88,7 @@ export default function TabsLayout() {
         options={{
           title: tableName ? (existingOrderId ? `Add to ${tableName}` : `Menu - ${tableName}`) : "Menu",
           tabBarIcon: ({ color, focused }) => (
-            <SymbolView name={focused ? "list.bullet.rectangle.fill" : "list.bullet.rectangle"} tintColor={color} size={24} fallback={<>📖</>} />
+            <Ionicons name={focused ? "restaurant" : "restaurant-outline"} size={22} color={color} />
           ),
           tabBarBadge: cartItemCount > 0 ? cartItemCount : undefined,
           tabBarBadgeStyle: { backgroundColor: colors.accent },
@@ -99,7 +99,7 @@ export default function TabsLayout() {
         options={{
           title: "My Orders",
           tabBarIcon: ({ color, focused }) => (
-            <SymbolView name={focused ? "clock.fill" : "clock"} tintColor={color} size={24} fallback={<>⏱️</>} />
+            <Ionicons name={focused ? "receipt" : "receipt-outline"} size={22} color={color} />
           ),
         }}
       />
@@ -108,7 +108,7 @@ export default function TabsLayout() {
         options={{
           title: "KOTs",
           tabBarIcon: ({ color, focused }) => (
-            <SymbolView name={focused ? "printer.fill" : "printer"} tintColor={color} size={24} fallback={<>🖨️</>} />
+            <Ionicons name={focused ? "print" : "print-outline"} size={22} color={color} />
           ),
         }}
       />
@@ -117,7 +117,7 @@ export default function TabsLayout() {
         options={{
           title: "Bookings",
           tabBarIcon: ({ color, focused }) => (
-            <SymbolView name={focused ? "calendar" : "calendar"} tintColor={color} size={24} fallback={<>📅</>} />
+            <Ionicons name={focused ? "calendar" : "calendar-outline"} size={22} color={color} />
           ),
         }}
       />

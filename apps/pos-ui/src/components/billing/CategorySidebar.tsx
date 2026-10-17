@@ -17,6 +17,11 @@ export const CategorySidebar: React.FC = () => {
     return counts;
   }, [items]);
 
+  const visibleCategories = useMemo(() => {
+    // Only display categories that contain menu items
+    return categories.filter((cat) => (categoryCounts.get(cat.id) || 0) > 0);
+  }, [categories, categoryCounts]);
+
   return (
     <aside className="w-56 bg-surface border-r border-border flex flex-col h-full select-none shrink-0">
       <div className="px-3 py-2 border-b border-border flex items-center justify-between text-xs text-text-muted font-bold tracking-wider">
@@ -25,7 +30,7 @@ export const CategorySidebar: React.FC = () => {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {categories.map((cat, index) => {
+        {visibleCategories.map((cat, index) => {
           const isSelected = selectedCategoryId === cat.id;
           const itemCount = categoryCounts.get(cat.id) || 0;
           const shortcutNum = index + 1;

@@ -70,6 +70,18 @@ export function connectSocket(serverUrl: string, userId?: string | null): void {
   socket.on(SOCKET_EVENTS.KOT_NEW, (data) => {
     emit(SOCKET_EVENTS.KOT_NEW, data);
   });
+
+  socket.on(SOCKET_EVENTS.SYNC_USERS_UPDATED, (data) => {
+    emit(SOCKET_EVENTS.SYNC_USERS_UPDATED, data);
+  });
+
+  socket.on(SOCKET_EVENTS.SYNC_MENU_UPDATED, (data) => {
+    emit(SOCKET_EVENTS.SYNC_MENU_UPDATED, data);
+  });
+
+  socket.on(SOCKET_EVENTS.SYNC_TABLES_UPDATED, (data) => {
+    emit(SOCKET_EVENTS.SYNC_TABLES_UPDATED, data);
+  });
 }
 
 /**

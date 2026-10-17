@@ -20,6 +20,7 @@ import {
   type InvoiceRecord,
 } from "@gusto/core-logic";
 import { printBillTemplate, queuePrint, getPrintQueueStatus, triggerCashDrawer, type PrintSource } from "../services/print.service.js";
+import { emitTableStatusChanged } from "../socket/events.js";
 
 const router = Router();
 const OUTLET_ID = process.env.OUTLET_ID || "local-outlet";
@@ -181,6 +182,20 @@ router.post("/bill/:orderId", async (req, res) => {
     // Queue the print job for offline resilience
     await queuePrint(bill.printTemplate, "BILL", source);
     
+    // If dine-in order and unpaid, mark table as BILLED
+    if (!bill.isPaid && bill.order.tableId) {
+      db.update(schema.diningTables)
+        .set({ status: "BILLED" })
+        .where(eq(schema.diningTables.id, bill.order.tableId))
+        .run();
+      emitTableStatusChanged({
+        tableId: bill.order.tableId,
+        status: "BILLED",
+        orderId: bill.order.id,
+        orderNumber: bill.order.orderNumber,
+      });
+    }
+
     res.json({
       success: true,
       data: { isPaid: bill.isPaid },

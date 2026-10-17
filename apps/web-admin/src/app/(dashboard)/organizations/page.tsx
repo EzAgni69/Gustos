@@ -153,7 +153,7 @@ export default function OrganizationsPage() {
                 <Label htmlFor="name">Organization Name</Label>
                 <Input
                   id="name"
-                  placeholder="e.g. Gusto Global Group"
+                  placeholder="e.g. Gusto's Global Group"
                   {...form.register("name")}
                 />
                 {form.formState.errors.name && (

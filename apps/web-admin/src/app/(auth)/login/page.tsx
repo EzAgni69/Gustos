@@ -104,7 +104,7 @@ export default function LoginPage() {
             <img src="/logo.png" alt="Gusto's Pizzeria" className="h-16 object-contain" />
           </div>
           <CardTitle className="text-3xl font-bold tracking-tight text-gray-900">
-            Gusto ERP
+            Gusto's ERP
           </CardTitle>
           <CardDescription className="text-gray-500">
             {mode === "login"
@@ -202,7 +202,7 @@ export default function LoginPage() {
                   <Input
                     id="orgName"
                     type="text"
-                    placeholder="Gusto Foods Inc."
+                    placeholder="Gusto's Foods Inc."
                     className="pl-9 bg-white"
                     {...registerForm.register("organizationName", {
                       onChange: (e) => {

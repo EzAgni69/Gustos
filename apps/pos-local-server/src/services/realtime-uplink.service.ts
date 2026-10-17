@@ -43,7 +43,7 @@ export function initRealtimeUplink() {
     const downlinkEvents = ["MENU_UPDATED", "TABLE_UPDATED", "CONFIG_UPDATED", "USER_UPDATED"];
     if (downlinkEvents.includes(data.eventType)) {
       console.log(`[Realtime Uplink] Downlink config changed (${data.eventType}). Pulling immediately...`);
-      pullFromCloud().catch(err => console.error("[Realtime Uplink] Pull error:", err));
+      pullFromCloud(true).catch(err => console.error("[Realtime Uplink] Pull error:", err));
     }
     else if (data.eventType === "ORDER_COMPLETED" && data.payload) {
       // Broadcast this back down to the local LAN so Captains / KDS see the update
@@ -93,3 +93,18 @@ export async function flushOutbox() {
     });
   }
 }
+
+/**
+ * Notify Cloud ERP of local table status changes (e.g. OCCUPIED, AVAILABLE)
+ */
+export function notifyCloudTableStatus(tableId: string, status: string): void {
+  if (socket?.connected) {
+    socket.emit("sync:push_realtime", {
+      eventType: "TABLE_STATUS_CHANGED",
+      organizationId: ORGANIZATION_ID,
+      outletId: OUTLET_ID,
+      payload: { tableId, status },
+    });
+  }
+}
+

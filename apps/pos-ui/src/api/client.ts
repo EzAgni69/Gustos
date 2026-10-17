@@ -8,8 +8,8 @@ export async function apiClient<T>(
   endpoint: string,
   { requireAuth = true, ...customConfig }: FetchOptions = {}
 ): Promise<T> {
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
+  const headers: Record<string, string> = {
+    ...(customConfig.body ? { "Content-Type": "application/json" } : {}),
   };
 
   if (requireAuth) {

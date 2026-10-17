@@ -7,6 +7,7 @@ import { useAuthStore } from "../src/stores/auth.store";
 import { createOrder, addItemsToOrder, fireKOT } from "../src/services/api";
 import { QuantityStepper } from "../src/components/QuantityStepper";
 import { colors, spacing, fontSize, fontWeight, radius } from "../src/config/theme";
+import { Ionicons } from "@expo/vector-icons";
 
 export default function CartScreen() {
   const router = useRouter();
@@ -163,7 +164,10 @@ export default function CartScreen() {
                 )}
 
                 {item.notes ? (
-                  <Text style={styles.itemNotes}>📝 {item.notes}</Text>
+                  <View style={styles.itemNotesRow}>
+                    <Ionicons name="document-text-outline" size={13} color={colors.warning} />
+                    <Text style={styles.itemNotes}>{item.notes}</Text>
+                  </View>
                 ) : null}
 
                 <Text style={styles.itemPrice}>
@@ -256,7 +260,8 @@ const styles = StyleSheet.create({
   modPillText: { fontSize: 11, color: colors.textSecondary },
   modPillTextHalf: { color: colors.accent, fontWeight: fontWeight.semibold },
   modPillTextDrink: { color: colors.info, fontWeight: fontWeight.semibold },
-  itemNotes: { fontSize: fontSize.sm, color: colors.warning, fontStyle: "italic", marginTop: 2 },
+  itemNotesRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
+  itemNotes: { fontSize: fontSize.sm, color: colors.warning, fontStyle: "italic" },
   itemPrice: { fontSize: fontSize.md, color: colors.textSecondary, marginTop: 4 },
   itemActions: { justifyContent: "center" },
   notesInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.borderLight, borderRadius: radius.md, padding: spacing.md, color: colors.textPrimary, minHeight: 80, fontSize: fontSize.md, textAlignVertical: "top" },

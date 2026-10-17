@@ -31,41 +31,57 @@ try {
   db.delete(schema.orders).run();
   db.delete(schema.menuItems).run();
   db.delete(schema.menuCategories).run();
+  db.delete(schema.localUsers).run();
   db.update(schema.diningTables).set({ status: "AVAILABLE", currentOrderId: null }).run();
-  console.log("✅ Cleaned previous menu items, categories, and test orders");
+  console.log("✅ Cleaned previous menu items, categories, test orders, and local users");
 } catch (err) {
   console.warn("Warning during cleanup:", err);
 }
 
-// ─── Seed Local Users (PIN-based auth) ───
+// ─── Seed Local Users (Authoritative Cloud ERP Staff) ───
 const users = [
-  { id: uuid(), name: "Arjun Patel 1234 (Owner)", pin: "1234", role: "OWNER", isActive: true },
-  { id: uuid(), name: "Meera Singh (Manager)", pin: "5678", role: "MANAGER", isActive: true },
-  { id: uuid(), name: "Raj Kumar (Cashier)", pin: "1111", role: "CASHIER", isActive: true },
-  { id: uuid(), name: "Capt. Rahul", pin: "2222", role: "WAITER", isActive: true },
-  { id: uuid(), name: "Capt. Sneha", pin: "3333", role: "WAITER", isActive: true },
-  { id: uuid(), name: "Chef Vikram", pin: "4444", role: "CHEF", isActive: true },
+  { id: "5d78bb48-527f-4cf2-8a15-854a7df533f3", name: "Dave Bijal", pin: "1234", role: "OWNER", isActive: true },
+  { id: "1ca1f421-50c9-4cb9-84ae-afba4a474d9b", name: "Priya Sharma", pin: "1234", role: "MANAGER", isActive: true },
+  { id: "8542516c-cfc7-42f5-8ce1-42026f007616", name: "Rahul Kumar", pin: "1234", role: "CASHIER", isActive: true },
+  { id: "ed94e9b2-12f1-499d-8d00-ca64c9d4abc7", name: "Vikram Singh", pin: "5678", role: "WAITER", isActive: true },
 ];
 
 for (const user of users) {
   db.insert(schema.localUsers).values(user).onConflictDoNothing().run();
 }
-console.log(`✅ ${users.length} local users seeded`);
+console.log(`✅ ${users.length} authoritative local staff seeded`);
 
-// ─── Seed Menu Categories ───
+// ─── Seed Menu Categories (Canonical UUIDs from cloud) ───
 const outletId = "00000000-0000-0000-0000-000000000003";
+
+export const CATEGORY_MAP = {
+  "cat-starters": "4cd3a8d0-c68b-4072-afa3-063df179504d",
+  "cat-salads": "833f4bfb-902e-4837-aa97-9b4814496fcf",
+  "cat-bruschetta": "3f7f530a-d03b-4ec7-82a8-b92ab9dea728",
+  "cat-sandwiches": "a0c63bc4-cf92-42cb-a9e3-011766c35b96",
+  "cat-calzones": "1b1a2bd0-f2c7-4c3d-9eeb-83ace0eeb567",
+  "cat-pizza-reg": "5aa53373-e5f5-48bb-a71c-88da6587157b",
+  "cat-pizza-prem": "fb728bde-fe2f-4535-a093-2d012bfbd63d",
+  "cat-pasta": "a62f1fd8-cf22-49d0-ae15-dd65f5ea59a3",
+  "cat-desserts": "fc524c1b-f441-46de-a2ac-d184ae06b16e",
+  "cat-refreshments": "17cb63b9-dbf5-4fcf-9f2b-8dfc1664d604",
+  "cat-combos": "49c3f4ca-65ca-45ac-9352-589216caeddd",
+  "cat-addons": "383a8545-3442-4c5e-b977-7af87e9a1d65",
+} as const;
+
 const categories = [
-  { id: "cat-starters", outletId, name: "Starters", sortOrder: 1, isActive: true },
-  { id: "cat-salads", outletId, name: "Salads", sortOrder: 2, isActive: true },
-  { id: "cat-bruschetta", outletId, name: "Bruschetta", sortOrder: 3, isActive: true },
-  { id: "cat-sandwiches", outletId, name: "Sandwiches", sortOrder: 4, isActive: true },
-  { id: "cat-calzones", outletId, name: "Calzones", sortOrder: 5, isActive: true },
-  { id: "cat-pizza-reg", outletId, name: "Regular Pizzas", sortOrder: 6, isActive: true },
-  { id: "cat-pizza-prem", outletId, name: "Premium Pizzas", sortOrder: 7, isActive: true },
-  { id: "cat-pasta", outletId, name: "Pastas", sortOrder: 8, isActive: true },
-  { id: "cat-desserts", outletId, name: "Desserts", sortOrder: 9, isActive: true },
-  { id: "cat-refreshments", outletId, name: "Refreshments", sortOrder: 10, isActive: true },
-  { id: "cat-combos", outletId, name: "Combos & Specials", sortOrder: 11, isActive: true },
+  { id: CATEGORY_MAP["cat-starters"], outletId, name: "Starters", sortOrder: 1, isActive: true },
+  { id: CATEGORY_MAP["cat-salads"], outletId, name: "Salads", sortOrder: 2, isActive: true },
+  { id: CATEGORY_MAP["cat-bruschetta"], outletId, name: "Bruschetta", sortOrder: 3, isActive: true },
+  { id: CATEGORY_MAP["cat-sandwiches"], outletId, name: "Sandwiches", sortOrder: 4, isActive: true },
+  { id: CATEGORY_MAP["cat-calzones"], outletId, name: "Calzones", sortOrder: 5, isActive: true },
+  { id: CATEGORY_MAP["cat-pizza-reg"], outletId, name: "Regular Pizzas", sortOrder: 6, isActive: true },
+  { id: CATEGORY_MAP["cat-pizza-prem"], outletId, name: "Premium Pizzas", sortOrder: 7, isActive: true },
+  { id: CATEGORY_MAP["cat-pasta"], outletId, name: "Pastas", sortOrder: 8, isActive: true },
+  { id: CATEGORY_MAP["cat-desserts"], outletId, name: "Desserts", sortOrder: 9, isActive: true },
+  { id: CATEGORY_MAP["cat-refreshments"], outletId, name: "Refreshments", sortOrder: 10, isActive: true },
+  { id: CATEGORY_MAP["cat-combos"], outletId, name: "Combos & Specials", sortOrder: 11, isActive: true },
+  { id: CATEGORY_MAP["cat-addons"], outletId, name: "Add-Ons & Extras", sortOrder: 12, isActive: true },
 ];
 
 for (const cat of categories) {
@@ -1445,37 +1461,23 @@ const items = [
 ];
 
 for (const item of items) {
-  db.insert(schema.menuItems).values(item).run();
+  const mappedCategoryId = CATEGORY_MAP[item.categoryId as keyof typeof CATEGORY_MAP] ?? item.categoryId;
+  db.insert(schema.menuItems).values({ ...item, categoryId: mappedCategoryId }).run();
 }
 console.log(`✅ ${items.length} menu items seeded`);
 
 // ─── Seed Dining Tables ───
 const tables = [
-  // AC Section (10 tables)
-  { id: "table-ac-1", outletId, name: "T-01 (AC)", capacity: 2, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 1 },
-  { id: "table-ac-2", outletId, name: "T-02 (AC)", capacity: 2, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 2 },
-  { id: "table-ac-3", outletId, name: "T-03 (AC)", capacity: 4, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 3 },
-  { id: "table-ac-4", outletId, name: "T-04 (AC)", capacity: 4, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 4 },
-  { id: "table-ac-5", outletId, name: "T-05 (AC)", capacity: 4, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 5 },
-  { id: "table-ac-6", outletId, name: "T-06 (AC)", capacity: 6, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 6 },
-  { id: "table-ac-7", outletId, name: "T-07 (AC)", capacity: 6, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 7 },
-  { id: "table-ac-8", outletId, name: "T-08 (AC)", capacity: 8, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 8 },
-  { id: "table-ac-9", outletId, name: "T-09 (AC)", capacity: 8, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 9 },
-  { id: "table-ac-10", outletId, name: "T-10 (AC)", capacity: 12, status: "AVAILABLE", section: "AC Dining Hall", sortOrder: 10 },
-
-  // Garden Section (6 tables)
-  { id: "table-gd-1", outletId, name: "G-01 (Garden)", capacity: 4, status: "AVAILABLE", section: "Open Garden Area", sortOrder: 11 },
-  { id: "table-gd-2", outletId, name: "G-02 (Garden)", capacity: 4, status: "AVAILABLE", section: "Open Garden Area", sortOrder: 12 },
-  { id: "table-gd-3", outletId, name: "G-03 (Garden)", capacity: 6, status: "AVAILABLE", section: "Open Garden Area", sortOrder: 13 },
-  { id: "table-gd-4", outletId, name: "G-04 (Garden)", capacity: 6, status: "AVAILABLE", section: "Open Garden Area", sortOrder: 14 },
-  { id: "table-gd-5", outletId, name: "G-05 (Garden)", capacity: 8, status: "AVAILABLE", section: "Open Garden Area", sortOrder: 15 },
-  { id: "table-gd-6", outletId, name: "G-06 (Garden)", capacity: 10, status: "AVAILABLE", section: "Open Garden Area", sortOrder: 16 },
-
-  // Bar & Lounge (4 tables)
-  { id: "table-br-1", outletId, name: "B-01 (Bar)", capacity: 2, status: "AVAILABLE", section: "Bar & Lounge", sortOrder: 17 },
-  { id: "table-br-2", outletId, name: "B-02 (Bar)", capacity: 4, status: "AVAILABLE", section: "Bar & Lounge", sortOrder: 18 },
-  { id: "table-br-3", outletId, name: "B-03 (Bar)", capacity: 4, status: "AVAILABLE", section: "Bar & Lounge", sortOrder: 19 },
-  { id: "table-br-4", outletId, name: "B-04 (Bar)", capacity: 6, status: "AVAILABLE", section: "Bar & Lounge", sortOrder: 20 },
+  { id: "f8212f55-5f43-4cee-a6bf-dd612d9de4f6", outletId, name: "T1", capacity: 2, status: "AVAILABLE", section: "Indoor", sortOrder: 1 },
+  { id: "6c8a3f1b-b7a8-4537-9f17-bc79d5a954a2", outletId, name: "T2", capacity: 2, status: "AVAILABLE", section: "Indoor", sortOrder: 2 },
+  { id: "d615d02c-3527-4c77-9279-019e085eaf77", outletId, name: "T3", capacity: 4, status: "AVAILABLE", section: "Indoor", sortOrder: 3 },
+  { id: "1cd8d89d-82f0-4fdb-918c-5292b85ab19c", outletId, name: "T4", capacity: 4, status: "AVAILABLE", section: "Indoor", sortOrder: 4 },
+  { id: "dfdcd871-d9d0-4aea-8b60-7b6542d6ded8", outletId, name: "T5", capacity: 6, status: "AVAILABLE", section: "Indoor", sortOrder: 5 },
+  { id: "acbe33d0-5417-48bb-b413-11ca90c13c36", outletId, name: "T6", capacity: 6, status: "AVAILABLE", section: "Indoor", sortOrder: 6 },
+  { id: "b88bccca-5b66-4907-bd1f-e9135be665bf", outletId, name: "T7", capacity: 8, status: "AVAILABLE", section: "Indoor", sortOrder: 7 },
+  { id: "781eead7-fc27-45b5-8720-0faca4ccca85", outletId, name: "T8", capacity: 4, status: "AVAILABLE", section: "Outdoor", sortOrder: 8 },
+  { id: "5a5af47a-8e9e-40f8-bc73-2c290d8f175f", outletId, name: "T9", capacity: 4, status: "AVAILABLE", section: "Outdoor", sortOrder: 9 },
+  { id: "212c9ede-7dac-4df5-9a0d-873d791ec31e", outletId, name: "T10", capacity: 6, status: "AVAILABLE", section: "Outdoor", sortOrder: 10 },
 ];
 
 for (const table of tables) {

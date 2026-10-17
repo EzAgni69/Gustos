@@ -54,15 +54,18 @@ export default function DashboardOverviewPage() {
       apiFetch<Organization>("/organizations/me"),
       apiFetch<Outlet[]>("/outlets"),
       apiFetch<User[]>("/users"),
-      apiFetch<{ items: LowStockItem[] }>("/inventory?limit=100"),
+      apiFetch<LowStockItem[] | { items: LowStockItem[] }>("/inventory?limit=100"),
     ]);
 
     if (orgRes.success && orgRes.data) {
       setOrg(orgRes.data);
     }
 
-    if (invRes.success && invRes.data?.items) {
-      const lows = invRes.data.items.filter(
+    if (invRes.success && invRes.data) {
+      const items: LowStockItem[] = Array.isArray(invRes.data)
+        ? invRes.data
+        : (invRes.data as { items?: LowStockItem[] }).items || [];
+      const lows = items.filter(
         (i) => Number(i.currentStock) <= Number(i.minimumStock)
       );
       setLowStockItems(lows);

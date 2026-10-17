@@ -292,13 +292,14 @@ export function getShiftWarning(): string | null {
     return "⚠️ No active shift. Open a shift for accurate cash drawer reconciliation.";
   }
 
-  const openedAt = new Date(active.openedAt);
-  const now = new Date();
-  const hoursOpen = (now.getTime() - openedAt.getTime()) / (1000 * 60 * 60);
+  // Stale shift warning not needed for Phase 1 - commented out so it can be reactivated in the future
+  // const openedAt = new Date(active.openedAt);
+  // const now = new Date();
+  // const hoursOpen = (now.getTime() - openedAt.getTime()) / (1000 * 60 * 60);
 
-  if (hoursOpen > 16) {
-    return `⚠️ Stale shift detected. Shift has been open for ${Math.round(hoursOpen)} hours. Please close it (Z-Report).`;
-  }
+  // if (hoursOpen > 16) {
+  //   return `⚠️ Stale shift detected. Shift has been open for ${Math.round(hoursOpen)} hours. Please close it (Z-Report).`;
+  // }
 
   return null;
 }

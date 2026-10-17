@@ -95,17 +95,16 @@ export default function ReportsPage() {
   const [inventoryReport, setInventoryReport] = useState<InventoryReport | null>(null);
 
   const loadReports = async (currentOutlets: Outlet[], outletId: string, range: DateRange) => {
-    const targetOutletId = outletId === "all" ? currentOutlets[0]?.id : outletId;
-    if (!targetOutletId) return;
-
     const rangeStart = getDateRangeStart(range);
     const startDate = rangeStart.toISOString().split("T")[0]!;
     const endDate = new Date().toISOString().split("T")[0]!;
 
+    const outletQuery = outletId && outletId !== "all" ? `outletId=${outletId}&` : "";
+
     const [salesRes, profitRes, inventoryRes] = await Promise.all([
-      apiFetch<SalesReport>(`/reports/sales?outletId=${targetOutletId}&startDate=${startDate}&endDate=${endDate}&groupBy=day`),
-      apiFetch<ProfitReport>(`/reports/profitability?outletId=${targetOutletId}&startDate=${startDate}&endDate=${endDate}`),
-      apiFetch<InventoryReport>(`/reports/inventory`),
+      apiFetch<SalesReport>(`/reports/sales?${outletQuery}startDate=${startDate}&endDate=${endDate}&groupBy=day`),
+      apiFetch<ProfitReport>(`/reports/profitability?${outletQuery}startDate=${startDate}&endDate=${endDate}`),
+      apiFetch<InventoryReport>(`/reports/inventory${outletId && outletId !== "all" ? `?outletId=${outletId}` : ""}`),
     ]);
 
     if (salesRes.success && salesRes.data) setSalesReport(salesRes.data);
@@ -156,7 +155,7 @@ export default function ReportsPage() {
     const cgst = totalTax / 2;
     const sgst = totalTax / 2;
     const rows: string[][] = [
-      ["Summary For Table 7 (B2CS) - Gusto ERP"],
+      ["Summary For Table 7 (B2CS) - Gusto's ERP"],
       ["Type", "Place Of Supply", "Rate (%)", "Taxable Value (INR)", "CGST (INR)", "SGST (INR)", "Gross Value (INR)"],
       ["OE", "27-Maharashtra", "5.00", totalTaxable.toFixed(2), cgst.toFixed(2), sgst.toFixed(2), summary.totalRevenue.toFixed(2)],
     ];

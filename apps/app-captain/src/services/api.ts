@@ -45,7 +45,7 @@ async function request<T = unknown>(
   }
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
     ...(options.headers as Record<string, string>),
   };
 
@@ -111,13 +111,14 @@ export async function getUsers(): Promise<AuthUser[]> {
 }
 
 export async function pinLogin(
-  pin: string
+  pin: string,
+  userId?: string
 ): Promise<{ id: string; name: string; role: string }> {
   const res = await request<{ id: string; name: string; role: string }>(
     API.AUTH.PIN_LOGIN,
     {
       method: "POST",
-      body: JSON.stringify({ pin }),
+      body: JSON.stringify({ pin, userId }),
     }
   );
   return res.data;

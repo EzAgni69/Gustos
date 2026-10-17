@@ -779,10 +779,47 @@ export const updateOrderSchema = z.object({
 });
 
 export const listOrdersQuerySchema = paginationSchema.extend({
-  outletId: z.string().uuid("outletId is required"),
+  outletId: z.string().optional(),
   status: orderStatusEnum.optional(),
   search: z.string().optional(),
 });
+
+// ─── Enhanced Order History (Phase 1 — Analytics & Bill Reprinting) ───
+
+export const orderHistoryQuerySchema = paginationSchema.extend({
+  outletId: z.string().optional(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD").optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD").optional(),
+  status: orderStatusEnum.optional(),
+  paymentMode: paymentModeEnum.optional(),
+  orderMode: orderTypeEnum.optional(),
+  search: z.string().optional(),
+  minAmount: z.coerce.number().optional(),
+  maxAmount: z.coerce.number().optional(),
+  sortBy: z.enum(["date", "amount", "orderNumber"]).default("date"),
+  order: z.enum(["asc", "desc"]).default("desc"),
+});
+
+export const invoiceDetailSchema = z.object({
+  invoice: invoiceSchema,
+  order: orderSchema,
+  outlet: z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    address: z.string(),
+    phone: z.string().optional(),
+    gstNumber: z.string().optional(),
+    fssaiLicenseNo: z.string().optional(),
+  }),
+  organization: z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    gstNumber: z.string().optional(),
+  }),
+});
+
+export type OrderHistoryQuery = z.infer<typeof orderHistoryQuerySchema>;
+export type InvoiceDetail = z.infer<typeof invoiceDetailSchema>;
 
 export type CreateOrder = z.infer<typeof createOrderSchema>;
 export type UpdateOrder = z.infer<typeof updateOrderSchema>;
@@ -1219,7 +1256,7 @@ export type PayrollStatus = z.infer<typeof payrollStatusEnum>;
 // ─── Reporting ───
 
 export const salesReportQuerySchema = z.object({
-  outletId: z.string().uuid("outletId is required"),
+  outletId: z.string().optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
   groupBy: z.enum(["day", "week", "month"]).default("day"),
@@ -1231,7 +1268,7 @@ export const inventoryReportQuerySchema = z.object({
 });
 
 export const profitabilityReportQuerySchema = z.object({
-  outletId: z.string().uuid("outletId is required"),
+  outletId: z.string().optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
 });
@@ -1307,6 +1344,17 @@ export const grnItemSchema = z.object({
 });
 
 export type Vendor = z.infer<typeof vendorSchema>;
+export const createVendorSchema = z.object({
+  name: z.string().min(1).max(255),
+  contactName: z.string().optional().nullable(),
+  phone: z.string().optional().nullable(),
+  email: z.string().email().optional().nullable(),
+  address: z.string().optional().nullable(),
+  gstNumber: z.string().optional().nullable(),
+});
+export const updateVendorSchema = createVendorSchema.partial();
+export type CreateVendor = z.infer<typeof createVendorSchema>;
+export type UpdateVendor = z.infer<typeof updateVendorSchema>;
 export type PurchaseOrder = z.infer<typeof purchaseOrderSchema>;
 export type PurchaseOrderItem = z.infer<typeof purchaseOrderItemSchema>;
 export type GoodsReceivedNote = z.infer<typeof goodsReceivedNoteSchema>;

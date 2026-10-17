@@ -413,7 +413,7 @@ export function ItemCustomizer({
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <View>
-                  <Text style={styles.sectionTitle}>🍕 Half & Half Flavors</Text>
+                  <Text style={styles.sectionTitle}>Half & Half Flavors</Text>
                   <Text style={styles.sectionSubtitle}>Split pizza into 2 distinct halves</Text>
                 </View>
                 <Pressable
@@ -468,7 +468,7 @@ export function ItemCustomizer({
 
                   <View style={styles.halfSummaryBox}>
                     <Text style={styles.halfSummaryText}>
-                      Selected: 🌓 {leftHalf || "None"} + {rightHalf || "None"}
+                      Selected: {leftHalf || "None"} + {rightHalf || "None"}
                     </Text>
                   </View>
                 </View>
@@ -479,7 +479,7 @@ export function ItemCustomizer({
           {/* Combo Beverage Selection */}
           {isCombo && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>🥤 Combo Beverage</Text>
+              <Text style={styles.sectionTitle}>Combo Beverage</Text>
               <Text style={styles.sectionSubtitle}>Included beverage with this combo</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
                 {BEVERAGE_OPTIONS.map((bev) => {

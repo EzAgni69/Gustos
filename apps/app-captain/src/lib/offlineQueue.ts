@@ -149,7 +149,7 @@ export async function drainOfflineQueue(
 
       if (response.ok) {
         console.log(
-          `[OfflineQueue] ✅ Synced: ${action.type} ${action.path}`
+          `[OfflineQueue] Synced: ${action.type} ${action.path}`
         );
         synced++;
         // Don't add to updatedQueue — it's been processed
@@ -157,7 +157,7 @@ export async function drainOfflineQueue(
         action.retryCount++;
         if (action.retryCount >= MAX_RETRIES) {
           console.warn(
-            `[OfflineQueue] ❌ Max retries reached: ${action.type} ${action.path}`
+            `[OfflineQueue] Max retries reached: ${action.type} ${action.path}`
           );
           action.status = "FAILED";
           action.lastError = `HTTP ${response.status}: ${response.statusText}`;

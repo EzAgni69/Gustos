@@ -87,7 +87,7 @@ async function seed() {
     .insert(cloudSchema.users)
     .values({
       organizationId: org.id,
-      name: "Arjun Patel",
+      name: "Dave Bijal",
       email: "admin@gusto.dev",
       phone: "+91 98765 43210",
       passwordHash: ownerPasswordHash,

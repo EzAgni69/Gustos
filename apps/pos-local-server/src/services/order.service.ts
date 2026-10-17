@@ -5,7 +5,7 @@
  * All operations hit local SQLite — zero cloud dependency.
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, notInArray } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
@@ -226,7 +226,8 @@ export function getOrderById(orderId: string) {
     ...order,
     items: items.map((item) => ({
       ...item,
-      modifiers: item.modifiers ? JSON.parse(item.modifiers) : [],
+      modifiers: item.modifiers ? (typeof item.modifiers === "string" ? JSON.parse(item.modifiers) : item.modifiers) : [],
+      addOns: item.addOns ? (typeof item.addOns === "string" ? JSON.parse(item.addOns) : item.addOns) : [],
     })),
     kots,
   };
@@ -368,6 +369,7 @@ export function listOrders(filters?: {
   customerPhone?: string;
   isComplimentary?: boolean;
   limit?: number;
+  activeOnly?: boolean;
 }) {
   // Apply filters via chaining
   const conditions = [];
@@ -388,6 +390,9 @@ export function listOrders(filters?: {
   }
   if (filters?.isComplimentary !== undefined) {
     conditions.push(eq(schema.orders.isComplimentary, filters.isComplimentary));
+  }
+  if (filters?.activeOnly) {
+    conditions.push(notInArray(schema.orders.status, ["COMPLETED", "CANCELLED", "MERGED"]));
   }
 
   const orders = conditions.length > 0
@@ -410,7 +415,8 @@ export function listOrders(filters?: {
       ...order,
       items: items.map((item) => ({
         ...item,
-        modifiers: item.modifiers ? JSON.parse(item.modifiers) : [],
+        modifiers: item.modifiers ? (typeof item.modifiers === "string" ? JSON.parse(item.modifiers) : item.modifiers) : [],
+        addOns: item.addOns ? (typeof item.addOns === "string" ? JSON.parse(item.addOns) : item.addOns) : [],
       })),
       kots: [], // Return empty array or fetch if needed, UI only needs items for count
     };

@@ -10,8 +10,8 @@ import { getSocket } from "../../hooks/useSocket";
 
 export const TableMapView: React.FC = () => {
   const { areas, tables, selectedAreaId, setSelectedArea } = useTableStore();
-  const { setOrderMode } = useCartStore();
-  const { setActiveView, showNotification } = useUIStore();
+  const { loadTableOrder } = useCartStore();
+  const { setActiveView, showNotification, openModal } = useUIStore();
   const { user } = useAuthStore();
   const [reservingTable, setReservingTable] = React.useState<POSTable | null>(null);
   const [showGlobalReservations, setShowGlobalReservations] = React.useState(false);
@@ -44,25 +44,29 @@ export const TableMapView: React.FC = () => {
     return countsMap;
   }, [tables]);
 
-  const handleTableClick = (table: POSTable) => {
+  const handleTableClick = async (table: POSTable) => {
     const isLockedByOther = table.lockedBy && table.lockedBy !== currentUserName;
     if (isLockedByOther) {
       showNotification(`🔒 Table ${table.tableNumber} is currently being edited by ${table.lockedBy}`);
       return;
     }
 
-    setOrderMode("DINE_IN", table.id, table.tableNumber);
-    setActiveView("BILLING");
-    
     // Lock the table for us
     getSocket().emit("table:lock", { tableId: table.id, lockedBy: currentUserName });
 
     if (table.status === "VACANT") {
+      await loadTableOrder(table.id, table.tableNumber);
+      setActiveView("BILLING");
       showNotification(`🍽️ Seating table: ${table.tableNumber}. Ready for order taking.`);
-    } else if (table.status === "OCCUPIED" || table.status === "BILLED") {
-      showNotification(`📍 Loaded active order #${table.orderNumber} for table ${table.tableNumber}.`);
     } else {
-      showNotification(`🔵 Reserved table ${table.tableNumber} selected.`);
+      showNotification(`⏳ Loading bill for table ${table.tableNumber}...`);
+      const hasOrder = await loadTableOrder(table.id, table.tableNumber, table.currentOrderId);
+      setActiveView("BILLING");
+      if (hasOrder) {
+        showNotification(`📍 Loaded active bill for table ${table.tableNumber} (#${table.orderNumber || "Active"}).`);
+      } else {
+        showNotification(`🍽️ Table ${table.tableNumber} ready for new items.`);
+      }
     }
   };
 
@@ -199,7 +203,7 @@ export const TableMapView: React.FC = () => {
 
               {/* Middle / Bottom: Bill Info or Vacant prompt */}
               {(table.status === "OCCUPIED" || table.status === "BILLED") && (
-                <div className="mt-3 pt-3 border-t border-white/10 space-y-1 text-xs">
+                <div className="mt-3 pt-3 border-t border-white/10 space-y-2 text-xs">
                   <div className="flex justify-between items-center font-mono">
                     <span className="opacity-70">Running Bill:</span>
                     <span className="font-extrabold text-sm text-primary-hover">
@@ -207,8 +211,36 @@ export const TableMapView: React.FC = () => {
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-[11px] opacity-70">
-                    <span>{table.assignedWaiter}</span>
+                    <span>{table.assignedWaiter || "Counter"}</span>
                     {elapsedMins !== null && <span>⏱️ {elapsedMins}m ago</span>}
+                  </div>
+
+                  {/* Quick Bill & Settle Action Buttons */}
+                  <div className="pt-1.5 flex items-center gap-1.5 border-t border-white/10">
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await handleTableClick(table);
+                        openModal("BILL_PREVIEW");
+                      }}
+                      className="flex-1 bg-surface-hover hover:bg-surface-hover/80 text-[10px] font-bold py-1 px-1.5 rounded text-text-main border border-border-hover flex items-center justify-center gap-1 transition-all"
+                      title="Preview / Print Bill Paper [F11]"
+                    >
+                      <span>🧾</span>
+                      <span>Bill</span>
+                    </button>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await handleTableClick(table);
+                        openModal("PAYMENT");
+                      }}
+                      className="flex-1 bg-primary hover:bg-primary-hover text-[10px] font-bold py-1 px-1.5 rounded text-text-inverse shadow-md shadow-primary/20 flex items-center justify-center gap-1 transition-all"
+                      title="Settle Payment [F12]"
+                    >
+                      <span>💳</span>
+                      <span>Settle</span>
+                    </button>
                   </div>
                 </div>
               )}

@@ -129,12 +129,28 @@ export const useDataStore = create<DataState>()((set, get) => ({
       }
     );
 
+    const unsub5 = onSocketEvent(
+      SOCKET_EVENTS.SYNC_MENU_UPDATED,
+      () => {
+        get().fetchMenu();
+      }
+    );
+
+    const unsub6 = onSocketEvent(
+      SOCKET_EVENTS.SYNC_TABLES_UPDATED,
+      () => {
+        get().fetchTables();
+      }
+    );
+
     // Return cleanup function
     return () => {
       unsub1();
       unsub2();
       unsub3();
       unsub4();
+      unsub5();
+      unsub6();
     };
   },
 }));

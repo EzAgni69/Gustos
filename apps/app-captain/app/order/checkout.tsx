@@ -22,6 +22,7 @@ import {
   type PaymentSplitInput,
 } from "../../src/services/api";
 import { colors, spacing, fontSize, fontWeight, radius } from "../../src/config/theme";
+import { Ionicons } from "@expo/vector-icons";
 
 // ─── Payment Config ───
 
@@ -198,7 +199,7 @@ export default function CheckoutScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       Alert.alert(
-        "✅ Payment Received",
+        "Payment Received",
         `${result.invoiceNumber}\n₹${Number(result.totalAmount).toFixed(0)} via ${result.paymentMode}`,
         [
           {
@@ -426,7 +427,7 @@ export default function CheckoutScreen() {
                         style={styles.removeSplitBtn}
                         onPress={() => removeSplitLeg(index)}
                       >
-                        <Text style={styles.removeSplitText}>✕</Text>
+                        <Ionicons name="close" size={16} color={colors.danger} />
                       </Pressable>
                     )}
                   </View>

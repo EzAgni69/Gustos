@@ -7,6 +7,7 @@
 
 import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { getOfflineQueueCount } from "../lib/offlineQueue";
 import { onSocketEvent, isSocketConnected } from "../services/socket";
 
@@ -71,8 +72,9 @@ export function OfflineBanner() {
         },
       ]}
     >
+      <Ionicons name="cloud-offline" size={16} color="#fff" style={{ marginRight: 8 }} />
       <Text style={styles.text}>
-        ⏳ {pendingCount} {pendingCount === 1 ? "action" : "actions"} queued. Will sync when back online.
+        {pendingCount} {pendingCount === 1 ? "action" : "actions"} queued. Will sync when back online.
       </Text>
     </Animated.View>
   );

@@ -78,7 +78,7 @@ export const LoginScreen: React.FC = () => {
         <div className="bg-white p-4 rounded-xl mb-6 shadow-sm">
           <img src="/logo.png" alt="Gusto's Pizzeria" className="h-16 object-contain" />
         </div>
-        <h1 className="text-2xl font-bold mb-2">Gusto POS</h1>
+        <h1 className="text-2xl font-bold mb-2">Gusto's POS</h1>
         <p className="text-text-muted text-sm mb-6">Enter your PIN to access billing</p>
         
         {/* PIN Display */}

@@ -6,6 +6,7 @@
 
 import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { colors, fontSize, radius, spacing, fontWeight, shadow } from "../config/theme";
 import { StatusBadge } from "./StatusBadge";
 import type { TableResponse, ReservationResponse } from "../services/api";
@@ -57,16 +58,22 @@ export function TableCard({ table, reservations = [], onPress }: TableCardProps)
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.tableName}>{table.name}</Text>
-          <Text style={styles.capacity}>👥 {table.capacity}</Text>
+          <View style={styles.capacityRow}>
+            <Ionicons name="people-outline" size={14} color={colors.textSecondary} />
+            <Text style={styles.capacity}>{table.capacity}</Text>
+          </View>
         </View>
 
         {/* Status */}
         <View style={styles.statusRow}>
           <StatusBadge status={table.status} />
           {upcomingRes && (
-            <Text style={styles.reservationBadge}>
-              📅 {new Date(upcomingRes.reservationTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </Text>
+            <View style={styles.reservationBadgeRow}>
+              <Ionicons name="calendar-outline" size={12} color={colors.info} />
+              <Text style={styles.reservationBadge}>
+                {new Date(upcomingRes.reservationTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
           )}
         </View>
 
@@ -131,14 +138,25 @@ const styles = StyleSheet.create({
     fontWeight: fontWeight.bold,
     color: colors.textPrimary,
   },
+  capacityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
   capacity: {
     fontSize: fontSize.sm,
     color: colors.textSecondary,
+    fontWeight: fontWeight.medium,
   },
   statusRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  reservationBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
   reservationBadge: {
     fontSize: fontSize.xs,

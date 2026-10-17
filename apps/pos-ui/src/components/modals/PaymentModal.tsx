@@ -223,7 +223,11 @@ export const PaymentModal: React.FC = () => {
 
       if (orderMode === "DINE_IN" && tableId) {
         setTableStatus(tableId, "VACANT");
+        import("../../hooks/useSocket").then(({ getSocket }) => {
+          getSocket().emit("table:unlock", { tableId });
+        }).catch(() => {});
       }
+      useTableStore.getState().fetchTables();
 
       // Auto-kick cash drawer if cash was involved
       if (

@@ -31,9 +31,13 @@ let onSyncComplete: ((changes: SyncChangeSummary) => void) | null = null;
 
 export interface SyncChangeSummary {
   menuCategoriesUpdated: number;
+  menuCategoriesPruned: number;
   menuItemsUpdated: number;
+  menuItemsPruned: number;
   diningTablesUpdated: number;
+  diningTablesPruned: number;
   usersUpdated: number;
+  usersPruned: number;
   outletConfigUpdated: boolean;
   timestamp: string;
 }
@@ -79,8 +83,9 @@ function setLastSyncTimestamp(timestamp: string): void {
 
 /**
  * Pull updates from the cloud and apply to local SQLite.
+ * If fullSync is true, ignores lastSyncTimestamp and reconciles all items and categories.
  */
-export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
+export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary | null> {
   if (isSyncing) {
     console.log("[CloudSync] Sync already in progress, skipping...");
     return null;
@@ -89,7 +94,7 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
   isSyncing = true;
 
   try {
-    const since = getLastSyncTimestamp();
+    const since = fullSync ? null : getLastSyncTimestamp();
     const queryParams = new URLSearchParams({ outletId: OUTLET_ID });
     if (since) queryParams.set("since", since);
 
@@ -119,17 +124,42 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
     const data = result.data;
     const summary: SyncChangeSummary = {
       menuCategoriesUpdated: 0,
+      menuCategoriesPruned: 0,
       menuItemsUpdated: 0,
+      menuItemsPruned: 0,
       diningTablesUpdated: 0,
+      diningTablesPruned: 0,
       usersUpdated: 0,
+      usersPruned: 0,
       outletConfigUpdated: false,
       timestamp: data.lastSyncTimestamp,
     };
 
     // Apply changes in a transaction
     db.transaction((tx) => {
-      // 1. Upsert menu categories
-      if (data.menuCategories?.length > 0) {
+      // 1. Reconcile menu categories (cloudCategories is always the full authoritative list for the outlet)
+      if (data.menuCategories && Array.isArray(data.menuCategories) && data.menuCategories.length > 0) {
+        const cloudCatIds = new Set(data.menuCategories.map((c: any) => c.id));
+        const localCats = tx.select().from(schema.menuCategories).all();
+
+        // Prune local categories that no longer exist in cloud
+        for (const locCat of localCats) {
+          if (!cloudCatIds.has(locCat.id)) {
+            // Delete items under this stale category first
+            const deleted = tx.delete(schema.menuItems)
+              .where(eq(schema.menuItems.categoryId, locCat.id))
+              .run();
+            summary.menuItemsPruned += deleted.changes;
+
+            tx.delete(schema.menuCategories)
+              .where(eq(schema.menuCategories.id, locCat.id))
+              .run();
+            summary.menuCategoriesPruned++;
+            console.log(`[CloudSync] 🗑️ Pruned obsolete category: "${locCat.name}" (${locCat.id})`);
+          }
+        }
+
+        // Upsert cloud categories
         for (const cat of data.menuCategories) {
           const existing = tx.select().from(schema.menuCategories)
             .where(eq(schema.menuCategories.id, cat.id)).get();
@@ -157,17 +187,39 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
         }
       }
 
-      // 2. Upsert menu items
-      if (data.menuItems?.length > 0) {
+      // 2. Upsert and reconcile menu items
+      if (data.menuItems && Array.isArray(data.menuItems) && data.menuItems.length > 0) {
+        // If full sync (no since query), prune any local items not present in cloud
+        if (!since) {
+          const cloudItemIds = new Set(data.menuItems.map((item: any) => item.id));
+          const localItems = tx.select().from(schema.menuItems).all();
+          for (const locItem of localItems) {
+            if (!cloudItemIds.has(locItem.id)) {
+              tx.delete(schema.menuItems)
+                .where(eq(schema.menuItems.id, locItem.id))
+                .run();
+              summary.menuItemsPruned++;
+              console.log(`[CloudSync] 🗑️ Pruned obsolete menu item: "${locItem.name}" (${locItem.id})`);
+            }
+          }
+        }
+
         for (const item of data.menuItems) {
           const existing = tx.select().from(schema.menuItems)
             .where(eq(schema.menuItems.id, item.id)).get();
+          const variantsStr = item.variants
+            ? typeof item.variants === "string"
+              ? item.variants
+              : JSON.stringify(item.variants)
+            : null;
+
           if (existing) {
             tx.update(schema.menuItems)
               .set({
                 categoryId: item.categoryId,
                 name: item.name,
                 description: item.description,
+                variants: variantsStr,
                 price: item.price,
                 gstRate: item.gstRate,
                 isVeg: item.isVeg,
@@ -185,6 +237,7 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
                 outletId: item.outletId,
                 name: item.name,
                 description: item.description,
+                variants: variantsStr,
                 price: item.price,
                 gstRate: item.gstRate,
                 isVeg: item.isVeg,
@@ -199,16 +252,56 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
         }
       }
 
-      // 3. Upsert dining tables
-      if (data.diningTables?.length > 0) {
+      // Safeguard: prune any orphaned local items whose categoryId does not exist in menu_categories
+      const validCategoryIds = new Set(
+        tx.select({ id: schema.menuCategories.id }).from(schema.menuCategories).all().map((c) => c.id)
+      );
+      const remainingItems = tx.select().from(schema.menuItems).all();
+      for (const item of remainingItems) {
+        if (!validCategoryIds.has(item.categoryId)) {
+          tx.delete(schema.menuItems).where(eq(schema.menuItems.id, item.id)).run();
+          summary.menuItemsPruned++;
+          console.log(`[CloudSync] 🗑️ Pruned orphan item without category: "${item.name}" (${item.id})`);
+        }
+      }
+
+      // 3. Reconcile dining tables (cloud is authoritative for this outlet's tables)
+      if (data.diningTables && Array.isArray(data.diningTables)) {
+        const cloudTableIds = new Set(data.diningTables.map((t: any) => t.id));
+        const localTables = tx.select().from(schema.diningTables)
+          .where(eq(schema.diningTables.outletId, OUTLET_ID))
+          .all();
+
+        // Prune local tables that no longer exist in cloud
+        for (const locTable of localTables) {
+          if (!cloudTableIds.has(locTable.id)) {
+            // Nullify any orders referencing this pruned table
+            tx.update(schema.orders)
+              .set({ tableId: null })
+              .where(eq(schema.orders.tableId, locTable.id))
+              .run();
+
+            tx.delete(schema.diningTables)
+              .where(eq(schema.diningTables.id, locTable.id))
+              .run();
+            summary.diningTablesPruned++;
+            console.log(`[CloudSync] 🗑️ Pruned obsolete dining table: "${locTable.name}" (${locTable.id})`);
+          }
+        }
+
+        // Upsert cloud tables
         for (const table of data.diningTables) {
           const existing = tx.select().from(schema.diningTables)
             .where(eq(schema.diningTables.id, table.id)).get();
+
           if (existing) {
+            // Respect active local order if currently occupied locally
+            const isLocallyOccupied = existing.status === "OCCUPIED" && existing.currentOrderId;
             tx.update(schema.diningTables)
               .set({
                 name: table.name,
                 capacity: table.capacity,
+                status: isLocallyOccupied ? existing.status : (table.status || existing.status),
                 section: table.section,
                 sortOrder: table.sortOrder,
               })
@@ -221,7 +314,7 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
                 outletId: table.outletId,
                 name: table.name,
                 capacity: table.capacity,
-                status: "AVAILABLE",
+                status: table.status || "AVAILABLE",
                 section: table.section,
                 sortOrder: table.sortOrder,
               })
@@ -231,8 +324,23 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
         }
       }
 
-      // 4. Upsert local users (PIN-based auth)
-      if (data.users?.length > 0) {
+      // 4. Reconcile local users (PIN-based auth, cloud is authoritative)
+      if (data.users && Array.isArray(data.users)) {
+        const cloudUserIds = new Set(data.users.map((u: any) => u.id));
+        const localUsers = tx.select().from(schema.localUsers).all();
+
+        // Prune local users that no longer exist in cloud (e.g. mock users, stale removed accounts)
+        for (const locUser of localUsers) {
+          if (!cloudUserIds.has(locUser.id)) {
+            tx.delete(schema.localUsers)
+              .where(eq(schema.localUsers.id, locUser.id))
+              .run();
+            summary.usersPruned++;
+            console.log(`[CloudSync] 🗑️ Pruned obsolete / mock local user: "${locUser.name}" (${locUser.id})`);
+          }
+        }
+
+        // Upsert cloud users
         for (const user of data.users) {
           const existing = tx.select().from(schema.localUsers)
             .where(eq(schema.localUsers.id, user.id)).get();
@@ -242,7 +350,7 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
                 name: user.name,
                 pin: user.pin ?? "0000",
                 role: user.role,
-                isActive: user.isActive,
+                isActive: Boolean(user.isActive),
               })
               .where(eq(schema.localUsers.id, user.id))
               .run();
@@ -253,7 +361,7 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
                 name: user.name,
                 pin: user.pin ?? "0000",
                 role: user.role,
-                isActive: user.isActive,
+                isActive: Boolean(user.isActive),
               })
               .run();
           }
@@ -299,15 +407,21 @@ export async function pullFromCloud(): Promise<SyncChangeSummary | null> {
 
     const hasChanges =
       summary.menuCategoriesUpdated > 0 ||
+      summary.menuCategoriesPruned > 0 ||
       summary.menuItemsUpdated > 0 ||
+      summary.menuItemsPruned > 0 ||
       summary.diningTablesUpdated > 0 ||
+      summary.diningTablesPruned > 0 ||
       summary.usersUpdated > 0 ||
+      summary.usersPruned > 0 ||
       summary.outletConfigUpdated;
 
     if (hasChanges) {
       console.log(
-        `[CloudSync] ✅ Pulled: ${summary.menuItemsUpdated} menu items, ` +
-        `${summary.diningTablesUpdated} tables, ${summary.usersUpdated} users`
+        `[CloudSync] ✅ Pulled: ${summary.menuItemsUpdated} items (pruned ${summary.menuItemsPruned}), ` +
+        `${summary.menuCategoriesUpdated} categories (pruned ${summary.menuCategoriesPruned}), ` +
+        `${summary.diningTablesUpdated} tables (pruned ${summary.diningTablesPruned}), ` +
+        `${summary.usersUpdated} users (pruned ${summary.usersPruned})`
       );
       // Notify connected devices
       onSyncComplete?.(summary);
@@ -367,5 +481,5 @@ export function stopCloudSyncPoller(): void {
  */
 export async function triggerManualSync(): Promise<SyncChangeSummary | null> {
   console.log("[CloudSync] Manual sync triggered");
-  return pullFromCloud();
+  return pullFromCloud(true);
 }

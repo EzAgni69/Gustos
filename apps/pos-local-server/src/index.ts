@@ -31,6 +31,13 @@ import { startCloudSyncPoller } from "./services/cloud-sync.service.js";
 import { startPrintRetryLoop } from "./services/print.service.js";
 import { initRealtimeUplink } from "./services/realtime-uplink.service.js";
 
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 dotenv.config();
 
 // ─── Initialize Local Database ───
@@ -50,7 +57,7 @@ const io = new SocketIOServer(httpServer, {
   },
 });
 
-const PORT = process.env.POS_LOCAL_PORT ?? 8080;
+const PORT = Number(process.env.PORT ?? process.env.POS_LOCAL_PORT ?? 8080);
 
 // ─── Middleware ───
 app.use(cors());
@@ -101,6 +108,45 @@ app.use("/api/print", printRoutes);
 app.use("/api/shifts", shiftRoutes);
 app.use("/api/sync", syncRoutes);
 
+// ─── Static Frontends: KDS TV & POS UI ───
+const possibleKdsPaths = [
+  path.resolve(__dirname, "../../kds-tv/dist"),
+  path.resolve(__dirname, "../kds-tv-dist"),
+  path.resolve(process.cwd(), "apps/kds-tv/dist"),
+  path.resolve(process.cwd(), "public/kds"),
+];
+const kdsDist = possibleKdsPaths.find((p) => fs.existsSync(p));
+if (kdsDist) {
+  console.log(`[Static] Serving KDS TV from: ${kdsDist}`);
+  app.use("/kds", express.static(kdsDist));
+  app.get("/kds/*", (_req, res) => {
+    res.sendFile(path.join(kdsDist, "index.html"));
+  });
+}
+
+const possiblePosUiPaths = [
+  path.resolve(__dirname, "../../pos-ui/dist"),
+  path.resolve(__dirname, "../pos-ui-dist"),
+  path.resolve(process.cwd(), "apps/pos-ui/dist"),
+  path.resolve(process.cwd(), "public/pos"),
+];
+const posUiDist = possiblePosUiPaths.find((p) => fs.existsSync(p));
+if (posUiDist) {
+  console.log(`[Static] Serving POS UI from: ${posUiDist}`);
+  app.use(express.static(posUiDist));
+  app.get("*", (req, res, next) => {
+    if (
+      req.path.startsWith("/api") ||
+      req.path.startsWith("/socket.io") ||
+      req.path.startsWith("/health") ||
+      req.path.startsWith("/kds")
+    ) {
+      return next();
+    }
+    res.sendFile(path.join(posUiDist, "index.html"));
+  });
+}
+
 // ─── Global Error Handler ───
 app.use(
   (
@@ -135,16 +181,31 @@ httpServer.listen(PORT as number, "0.0.0.0", () => {
 
   // Start cloud sync poller — pulls menu, tables, users from cloud
   startCloudSyncPoller((changes) => {
-    if (changes.menuItemsUpdated > 0 || changes.menuCategoriesUpdated > 0) {
+    if (
+      changes.menuItemsUpdated > 0 ||
+      changes.menuCategoriesUpdated > 0 ||
+      changes.menuCategoriesPruned > 0 ||
+      changes.menuItemsPruned > 0
+    ) {
       io.emit("sync:menu-updated", {
         menuItemsUpdated: changes.menuItemsUpdated,
         menuCategoriesUpdated: changes.menuCategoriesUpdated,
+        menuItemsPruned: changes.menuItemsPruned,
+        menuCategoriesPruned: changes.menuCategoriesPruned,
         timestamp: changes.timestamp,
       });
     }
-    if (changes.diningTablesUpdated > 0) {
+    if (changes.diningTablesUpdated > 0 || changes.diningTablesPruned > 0) {
       io.emit("sync:tables-updated", {
         tablesUpdated: changes.diningTablesUpdated,
+        tablesPruned: changes.diningTablesPruned,
+        timestamp: changes.timestamp,
+      });
+    }
+    if (changes.usersUpdated > 0 || changes.usersPruned > 0) {
+      io.emit("sync:users-updated", {
+        usersUpdated: changes.usersUpdated,
+        usersPruned: changes.usersPruned,
         timestamp: changes.timestamp,
       });
     }

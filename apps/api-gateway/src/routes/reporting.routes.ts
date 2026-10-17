@@ -36,13 +36,18 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       const endTs = new Date(`${query.endDate}T23:59:59`);
 
       // Get all completed orders in the date range
+      const conditions = [
+        eq(schema.orders.organizationId, orgId),
+        eq(schema.orders.status, "COMPLETED"),
+        between(schema.orders.createdAt, startTs, endTs),
+      ];
+
+      if (query.outletId && query.outletId !== "all") {
+        conditions.push(eq(schema.orders.outletId, query.outletId));
+      }
+
       const orders = await db.query.orders.findMany({
-        where: and(
-          eq(schema.orders.organizationId, orgId),
-          eq(schema.orders.outletId, query.outletId),
-          eq(schema.orders.status, "COMPLETED"),
-          between(schema.orders.createdAt, startTs, endTs)
-        ),
+        where: and(...conditions),
         with: { items: true },
       });
 
@@ -221,13 +226,18 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       const endTs = new Date(`${query.endDate}T23:59:59`);
 
       // Revenue from completed orders
+      const orderConditions = [
+        eq(schema.orders.organizationId, orgId),
+        eq(schema.orders.status, "COMPLETED"),
+        between(schema.orders.createdAt, startTs, endTs),
+      ];
+
+      if (query.outletId && query.outletId !== "all") {
+        orderConditions.push(eq(schema.orders.outletId, query.outletId));
+      }
+
       const orders = await db.query.orders.findMany({
-        where: and(
-          eq(schema.orders.organizationId, orgId),
-          eq(schema.orders.outletId, query.outletId),
-          eq(schema.orders.status, "COMPLETED"),
-          between(schema.orders.createdAt, startTs, endTs)
-        ),
+        where: and(...orderConditions),
         with: { items: true },
       });
 
@@ -277,11 +287,16 @@ export async function reportingRoutes(fastify: FastifyInstance) {
         }));
 
       // Payroll costs for the period
+      const payrollConditions = [
+        eq(schema.payrolls.organizationId, orgId),
+      ];
+
+      if (query.outletId && query.outletId !== "all") {
+        payrollConditions.push(eq(schema.payrolls.outletId, query.outletId));
+      }
+
       const payrollCosts = await db.query.payrolls.findMany({
-        where: and(
-          eq(schema.payrolls.organizationId, orgId),
-          eq(schema.payrolls.outletId, query.outletId)
-        ),
+        where: and(...payrollConditions),
       });
 
       const totalLabourCost = payrollCosts.reduce(
@@ -290,12 +305,17 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       );
 
       // Online order commissions
+      const onlineConditions = [
+        eq(schema.onlineOrders.organizationId, orgId),
+        between(schema.onlineOrders.createdAt, startTs, endTs),
+      ];
+
+      if (query.outletId && query.outletId !== "all") {
+        onlineConditions.push(eq(schema.onlineOrders.outletId, query.outletId));
+      }
+
       const onlineOrders = await db.query.onlineOrders.findMany({
-        where: and(
-          eq(schema.onlineOrders.organizationId, orgId),
-          eq(schema.onlineOrders.outletId, query.outletId),
-          between(schema.onlineOrders.createdAt, startTs, endTs)
-        ),
+        where: and(...onlineConditions),
       });
 
       const totalCommissions = onlineOrders.reduce(
@@ -352,10 +372,6 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       const orgId = getOrganizationId(request);
       const { outletId } = request.query as { outletId?: string };
 
-      if (!outletId) {
-        return reply.status(400).send(error("outletId is required"));
-      }
-
       const today = new Date();
       const todayStart = new Date(
         today.getFullYear(),
@@ -372,12 +388,17 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       );
 
       // Today's orders
+      const orderConditions = [
+        eq(schema.orders.organizationId, orgId),
+        between(schema.orders.createdAt, todayStart, todayEnd),
+      ];
+
+      if (outletId && outletId !== "all") {
+        orderConditions.push(eq(schema.orders.outletId, outletId));
+      }
+
       const todayOrders = await db.query.orders.findMany({
-        where: and(
-          eq(schema.orders.organizationId, orgId),
-          eq(schema.orders.outletId, outletId),
-          between(schema.orders.createdAt, todayStart, todayEnd)
-        ),
+        where: and(...orderConditions),
       });
 
       const todayRevenue = todayOrders
@@ -400,21 +421,31 @@ export async function reportingRoutes(fastify: FastifyInstance) {
 
       // Today's attendance
       const todayDate = today.toISOString().split("T")[0]!;
+      const attendanceConditions = [
+        eq(schema.attendances.organizationId, orgId),
+        eq(schema.attendances.date, todayDate),
+      ];
+
+      if (outletId && outletId !== "all") {
+        attendanceConditions.push(eq(schema.attendances.outletId, outletId));
+      }
+
       const todayAttendance = await db.query.attendances.findMany({
-        where: and(
-          eq(schema.attendances.organizationId, orgId),
-          eq(schema.attendances.outletId, outletId),
-          eq(schema.attendances.date, todayDate)
-        ),
+        where: and(...attendanceConditions),
       });
 
       // Pending online orders
+      const onlineConditions = [
+        eq(schema.onlineOrders.organizationId, orgId),
+        eq(schema.onlineOrders.status, "RECEIVED"),
+      ];
+
+      if (outletId && outletId !== "all") {
+        onlineConditions.push(eq(schema.onlineOrders.outletId, outletId));
+      }
+
       const pendingOnline = await db.query.onlineOrders.findMany({
-        where: and(
-          eq(schema.onlineOrders.organizationId, orgId),
-          eq(schema.onlineOrders.outletId, outletId),
-          eq(schema.onlineOrders.status, "RECEIVED")
-        ),
+        where: and(...onlineConditions),
       });
 
       return reply.send(

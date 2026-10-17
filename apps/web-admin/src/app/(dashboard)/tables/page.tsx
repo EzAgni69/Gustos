@@ -12,6 +12,10 @@ import {
   type Outlet,
   type TableStatus,
 } from "@gusto/api-contracts";
+import { getPersistedOutletId, setPersistedOutletId } from "@/lib/outlet-context";
+import { OutletSwitcher } from "@/components/shared/OutletSwitcher";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { LayoutGrid as TableIcon } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -90,6 +94,7 @@ export default function TablesPage() {
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [currentOutletId, setCurrentOutletId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [switcherLoading, setSwitcherLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -116,11 +121,23 @@ export default function TablesPage() {
 
     if (outletsRes.success && outletsRes.data && outletsRes.data.length > 0) {
       setOutlets(outletsRes.data);
-      if (outletsRes.data[0]) {
-        initialOutletId = outletsRes.data[0].id;
-        setCurrentOutletId(initialOutletId);
-        form.setValue("outletId", initialOutletId);
+
+      // Use persisted outlet ID if available and valid, otherwise fall back to Andheri West (or first outlet)
+      const persistedId = getPersistedOutletId();
+      const persistedOutlet = persistedId
+        ? outletsRes.data.find((o) => o.id === persistedId)
+        : null;
+
+      if (persistedOutlet) {
+        initialOutletId = persistedOutlet.id;
+      } else {
+        const defaultOutlet = outletsRes.data.find((o) => o.id === "00000000-0000-0000-0000-000000000003") || outletsRes.data[0];
+        initialOutletId = defaultOutlet?.id || "";
       }
+
+      setCurrentOutletId(initialOutletId);
+      setPersistedOutletId(initialOutletId);
+      form.setValue("outletId", initialOutletId);
 
       const tablesRes = await apiFetch<DiningTable[]>(
         `/tables?outletId=${initialOutletId}`
@@ -139,8 +156,58 @@ export default function TablesPage() {
     setLoading(false);
   };
 
+  const handleOutletChange = async (newOutletId: string) => {
+    setCurrentOutletId(newOutletId);
+    setPersistedOutletId(newOutletId);
+    form.setValue("outletId", newOutletId);
+
+    // Clear previous tables before fetching new outlet data
+    setTables([]);
+    setSwitcherLoading(true);
+    setError("");
+
+    // Enforce 5-second timeout per requirement 2.5
+    const timeoutId = setTimeout(() => {
+      setSwitcherLoading(false);
+      setError("Data could not be loaded in time. Please try again.");
+    }, 5_000);
+
+    try {
+      const tablesRes = await apiFetch<DiningTable[]>(
+        `/tables?outletId=${newOutletId}`
+      );
+
+      clearTimeout(timeoutId);
+
+      if (tablesRes.success && tablesRes.data) {
+        setTables(tablesRes.data);
+      } else {
+        setError(tablesRes.message || "Failed to load tables for the selected outlet.");
+      }
+    } catch {
+      clearTimeout(timeoutId);
+      setError("Failed to load tables for the selected outlet. Please try again.");
+    } finally {
+      setSwitcherLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
+
+    // Live sync polling: auto-refresh table statuses every 5 seconds
+    const interval = setInterval(() => {
+      const activeId = getPersistedOutletId() || currentOutletId;
+      if (activeId) {
+        apiFetch<DiningTable[]>(`/tables?outletId=${activeId}`).then((res) => {
+          if (res.success && res.data) {
+            setTables(res.data);
+          }
+        }).catch(() => {});
+      }
+    }, 5_000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const openCreateTableModal = () => {
@@ -243,6 +310,17 @@ export default function TablesPage() {
 
   return (
     <div className="space-y-6">
+      {/* Outlet Switcher — visible at top of page, above all controls */}
+      {outlets.length > 0 && (
+        <OutletSwitcher
+          outlets={outlets}
+          currentOutletId={currentOutletId}
+          onOutletChange={handleOutletChange}
+          isLoading={switcherLoading}
+          className="sm:w-auto w-full"
+        />
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">
@@ -391,6 +469,13 @@ export default function TablesPage() {
           <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
           <p className="font-medium">Loading floor plan...</p>
         </div>
+      ) : tables.length === 0 && !error ? (
+        <EmptyState
+          icon={TableIcon}
+          title="No tables for this outlet"
+          description="Add your first dining table to start managing your floor plan."
+          action={{ label: "+ Add Table", onClick: openCreateTableModal }}
+        />
       ) : (
         Array.from(sections.entries()).map(([sectionName, sectionTables]) => (
           <Card key={sectionName} className="shadow-xs border-gray-100">

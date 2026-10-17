@@ -31,7 +31,7 @@ interface AuthState {
 
   // Actions
   connectToServer: (ip: string) => Promise<void>;
-  login: (pin: string) => Promise<AuthUser>;
+  login: (pin: string, userId?: string) => Promise<AuthUser>;
   logoutUser: () => void;
   disconnectServer: () => void;
   restoreSession: () => void;
@@ -72,10 +72,10 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      login: async (pin: string) => {
+      login: async (pin: string, userId?: string) => {
         set({ isLoading: true });
         try {
-          const userData = await pinLogin(pin);
+          const userData = await pinLogin(pin, userId);
           const user: AuthUser = {
             id: userData.id,
             name: userData.name,

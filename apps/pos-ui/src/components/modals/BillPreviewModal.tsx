@@ -4,8 +4,9 @@ import { useUIStore } from "../../store/useUIStore";
 import { apiClient } from "../../api/client";
 
 export const BillPreviewModal: React.FC = () => {
-  const { activeModal, closeModal, billPreviewData, showNotification } = useUIStore();
+  const { activeModal, closeModal, openModal, billPreviewData, showNotification } = useUIStore();
   const {
+    activeOrderId: cartActiveOrderId,
     items: cartItems,
     orderNumber: cartOrderNumber,
     orderMode: cartOrderMode,
@@ -75,13 +76,18 @@ export const BillPreviewModal: React.FC = () => {
 
   const handlePrint = async () => {
     setIsPrinting(true);
+    const targetOrderId = billPreviewData?.orderId || cartActiveOrderId;
     try {
-      if (billPreviewData?.orderId) {
-        await apiClient(`/print/bill/${billPreviewData.orderId}`, { method: "POST" });
+      if (targetOrderId) {
+        await apiClient(`/print/bill/${targetOrderId}`, {
+          method: "POST",
+          body: JSON.stringify({ source: "pos" }),
+        });
+        showNotification("🖨️ Bill sent to thermal printer!");
       } else {
         window.print();
+        showNotification("🖨️ Browser print dialog opened!");
       }
-      showNotification("🖨️ Bill sent to thermal printer!");
     } catch {
       window.print();
     } finally {
@@ -99,6 +105,10 @@ export const BillPreviewModal: React.FC = () => {
     } else if (e.key.toLowerCase() === "p" && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       handlePrint();
+    } else if (e.key === "F12" || (e.key === "Enter" && !isPaid)) {
+      e.preventDefault();
+      closeModal();
+      openModal("PAYMENT");
     }
   };
 
@@ -333,7 +343,7 @@ export const BillPreviewModal: React.FC = () => {
                   Thank You! Visit Again!
                 </div>
                 <div className="text-[9px] text-neutral-400 pt-0.5">
-                  *** Powered by Gusto ERP ***
+                  *** Powered by Gusto's ERP ***
                 </div>
               </div>
             </div>
@@ -416,26 +426,38 @@ export const BillPreviewModal: React.FC = () => {
       </div>
 
       {/* ═══ Floating Bottom Action Buttons ═══ */}
-      <div className="w-full max-w-md flex items-center justify-center gap-3 mt-4 z-10">
+      <div className="w-full max-w-lg flex items-center justify-center gap-2.5 mt-4 z-10 px-2">
         <button
           onClick={handleFlip}
-          className="flex-1 max-w-[170px] py-2 px-4 rounded-xl bg-surface-hover hover:bg-gray-700 text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
+          className="flex-1 py-2 px-3 rounded-xl bg-surface-hover hover:bg-gray-700 text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all"
         >
           <span>🔄</span>
-          <span>{isFlipped ? "Show Front Bill" : "Show Backside"}</span>
+          <span>{isFlipped ? "Front Bill" : "Backside"}</span>
         </button>
 
         <button
           onClick={handlePrint}
           disabled={isPrinting}
-          className="flex-1 max-w-[170px] py-2 px-4 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-black flex items-center justify-center gap-2 shadow-lg shadow-primary/30 active:scale-95 transition-all disabled:opacity-50"
+          className="flex-1 py-2 px-3 rounded-xl bg-surface-hover hover:bg-gray-700 text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all disabled:opacity-50"
         >
           {isPrinting ? (
             <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
           ) : (
-            <span>🖨️ Print Bill [P]</span>
+            <span>🖨️ Print [P]</span>
           )}
         </button>
+
+        {!isPaid && (
+          <button
+            onClick={() => {
+              closeModal();
+              openModal("PAYMENT");
+            }}
+            className="flex-1 py-2 px-4 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-lg shadow-primary/30 active:scale-95 transition-all"
+          >
+            <span>💳 Settle & Pay [F12]</span>
+          </button>
+        )}
       </div>
     </div>
   );

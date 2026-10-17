@@ -31,7 +31,7 @@ export async function apiFetch<T>(
 ): Promise<ApiResponse<T>> {
   const token = getAuthToken();
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
     ...(options.headers as Record<string, string>),
   };
 
@@ -45,11 +45,16 @@ export async function apiFetch<T>(
     ? `${BASE_URL_CLEAN.replace(/\/api\/v1$/, "")}${cleanEndpoint}`
     : `${API_BASE_URL}${cleanEndpoint}`;
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
   try {
     const res = await fetch(requestUrl, {
       ...options,
       headers,
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     const data = await res.json();
 
@@ -68,6 +73,13 @@ export async function apiFetch<T>(
 
     return data as ApiResponse<T>;
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return {
+        success: false,
+        message: "Request timed out. Check your network connection and try again.",
+      };
+    }
     return {
       success: false,
       message: err instanceof Error ? err.message : "Network error occurred",

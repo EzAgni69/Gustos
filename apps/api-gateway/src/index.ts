@@ -56,6 +56,7 @@ import { reportingRoutes } from "./routes/reporting.routes.js";
 import { posRoutes } from "./routes/pos.routes.js";
 import { recipeRoutes } from "./routes/recipe.routes.js";
 import { stockRoutes } from "./routes/stock.routes.js";
+import { vendorRoutes } from "./routes/vendor.routes.js";
 import { pgClient } from "./db/index.js";
 
 
@@ -70,25 +71,26 @@ const fastify = Fastify({
   },
 });
 
+// ─── CORS Configuration ───
+const rawCors = process.env.CORS_ORIGIN;
+const allowedOrigin = rawCors
+  ? rawCors === "*"
+    ? true
+    : rawCors.includes(",")
+    ? rawCors.split(",").map((s) => s.trim())
+    : rawCors
+  : true;
+
 // ─── Initialize Socket.IO ───
 const io = new SocketServer(fastify.server, {
   cors: {
-    origin: process.env.CORS_ORIGIN
-      ? process.env.CORS_ORIGIN
-      : process.env.NODE_ENV === "production"
-      ? false
-      : true,
+    origin: allowedOrigin,
     credentials: true,
   },
 });
 initCloudSocket(io);
 
 // ─── Register Plugins ───
-const allowedOrigin = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN
-  : process.env.NODE_ENV === "production"
-  ? false
-  : true;
 await fastify.register(cors, {
   origin: allowedOrigin,
   credentials: true,
@@ -96,6 +98,26 @@ await fastify.register(cors, {
 });
 await fastify.register(authPlugin);
 await fastify.register(errorHandlerPlugin);
+
+// ─── Content Type Parsers ───
+// Allow empty or whitespace-only bodies when Content-Type is application/json (e.g. DELETE requests)
+fastify.addContentTypeParser(
+  "application/json",
+  { parseAs: "string" },
+  (_req, body: string, done) => {
+    try {
+      if (!body || (typeof body === "string" && body.trim() === "")) {
+        return done(null, undefined);
+      }
+      const json = JSON.parse(body);
+      done(null, json);
+    } catch (err: unknown) {
+      const error = err as Error & { statusCode?: number };
+      error.statusCode = 400;
+      done(error, undefined);
+    }
+  }
+);
 
 // ─── Register Routes ───
 await fastify.register(authRoutes);
@@ -116,6 +138,7 @@ await fastify.register(reportingRoutes);
 await fastify.register(posRoutes);
 await fastify.register(recipeRoutes);
 await fastify.register(stockRoutes);
+await fastify.register(vendorRoutes);
 
 // ─── Health Check ───
 fastify.get("/health", async () => {
@@ -128,7 +151,7 @@ fastify.get("/health", async () => {
 });
 
 // ─── Start Server ───
-const PORT = Number(process.env.API_GATEWAY_PORT ?? 3001);
+const PORT = Number(process.env.PORT ?? process.env.API_GATEWAY_PORT ?? 3001);
 
 try {
   await fastify.listen({ port: PORT, host: "0.0.0.0" });

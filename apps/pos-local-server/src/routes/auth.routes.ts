@@ -5,7 +5,7 @@
  */
 
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
 
@@ -16,18 +16,35 @@ const router = Router();
  * Validate PIN and return user object.
  */
 const handlePinLogin = (req: import("express").Request, res: import("express").Response) => {
-  const { pin } = req.body as { pin?: string };
+  const { pin, userId } = req.body as { pin?: string; userId?: string };
 
   if (!pin) {
     res.status(400).json({ success: false, message: "PIN is required" });
     return;
   }
 
-  const user = db
-    .select()
-    .from(schema.localUsers)
-    .where(eq(schema.localUsers.pin, pin))
-    .get();
+  const user = userId
+    ? db
+        .select()
+        .from(schema.localUsers)
+        .where(
+          and(
+            eq(schema.localUsers.id, userId),
+            eq(schema.localUsers.pin, pin),
+            eq(schema.localUsers.isActive, true)
+          )
+        )
+        .get()
+    : db
+        .select()
+        .from(schema.localUsers)
+        .where(
+          and(
+            eq(schema.localUsers.pin, pin),
+            eq(schema.localUsers.isActive, true)
+          )
+        )
+        .get();
 
   if (!user || !user.isActive) {
     res.status(401).json({ success: false, message: "Invalid PIN" });
@@ -68,7 +85,12 @@ router.get("/users", (_req, res) => {
     .where(eq(schema.localUsers.isActive, true))
     .all();
 
-  res.json({ success: true, data: users });
+  // Deduplicate by user name to avoid duplicate chips in login screen
+  const uniqueUsers = Array.from(
+    new Map(users.map((u) => [u.name, u])).values()
+  );
+
+  res.json({ success: true, data: uniqueUsers });
 });
 
 export { router as authRoutes };

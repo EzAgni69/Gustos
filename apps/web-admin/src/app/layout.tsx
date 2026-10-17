@@ -10,7 +10,7 @@ const geistSans = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "Gusto ERP — Admin Dashboard",
+  title: "Gusto's ERP — Admin Dashboard",
   description: "Enterprise restaurant management system — Multi-outlet ERP dashboard",
   icons: {
     icon: [

@@ -9,7 +9,7 @@ export function GustoLogo({ className }: { className?: string }) {
   return (
     <div className={className}>
       <span style={{ fontWeight: 800, fontSize: "1.5rem", letterSpacing: "-0.02em" }}>
-        Gusto
+        Gusto's
       </span>
     </div>
   );

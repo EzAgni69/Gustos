@@ -23,7 +23,16 @@ router.get("/categories", (_req, res) => {
     .orderBy(schema.menuCategories.sortOrder)
     .all();
 
-  res.json({ success: true, data: categories });
+  // Deduplicate by normalized category name as defensive safety guard
+  const seenNames = new Set<string>();
+  const uniqueCategories = categories.filter((cat) => {
+    const key = cat.name.trim().toLowerCase();
+    if (seenNames.has(key)) return false;
+    seenNames.add(key);
+    return true;
+  });
+
+  res.json({ success: true, data: uniqueCategories });
 });
 
 /**
@@ -32,6 +41,13 @@ router.get("/categories", (_req, res) => {
  */
 router.get("/items", (req, res) => {
   const { categoryId, available } = req.query;
+
+  const activeCategories = db
+    .select({ id: schema.menuCategories.id })
+    .from(schema.menuCategories)
+    .where(eq(schema.menuCategories.isActive, true))
+    .all();
+  const activeCatIdSet = new Set(activeCategories.map((c) => c.id));
 
   let items;
 
@@ -49,6 +65,9 @@ router.get("/items", (req, res) => {
       .orderBy(schema.menuItems.sortOrder)
       .all();
   }
+
+  // Filter out any items belonging to missing or inactive categories
+  items = items.filter((item) => activeCatIdSet.has(item.categoryId));
 
   // Filter by availability if requested
   if (available === "true") {

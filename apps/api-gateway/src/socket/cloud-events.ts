@@ -1,5 +1,8 @@
 import { Server, Socket } from "socket.io";
 import { Redis } from "ioredis";
+import { eq } from "drizzle-orm";
+import { db } from "../db/index.js";
+import * as cloudSchema from "@gusto/db-schema/cloud";
 
 // We keep a single instance of the pub/sub connection for the API gateway
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
@@ -19,12 +22,24 @@ export function initCloudSocket(io: Server) {
     });
 
     // Handle incoming real-time sync events from the local POS
-    socket.on("sync:push_realtime", (data) => {
+    socket.on("sync:push_realtime", async (data: any) => {
       console.log(`[Cloud Socket] Received real-time sync payload from POS:`, data);
-      // In a full implementation, we'd process the payload immediately or enqueue it.
+
+      if (data?.eventType === "TABLE_STATUS_CHANGED" && data.payload?.tableId && data.payload?.status) {
+        try {
+          await db.update(cloudSchema.diningTables)
+            .set({ status: data.payload.status })
+            .where(eq(cloudSchema.diningTables.id, data.payload.tableId));
+          console.log(`[Cloud Socket] ✅ Synced table ${data.payload.tableId} status to ${data.payload.status} in Cloud ERP`);
+        } catch (err) {
+          console.error(`[Cloud Socket] Failed to update table status:`, err);
+        }
+      }
       
       // We can also broadcast this back to any web-admin clients connected to this room
-      socket.to(`store:${data.organizationId}:${data.outletId}`).emit("cloud:sync_update", data);
+      if (data?.organizationId && data?.outletId) {
+        socket.to(`store:${data.organizationId}:${data.outletId}`).emit("cloud:sync_update", data);
+      }
     });
 
     socket.on("disconnect", () => {

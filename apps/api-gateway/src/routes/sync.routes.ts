@@ -8,7 +8,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, gte } from "drizzle-orm";
+import { eq, and, gte, or, isNull } from "drizzle-orm";
 import { success, error } from "../utils/response.js";
 import { posSyncQueue } from "../config/queue.js";
 import { db } from "../db/index.js";
@@ -118,8 +118,7 @@ export async function syncRoutes(fastify: FastifyInstance) {
       .from(schema.diningTables)
       .where(eq(schema.diningTables.outletId, outletId));
 
-    // 4. Users/Staff (filtered by outlet, return only safe fields)
-    const usersConditions = [eq(schema.users.outletId, outletId)];
+    // 4. Users/Staff (assigned to this outlet, or org-wide staff without specific outlet)
     const users = await db
       .select({
         id: schema.users.id,
@@ -129,7 +128,15 @@ export async function syncRoutes(fastify: FastifyInstance) {
         isActive: schema.users.isActive,
       })
       .from(schema.users)
-      .where(and(...usersConditions));
+      .where(
+        and(
+          eq(schema.users.organizationId, outlet.organizationId),
+          or(
+            eq(schema.users.outletId, outletId),
+            isNull(schema.users.outletId)
+          )
+        )
+      );
 
     // 5. Outlet config
     const outletConfig = {
@@ -159,6 +166,7 @@ export async function syncRoutes(fastify: FastifyInstance) {
             outletId: item.outletId,
             name: item.name,
             description: item.description,
+            variants: item.variants,
             price: Number(item.price),
             gstRate: item.gstRate,
             isVeg: item.isVeg,
@@ -172,6 +180,7 @@ export async function syncRoutes(fastify: FastifyInstance) {
             outletId: t.outletId,
             name: t.name,
             capacity: t.capacity,
+            status: t.status,
             section: t.section,
             sortOrder: t.sortOrder,
           })),

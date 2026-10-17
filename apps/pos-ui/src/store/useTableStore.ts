@@ -15,6 +15,7 @@ export interface POSTable {
   tableNumber: string;
   capacity: number;
   status: TableStatus;
+  currentOrderId?: string;
   currentBillAmount?: number;
   assignedWaiter?: string;
   seatedSince?: Date;
@@ -29,7 +30,7 @@ export interface TableStoreState {
 
   // Actions
   setSelectedArea: (areaId: string | null) => void;
-  setTableStatus: (tableId: string, status: TableStatus, billAmount?: number, waiter?: string, orderNumber?: string) => void;
+  setTableStatus: (tableId: string, status: TableStatus, billAmount?: number, waiter?: string, orderNumber?: string, orderId?: string) => void;
   setTableLock: (tableId: string, lockedBy?: string) => void;
   transferTable: (fromTableId: string, toTableId: string) => void;
   fetchTables: () => Promise<void>;
@@ -50,17 +51,18 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
 
   setSelectedArea: (areaId) => set({ selectedAreaId: areaId }),
 
-  setTableStatus: (tableId, status, billAmount, waiter, orderNumber) => {
+  setTableStatus: (tableId, status, billAmount, waiter, orderNumber, orderId) => {
     set({
       tables: get().tables.map((t) =>
         t.id === tableId
           ? {
               ...t,
               status,
-              currentBillAmount: billAmount ?? t.currentBillAmount,
-              assignedWaiter: waiter ?? t.assignedWaiter,
-              seatedSince: status === "OCCUPIED" && t.status !== "OCCUPIED" ? new Date() : t.seatedSince,
-              orderNumber: orderNumber ?? t.orderNumber,
+              currentOrderId: status === "VACANT" ? undefined : (orderId ?? t.currentOrderId),
+              currentBillAmount: status === "VACANT" ? undefined : (billAmount ?? t.currentBillAmount),
+              assignedWaiter: status === "VACANT" ? undefined : (waiter ?? t.assignedWaiter),
+              seatedSince: status === "OCCUPIED" && t.status !== "OCCUPIED" ? new Date() : (status === "VACANT" ? undefined : t.seatedSince),
+              orderNumber: status === "VACANT" ? undefined : (orderNumber ?? t.orderNumber),
             }
           : t
       ),
@@ -83,12 +85,13 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     set({
       tables: tables.map((t) => {
         if (t.id === fromTableId) {
-          return { ...t, status: "VACANT", currentBillAmount: undefined, seatedSince: undefined, orderNumber: undefined };
+          return { ...t, status: "VACANT", currentOrderId: undefined, currentBillAmount: undefined, seatedSince: undefined, orderNumber: undefined };
         }
         if (t.id === toTableId) {
           return {
             ...t,
             status: fromTable.status,
+            currentOrderId: fromTable.currentOrderId,
             currentBillAmount: fromTable.currentBillAmount,
             assignedWaiter: fromTable.assignedWaiter,
             seatedSince: fromTable.seatedSince,
@@ -127,6 +130,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
           tableNumber: t.name,
           capacity: t.capacity,
           status: normalizeTableStatus(t.status),
+          currentOrderId: t.currentOrderId || t.currentOrder?.id,
           currentBillAmount: t.currentOrder?.totalAmount,
           assignedWaiter: t.currentOrder?.waiterName,
           seatedSince: t.currentOrder ? new Date(t.currentOrder.createdAt) : undefined,

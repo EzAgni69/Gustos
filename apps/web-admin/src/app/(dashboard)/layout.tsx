@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiFetch } from "@/lib/api-client";
+import { PageErrorBoundary } from "@/components/shared/PageErrorBoundary";
 
 const sidebarNavItems = [
   {
@@ -137,7 +138,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <div className="h-16 flex items-center px-6 border-b border-gray-200 shrink-0">
         <Link href="/" className="flex items-center gap-2 font-bold text-xl text-gray-900 tracking-tight">
           <img src="/logo.png" alt="Gusto's" className="h-8 object-contain" />
-          Gusto ERP
+          Gusto's ERP
         </Link>
       </div>
       
@@ -236,7 +237,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             
             <Link href="/" className="flex md:hidden items-center gap-2 font-bold text-base text-gray-900 tracking-tight">
               <img src="/logo.png" alt="Gusto's" className="h-7 object-contain" />
-              <span>Gusto ERP</span>
+              <span>Gusto's ERP</span>
             </Link>
             
             {/* Breadcrumb */}
@@ -276,7 +277,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
 
         {/* Page Content */}
         <div className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">
-          {children}
+          <PageErrorBoundary>
+            {children}
+          </PageErrorBoundary>
         </div>
       </main>
     </div>

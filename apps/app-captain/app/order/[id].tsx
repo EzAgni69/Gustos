@@ -8,6 +8,7 @@ import { onSocketEvent } from "../../src/services/socket";
 import { SOCKET_EVENTS } from "../../src/config/constants";
 import { StatusBadge } from "../../src/components/StatusBadge";
 import { colors, spacing, fontSize, fontWeight, radius } from "../../src/config/theme";
+import { Ionicons } from "@expo/vector-icons";
 
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -200,7 +201,12 @@ export default function OrderDetailScreen() {
                         </View>
                       )}
 
-                      {item.notes && <Text style={styles.itemNotes}>📝 {item.notes}</Text>}
+                      {item.notes && (
+                        <View style={styles.itemNotesRow}>
+                          <Ionicons name="document-text-outline" size={13} color={colors.warning} />
+                          <Text style={styles.itemNotes}>{item.notes}</Text>
+                        </View>
+                      )}
                     </View>
                     <Text style={styles.itemPrice}>₹{(item.unitPrice * item.quantity).toFixed(0)}</Text>
                   </View>
@@ -279,7 +285,12 @@ export default function OrderDetailScreen() {
                         </View>
                       )}
 
-                      {item.notes && <Text style={styles.itemNotes}>📝 {item.notes}</Text>}
+                      {item.notes && (
+                        <View style={styles.itemNotesRow}>
+                          <Ionicons name="document-text-outline" size={13} color={colors.warning} />
+                          <Text style={styles.itemNotes}>{item.notes}</Text>
+                        </View>
+                      )}
                     </View>
                   </View>
                 );
@@ -336,7 +347,8 @@ export default function OrderDetailScreen() {
 
         {order.status === "COMPLETED" && (
           <View style={styles.settledBanner}>
-            <Text style={styles.settledBannerText}>✅ This order has been settled</Text>
+            <Ionicons name="checkmark-circle" size={18} color={colors.success} style={{ marginRight: 6 }} />
+            <Text style={styles.settledBannerText}>This order has been settled</Text>
           </View>
         )}
 
@@ -393,7 +405,8 @@ const styles = StyleSheet.create({
   modPillText: { fontSize: 11, color: colors.textSecondary },
   modPillTextHalf: { color: colors.accent, fontWeight: fontWeight.semibold },
   modPillTextDrink: { color: colors.info, fontWeight: fontWeight.semibold },
-  itemNotes: { fontSize: fontSize.sm, color: colors.warning, fontStyle: "italic", marginTop: 2 },
+  itemNotesRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
+  itemNotes: { fontSize: fontSize.sm, color: colors.warning, fontStyle: "italic" },
   itemPrice: { fontSize: fontSize.md, color: colors.textPrimary, fontWeight: fontWeight.medium },
   fireButton: { backgroundColor: colors.warning, padding: spacing.lg, borderRadius: radius.md, alignItems: "center", marginTop: spacing.md },
   fireButtonPressed: { opacity: 0.8 },
@@ -409,7 +422,7 @@ const styles = StyleSheet.create({
   transferButton: { backgroundColor: colors.info, padding: spacing.lg, borderRadius: radius.md, alignItems: "center", marginBottom: spacing.md },
   transferButtonPressed: { opacity: 0.8 },
   transferButtonText: { color: "#fff", fontSize: fontSize.md, fontWeight: fontWeight.bold },
-  settledBanner: { backgroundColor: colors.successBg, padding: spacing.lg, borderRadius: radius.md, alignItems: "center" },
+  settledBanner: { backgroundColor: colors.successBg, padding: spacing.lg, borderRadius: radius.md, alignItems: "center", flexDirection: "row", justifyContent: "center" },
   settledBannerText: { color: colors.success, fontSize: fontSize.md, fontWeight: fontWeight.semibold },
   totalsCard: { backgroundColor: colors.bgCard, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, gap: spacing.sm },
   totalRow: { flexDirection: "row", justifyContent: "space-between" },

@@ -55,7 +55,7 @@ router.post("/", (req, res) => {
  * List orders with optional filters.
  */
 router.get("/", (req, res) => {
-  const { status, tableId, waiterId, orderMode, customerPhone, isComplimentary, limit } = req.query;
+  const { status, tableId, waiterId, orderMode, customerPhone, isComplimentary, limit, active } = req.query;
   const orders = listOrders({
     status: status as string | undefined,
     tableId: tableId as string | undefined,
@@ -64,6 +64,7 @@ router.get("/", (req, res) => {
     customerPhone: customerPhone as string | undefined,
     isComplimentary: isComplimentary !== undefined ? isComplimentary === "true" : undefined,
     limit: limit ? Number(limit) : undefined,
+    activeOnly: active === "true",
   });
   res.json({ success: true, data: orders });
 });

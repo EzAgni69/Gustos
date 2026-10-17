@@ -3,15 +3,21 @@ import { useCartStore } from "../../store/useCartStore";
 import { useUIStore } from "../../store/useUIStore";
 
 export const HoldBillsModal: React.FC = () => {
-  const { heldBills, retrieveHeldBill } = useCartStore();
+  const { heldBills, retrieveHeldBill, fetchHeldBills } = useCartStore();
   const { activeModal, closeModal, showNotification } = useUIStore();
+
+  React.useEffect(() => {
+    if (activeModal === "HOLD_BILLS") {
+      fetchHeldBills();
+    }
+  }, [activeModal, fetchHeldBills]);
 
   if (activeModal !== "HOLD_BILLS") return null;
 
-  const handleRetrieve = (id: string) => {
+  const handleRetrieve = (id: string, orderNumber?: string) => {
     retrieveHeldBill(id);
     closeModal();
-    showNotification(`▶️ Retrieved parked bill ${id} back into active billing cart.`);
+    showNotification(`▶️ Retrieved bill #${orderNumber || id.slice(-6)} back into active cart.`);
   };
 
   return (
@@ -48,16 +54,16 @@ export const HoldBillsModal: React.FC = () => {
             return (
               <div
                 key={bill.id}
-                onClick={() => handleRetrieve(bill.id)}
+                onClick={() => handleRetrieve(bill.id, bill.orderNumber)}
                 className="group bg-background hover:bg-surface-hover border border-border hover:border-highlight/60 rounded-xl p-4 flex items-center justify-between transition-all cursor-pointer shadow-md"
               >
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs font-black bg-highlight-hover/20 text-highlight-hover px-2 py-0.5 rounded border border-highlight/30">
-                      {bill.id}
+                      #{bill.orderNumber || bill.id.slice(-6)}
                     </span>
                     <span className="text-sm font-bold text-text-inverse">
-                      {bill.tableNumber ? bill.tableNumber : `${bill.orderMode} Order`}
+                      {bill.tableNumber ? `📍 ${bill.tableNumber}` : `${bill.orderMode} Order`}
                     </span>
                     <span className="text-xs text-text-muted font-mono">({itemCount} items)</span>
                   </div>

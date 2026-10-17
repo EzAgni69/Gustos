@@ -292,7 +292,7 @@ export default function SettingsPage() {
                     id="orgName"
                     value={orgName}
                     onChange={(e) => setOrgName(e.target.value)}
-                    placeholder="e.g. Gusto Global Group"
+                    placeholder="e.g. Gusto's Global Group"
                   />
                 </div>
                 <div className="space-y-2">

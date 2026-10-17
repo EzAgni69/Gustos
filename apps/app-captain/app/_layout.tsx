@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
+import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useAuthStore } from "../src/stores/auth.store";
+import { onSocketEvent } from "../src/services/socket";
+import { SOCKET_EVENTS } from "../src/config/constants";
+import { getUsers } from "../src/services/api";
 import { colors } from "../src/config/theme";
 
 function useProtectedRoute(isReady: boolean, fontsLoaded: boolean) {
@@ -41,6 +45,7 @@ export default function RootLayout() {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
+    ...Ionicons.font,
   });
 
   const { isHydrated, restoreSession } = useAuthStore();
@@ -48,6 +53,27 @@ export default function RootLayout() {
   useEffect(() => {
     restoreSession();
   }, [restoreSession]);
+
+  // If currently logged-in user is deactivated in ERP, immediately log them out
+  useEffect(() => {
+    const unsub = onSocketEvent(SOCKET_EVENTS.SYNC_USERS_UPDATED, async () => {
+      const currentUser = useAuthStore.getState().user;
+      if (currentUser) {
+        try {
+          const activeUsers = await getUsers();
+          const isStillActive = activeUsers.some((u) => u.id === currentUser.id);
+          if (!isStillActive) {
+            console.warn(`[RootLayout] Current user ${currentUser.name} (${currentUser.id}) was deactivated or removed in ERP. Logging out.`);
+            useAuthStore.getState().logoutUser();
+          }
+        } catch {
+          // If offline or error, continue with cached session
+        }
+      }
+    });
+
+    return () => unsub();
+  }, []);
 
   useProtectedRoute(isHydrated, fontsLoaded);
 

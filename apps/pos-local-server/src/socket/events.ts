@@ -89,10 +89,15 @@ export function emitOrderUpdated(orderData: Record<string, unknown>): void {
 }
 
 /**
- * Emit a table status change to all devices.
+ * Emit a table status change to all devices and notify Cloud ERP.
  */
 export function emitTableStatusChanged(tableData: Record<string, unknown>): void {
   io?.emit("table:status-changed", tableData);
+  if (typeof tableData.tableId === "string" && typeof tableData.status === "string") {
+    import("../services/realtime-uplink.service.js").then(({ notifyCloudTableStatus }) => {
+      notifyCloudTableStatus(tableData.tableId as string, tableData.status as string);
+    }).catch(() => {});
+  }
 }
 
 // ─── Edge Case Events ───

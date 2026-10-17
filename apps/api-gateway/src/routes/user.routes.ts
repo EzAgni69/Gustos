@@ -40,6 +40,20 @@ const ROLE_HIERARCHY: UserRole[] = [
   "SUPER_ADMIN",
 ];
 
+/** Notify outlet(s) about user sync updates */
+async function notifyUserSync(orgId: string, outletId?: string | null) {
+  if (outletId) {
+    await publishSyncUpdate(orgId, outletId, "USER_UPDATED");
+  } else {
+    const orgOutlets = await db.query.outlets.findMany({
+      where: eq(cloudSchema.outlets.organizationId, orgId),
+    });
+    for (const o of orgOutlets) {
+      await publishSyncUpdate(orgId, o.id, "USER_UPDATED");
+    }
+  }
+}
+
 export async function userRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
 
@@ -140,9 +154,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         .returning();
       const user = results[0]!;
 
-      if (user.outletId) {
-        await publishSyncUpdate(orgId, user.outletId, "USER_UPDATED");
-      }
+      await notifyUserSync(orgId, user.outletId);
 
       return reply.status(201).send(success(sanitizeUser(user), "User created"));
     }
@@ -222,9 +234,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(error("User not found"));
       }
 
-      if (updated.outletId) {
-        await publishSyncUpdate(orgId, updated.outletId, "USER_UPDATED");
-      }
+      await notifyUserSync(orgId, updated.outletId);
 
       return reply.send(success(sanitizeUser(updated), "User updated"));
     }
@@ -233,7 +243,7 @@ export async function userRoutes(fastify: FastifyInstance) {
   // ─── Delete (Deactivate) User ───
   fastify.delete(
     "/api/v1/users/:id",
-    { preHandler: [requireMinRole("OWNER")] },
+    { preHandler: [requireMinRole("MANAGER")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const orgId = getOrganizationId(request);
@@ -241,6 +251,26 @@ export async function userRoutes(fastify: FastifyInstance) {
       // Prevent self-deactivation
       if (id === request.user.id) {
         return reply.status(400).send(error("Cannot deactivate your own account"));
+      }
+
+      // Check role hierarchy: cannot deactivate users with equal or higher role unless OWNER/SUPER_ADMIN
+      if (request.user.role !== "OWNER" && request.user.role !== "SUPER_ADMIN") {
+        const targetUser = await db.query.users.findFirst({
+          where: and(
+            eq(cloudSchema.users.id, id),
+            eq(cloudSchema.users.organizationId, orgId)
+          ),
+        });
+
+        if (!targetUser) {
+          return reply.status(404).send(error("User not found"));
+        }
+
+        const requesterLevel = ROLE_HIERARCHY.indexOf(request.user.role);
+        const targetLevel = ROLE_HIERARCHY.indexOf(targetUser.role);
+        if (targetLevel >= requesterLevel) {
+          return reply.status(403).send(error("Cannot deactivate user with equal or higher role than your own"));
+        }
       }
 
       const results = await db
@@ -259,9 +289,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(error("User not found"));
       }
 
-      if (deactivated.outletId) {
-        await publishSyncUpdate(orgId, deactivated.outletId, "USER_UPDATED");
-      }
+      await notifyUserSync(orgId, deactivated.outletId);
 
       return reply.send(success(null, "User deactivated"));
     }

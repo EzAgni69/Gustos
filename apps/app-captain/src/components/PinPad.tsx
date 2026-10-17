@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import * as Haptics from "expo-haptics";
 import { colors, fontSize, radius, spacing, fontWeight } from "../config/theme";
+import { Ionicons } from "@expo/vector-icons";
 
 interface PinPadProps {
   onSubmit: (pin: string) => void;
@@ -24,7 +25,7 @@ const KEYS = [
   ["1", "2", "3"],
   ["4", "5", "6"],
   ["7", "8", "9"],
-  ["", "0", "⌫"],
+  ["", "0", "DEL"],
 ];
 
 export function PinPad({ onSubmit, isLoading, error }: PinPadProps) {
@@ -34,7 +35,7 @@ export function PinPad({ onSubmit, isLoading, error }: PinPadProps) {
     (key: string) => {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      if (key === "⌫") {
+      if (key === "DEL") {
         setPin((prev) => prev.slice(0, -1));
         return;
       }
@@ -88,14 +89,11 @@ export function PinPad({ onSubmit, isLoading, error }: PinPadProps) {
                 onPress={() => handlePress(key)}
                 disabled={isLoading || key === ""}
               >
-                <Text
-                  style={[
-                    styles.keyText,
-                    key === "⌫" && styles.keyTextDelete,
-                  ]}
-                >
-                  {key}
-                </Text>
+                {key === "DEL" ? (
+                  <Ionicons name="backspace-outline" size={24} color={colors.textPrimary} />
+                ) : (
+                  <Text style={styles.keyText}>{key}</Text>
+                )}
               </Pressable>
             ))}
           </View>

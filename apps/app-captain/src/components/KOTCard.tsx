@@ -1,5 +1,6 @@
 import React from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, fontSize, fontWeight, radius, shadow } from "../config/theme";
 import type { KOTResponse } from "../services/api";
 
@@ -135,6 +136,7 @@ export function KOTCard({ kot, onUpdateStatus }: KOTCardProps) {
                 isWarning && styles.timeBadgeWarning,
               ]}
             >
+              {isUrgent && <Ionicons name="alert-circle" size={12} color={colors.danger} style={{ marginRight: 3 }} />}
               <Text
                 style={[
                   styles.timeText,
@@ -142,7 +144,7 @@ export function KOTCard({ kot, onUpdateStatus }: KOTCardProps) {
                   isWarning && styles.timeTextWarning,
                 ]}
               >
-                {isUrgent ? `🚨 ${elapsedMins}m` : formatElapsedTime(elapsedMins)}
+                {formatElapsedTime(elapsedMins)}
               </Text>
             </View>
             <View style={[styles.statusBadge, { backgroundColor: accentColor + "20" }]}>
@@ -201,7 +203,12 @@ export function KOTCard({ kot, onUpdateStatus }: KOTCardProps) {
                     </View>
                   )}
 
-                  {item.notes && <Text style={styles.itemNotes}>📝 {item.notes}</Text>}
+                  {item.notes && (
+                    <View style={styles.itemNotesRow}>
+                      <Ionicons name="document-text-outline" size={12} color={colors.warning} />
+                      <Text style={styles.itemNotes}>{item.notes}</Text>
+                    </View>
+                  )}
                 </View>
               </View>
             );
@@ -275,6 +282,8 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   timeBadge: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: radius.sm,
@@ -384,11 +393,16 @@ const styles = StyleSheet.create({
     color: colors.info,
     fontWeight: fontWeight.semibold,
   },
+  itemNotesRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
+  },
   itemNotes: {
     fontSize: fontSize.sm,
     color: colors.warning,
     fontStyle: "italic",
-    marginTop: 2,
   },
   footer: {
     marginTop: spacing.md,

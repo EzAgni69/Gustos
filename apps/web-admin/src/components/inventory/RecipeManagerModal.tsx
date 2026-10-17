@@ -19,6 +19,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { useToast } from "@/lib/toast";
 import { InventoryItem, Recipe, createRecipeSchema } from "@gusto/api-contracts";
+import { calculateRecipeCost } from "@/lib/recipe-utils";
 
 interface RecipeManagerModalProps {
   isOpen: boolean;
@@ -64,6 +65,18 @@ interface RecipeFormValues {
     name: "ingredients",
   });
 
+  const watchedIngredients = form.watch("ingredients");
+
+  const estimatedCost = calculateRecipeCost(
+    (watchedIngredients ?? []).map((ingredient) => {
+      const item = inventoryItems.find((i) => i.id === ingredient.inventoryItemId);
+      return {
+        quantity: ingredient.quantity ?? 0,
+        costPerUnit: item?.costPerUnit ?? 0,
+      };
+    })
+  );
+
   useEffect(() => {
     if (isOpen) {
       loadInventoryItems();
@@ -107,6 +120,7 @@ interface RecipeFormValues {
       onClose();
     } else {
       toast({ title: "Failed to save", description: res.message, variant: "error" });
+      // Do NOT call onClose — keep modal open with field values intact
     }
     setIsSubmitting(false);
   };
@@ -119,6 +133,9 @@ interface RecipeFormValues {
           <DialogDescription>
             Map raw ingredients to this menu item. Whenever an order containing this item is completed, the sync worker will deduct these exact quantities from your stock.
           </DialogDescription>
+          <p className="text-sm font-medium text-gray-700 mt-1">
+            Estimated cost: <span className="text-blue-600">₹{estimatedCost.toFixed(2)}</span>
+          </p>
         </DialogHeader>
 
         <form onSubmit={form.handleSubmit(handleSave)} className="space-y-6 py-4">

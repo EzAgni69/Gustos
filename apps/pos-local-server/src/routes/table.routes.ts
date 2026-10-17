@@ -5,7 +5,7 @@
  */
 
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { eq, and, desc, notInArray } from "drizzle-orm";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
 import {
@@ -13,13 +13,13 @@ import {
   emitTableSwapped,
   emitTableMerged,
 } from "../socket/events.js";
-import { mergeOrders } from "../services/order.service.js";
+import { mergeOrders, getOrderById } from "../services/order.service.js";
 
 const router = Router();
 
 /**
  * GET /api/tables
- * List all dining tables with current status.
+ * List all dining tables with current status and active order.
  */
 router.get("/", (_req, res) => {
   try {
@@ -31,34 +31,120 @@ router.get("/", (_req, res) => {
 
     // Enrich with current order info if occupied
     const enriched = tables.map((table) => {
+      let order: any = null;
       if (table.currentOrderId) {
-        const order = db
+        order = db
           .select()
           .from(schema.orders)
           .where(eq(schema.orders.id, table.currentOrderId))
           .get();
 
-        return {
-          ...table,
-          currentOrder: order
-            ? {
-                id: order.id,
-                orderNumber: order.orderNumber,
-                totalAmount: order.totalAmount,
-                waiterName: order.waiterName,
-                paxCount: order.paxCount,
-                createdAt: order.createdAt,
-              }
-            : null,
-        };
+        if (order && (order.status === "COMPLETED" || order.status === "CANCELLED" || order.status === "MERGED")) {
+          order = null;
+        }
       }
-      return { ...table, currentOrder: null };
+
+      // Fallback: check for active order on this table
+      if (!order) {
+        order = db
+          .select()
+          .from(schema.orders)
+          .where(
+            and(
+              eq(schema.orders.tableId, table.id),
+              notInArray(schema.orders.status, ["COMPLETED", "CANCELLED", "MERGED"])
+            )
+          )
+          .orderBy(desc(schema.orders.createdAt))
+          .get();
+      }
+
+      const activeStatus = order
+        ? (table.status === "AVAILABLE" || table.status === "VACANT" ? "OCCUPIED" : table.status)
+        : (table.status === "OCCUPIED" || table.status === "BILLED" ? "AVAILABLE" : table.status);
+
+      return {
+        ...table,
+        status: activeStatus,
+        currentOrderId: order ? order.id : null,
+        currentOrder: order
+          ? {
+              id: order.id,
+              orderNumber: order.orderNumber,
+              totalAmount: order.totalAmount,
+              waiterName: order.waiterName,
+              paxCount: order.paxCount,
+              createdAt: order.createdAt,
+            }
+          : null,
+      };
     });
 
     res.json({ success: true, data: enriched });
   } catch (err: any) {
     console.error("[GET /api/tables Error]", err);
     res.status(500).json({ success: false, message: err?.message || "Error fetching tables" });
+  }
+});
+
+/**
+ * GET /api/tables/:id/order
+ * Get the current active order for a table with all items.
+ */
+router.get("/:id/order", (req, res) => {
+  try {
+    const { id } = req.params;
+    const table = db
+      .select()
+      .from(schema.diningTables)
+      .where(eq(schema.diningTables.id, id!))
+      .get();
+
+    if (!table) {
+      res.status(404).json({ success: false, message: "Table not found" });
+      return;
+    }
+
+    let orderId = table.currentOrderId;
+    if (orderId) {
+      const existing = db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, orderId))
+        .get();
+      if (!existing || existing.status === "COMPLETED" || existing.status === "CANCELLED" || existing.status === "MERGED") {
+        orderId = null;
+      }
+    }
+
+    if (!orderId) {
+      const active = db
+        .select()
+        .from(schema.orders)
+        .where(
+          and(
+            eq(schema.orders.tableId, id!),
+            notInArray(schema.orders.status, ["COMPLETED", "CANCELLED", "MERGED"])
+          )
+        )
+        .orderBy(desc(schema.orders.createdAt))
+        .get();
+
+      if (active) {
+        orderId = active.id;
+      }
+    }
+
+    if (!orderId) {
+      res.json({ success: true, data: null, message: "No active order for this table" });
+      return;
+    }
+
+    const fullOrder = getOrderById(orderId);
+    res.json({ success: true, data: fullOrder });
+  } catch (err: any) {
+    console.error("[GET /api/tables/:id/order Error]", err);
+    res.status(500).json({ success: false, message: err?.message || "Failed to fetch table order" });
   }
 });
 

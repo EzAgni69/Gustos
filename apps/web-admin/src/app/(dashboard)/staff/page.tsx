@@ -43,6 +43,8 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Users, Plus, MoreHorizontal, Loader2, Edit, Trash2, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { getRoleBadgeClass, resolveOutletName, filterStaff } from "@/lib/staff-utils";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 export default function StaffPage() {
   const { toast } = useToast();
@@ -52,6 +54,8 @@ export default function StaffPage() {
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+
+  const [query, setQuery] = useState("");
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -339,59 +343,76 @@ export default function StaffPage() {
                   Loading staff members...
                 </div>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-gray-50 hover:bg-gray-50">
-                      <TableHead className="w-[250px]">Name</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {staff.map((employee) => (                      <TableRow key={employee.id}>
-                        <TableCell className="font-medium text-gray-900">{employee.name}</TableCell>
-                        <TableCell className="text-gray-500">{employee.email || "—"}</TableCell>
-                        <TableCell>
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">
-                            {employee.role}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              employee.isActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-800"
-                            }`}
-                          >
-                            {employee.isActive ? "Active" : "Inactive"}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger>
-                              <Button variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600">
-                                <MoreHorizontal className="w-4 h-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => openEditModal(employee)}>
-                                <Edit className="w-4 h-4 mr-2" />
-                                Edit
-                              </DropdownMenuItem>
-                              {employee.isActive && (
-                                <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteEmployee(employee.id)}>
-                                  <Trash2 className="w-4 h-4 mr-2" />
-                                  Deactivate
-                                </DropdownMenuItem>
-                              )}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <>
+                  <div className="px-4 pt-4 pb-2">
+                    <Input
+                      placeholder="Search by name, email, or role…"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      className="max-w-sm"
+                    />
+                  </div>
+                  {filterStaff(staff, query).length === 0 ? (
+                    <EmptyState title="No results found" description="Try adjusting your search query." />
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-gray-50 hover:bg-gray-50">
+                          <TableHead className="w-[250px]">Name</TableHead>
+                          <TableHead>Email</TableHead>
+                          <TableHead>Role</TableHead>
+                          <TableHead>Outlet</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filterStaff(staff, query).map((employee) => (
+                          <TableRow key={employee.id} className={!employee.isActive ? "opacity-40" : ""}>
+                            <TableCell className="font-medium text-gray-900">{employee.name}</TableCell>
+                            <TableCell className="text-gray-500">{employee.email || "—"}</TableCell>
+                            <TableCell>
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-gray-200 ${getRoleBadgeClass(employee.role)}`}>
+                                {employee.role}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-gray-500">{resolveOutletName(employee.outletId, outlets)}</TableCell>
+                            <TableCell>
+                              <span
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                  employee.isActive ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-800"
+                                }`}
+                              >
+                                {employee.isActive ? "Active" : "Inactive"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger>
+                                  <Button variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600">
+                                    <MoreHorizontal className="w-4 h-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => openEditModal(employee)}>
+                                    <Edit className="w-4 h-4 mr-2" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  {employee.isActive && (
+                                    <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteEmployee(employee.id)}>
+                                      <Trash2 className="w-4 h-4 mr-2" />
+                                      Deactivate
+                                    </DropdownMenuItem>
+                                  )}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </>
               )}
             </CardContent>
             {totalPages > 1 && (
