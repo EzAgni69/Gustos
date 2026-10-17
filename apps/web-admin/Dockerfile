@@ -3,8 +3,7 @@ FROM node:20-alpine AS base
 FROM base AS builder
 RUN apk update && apk add --no-cache libc6-compat
 WORKDIR /app
-RUN corepack enable pnpm
-RUN pnpm i -g turbo
+RUN npm install -g turbo
 COPY . .
 RUN turbo prune --scope=@gusto/web-admin --docker
 
