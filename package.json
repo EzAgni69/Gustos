@@ -15,6 +15,7 @@
   "devDependencies": {
     "@gusto/eslint-config": "workspace:*",
     "@gusto/tsconfig": "workspace:*",
+    "@types/node": "^20.19.43",
     "prettier": "^3.5.0",
     "turbo": "^2.5.0",
     "typescript": "^5.8.0"
