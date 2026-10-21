@@ -12,6 +12,7 @@ export interface POSCartItem extends CartItem {
   addOns?: CartItemAddOn[];
   notes?: string;
   isSaved?: boolean;
+  kotId?: string | null;
 }
 
 export interface CustomerInfo {
@@ -54,6 +55,7 @@ export interface CartStoreState {
 
   // Actions
   setOrderMode: (mode: OrderMode, tableId?: string | null, tableNumber?: string | null) => void;
+  switchOrderMode: (mode: OrderMode) => void;
   setPaxCount: (count: number) => void;
   setAssignedWaiter: (waiter: string) => void;
   setCustomer: (customer: CustomerInfo | null) => void;
@@ -124,10 +126,35 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   isProcessingPayment: false,
   heldBills: [],
 
-  setOrderMode: (mode, tableId = null, tableNumber = null) => {
+  switchOrderMode: (newMode: OrderMode) => {
     const oldTableId = get().tableId;
-    const newTableId = mode === "DINE_IN" ? (tableId ?? get().tableId) : null;
+    if (oldTableId) {
+      import("../hooks/useSocket").then(({ getSocket }) => {
+        getSocket().emit("table:unlock", { tableId: oldTableId });
+      }).catch(() => {});
+    }
+
+    set({
+      orderMode: newMode,
+      activeOrderId: null,
+      orderNumber: null,
+      tableId: null,
+      tableNumber: null,
+      paxCount: 1,
+      assignedWaiter: "Counter",
+      items: [],
+      discount: undefined,
+      customer: null,
+      isProcessingPayment: false,
+    });
+  },
+
+  setOrderMode: (mode, tableId = null, tableNumber = null) => {
+    const state = get();
+    const oldTableId = state.tableId;
+    const newTableId = mode === "DINE_IN" ? (tableId ?? state.tableId) : null;
     
+    // If switching FROM dine-in to non-dine-in, unlock the old table
     if (oldTableId && oldTableId !== newTableId) {
       import("../hooks/useSocket").then(({ getSocket }) => {
         getSocket().emit("table:unlock", { tableId: oldTableId });
@@ -137,7 +164,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     set({
       orderMode: mode,
       tableId: newTableId,
-      tableNumber: mode === "DINE_IN" ? (tableNumber ?? get().tableNumber) : null,
+      tableNumber: mode === "DINE_IN" ? (tableNumber ?? state.tableNumber) : null,
     });
   },
 
@@ -156,10 +183,10 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
 
   addItem: (menuItem, modifiers = [], notes = "") => {
     const { items } = get();
-    // For unsaved items, check if identical modifiers exist
+    // For unsaved items, check if identical modifiers exist — merge quantity
     const modString = [...modifiers].sort().join("|") + `|${notes}`;
     const existingIndex = items.findIndex((item) => {
-      if (item.isSaved) return false; // Don't merge with saved items
+      if (item.isSaved) return false; // Don't merge with already-fired (saved) items
       const itemModStr = [...(item.modifiers || [])].sort().join("|") + `|${item.notes || ""}`;
       return item.menuItemId === menuItem.id && itemModStr === modString;
     });
@@ -172,6 +199,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         set({ items: updated });
       }
     } else {
+      // New item — always unsaved, even if other items are already fired
       const newItem: POSCartItem = {
         cartItemId: `local-${cartIdCounter++}`,
         menuItemId: menuItem.id,
@@ -182,6 +210,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         modifiers,
         notes,
         isSaved: false,
+        kotId: null,
       };
       set({ items: [...items, newItem] });
     }
@@ -201,6 +230,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
       addOns: addOns.length > 0 ? addOns : undefined,
       notes,
       isSaved: false,
+      kotId: null,
     };
     set({ items: [...items, newItem] });
   },
@@ -209,8 +239,66 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     const item = items.find(i => i.cartItemId === cartItemId);
     if (!item) return;
 
-    if (item.isSaved && activeOrderId) {
-      // Async update to backend
+    if (item.kotId) {
+      if (delta > 0) {
+        // Adding more of an already-fired item:
+        // Add as an unfired line item so a supplementary KOT can be fired to the kitchen!
+        const modString = [...(item.modifiers || [])].sort().join("|") + `|${item.notes || ""}`;
+        const existingUnsaved = items.find(i => 
+          !i.kotId && 
+          i.menuItemId === item.menuItemId && 
+          ([...(i.modifiers || [])].sort().join("|") + `|${i.notes || ""}`) === modString
+        );
+        if (existingUnsaved) {
+          const updated = items.map(i => 
+            i.cartItemId === existingUnsaved.cartItemId ? { ...i, quantity: i.quantity + delta } : i
+          );
+          set({ items: updated });
+        } else {
+          const newItem: POSCartItem = {
+            cartItemId: `local-${cartIdCounter++}`,
+            menuItemId: item.menuItemId,
+            menuItemName: item.menuItemName,
+            variantName: item.variantName,
+            quantity: delta,
+            unitPrice: item.unitPrice,
+            gstRate: item.gstRate,
+            modifiers: item.modifiers,
+            addOns: item.addOns,
+            notes: item.notes,
+            isSaved: false,
+            kotId: null,
+          };
+          set({ items: [...items, newItem] });
+        }
+      } else if (activeOrderId) {
+        // Reducing a fired item
+        const newQty = item.quantity + delta;
+        if (newQty <= 0) {
+          apiClient(`/orders/${activeOrderId}/items/${item.cartItemId}`, { method: "DELETE" })
+            .then(() => get().retrieveHeldBill(activeOrderId))
+            .catch(console.error);
+        } else {
+          apiClient(`/orders/${activeOrderId}/items/${item.cartItemId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ quantity: newQty }),
+          })
+            .then(() => get().retrieveHeldBill(activeOrderId))
+            .catch(console.error);
+        }
+        
+        // Optimistic update
+        const updated = items.map((i) => {
+          if (i.cartItemId === cartItemId) {
+            return newQty > 0 ? { ...i, quantity: newQty } : null;
+          }
+          return i;
+        }).filter((i): i is POSCartItem => i !== null);
+        set({ items: updated });
+      }
+      return;
+    } else if (item.isSaved && activeOrderId) {
+      // Saved in backend database, but not yet fired to kitchen
       const newQty = item.quantity + delta;
       if (newQty <= 0) {
         apiClient(`/orders/${activeOrderId}/items/${item.cartItemId}`, { method: "DELETE" })
@@ -224,8 +312,6 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           .then(() => get().retrieveHeldBill(activeOrderId))
           .catch(console.error);
       }
-      
-      // Optimistic update
       const updated = items.map((i) => {
         if (i.cartItemId === cartItemId) {
           return newQty > 0 ? { ...i, quantity: newQty } : null;
@@ -234,7 +320,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
       }).filter((i): i is POSCartItem => i !== null);
       set({ items: updated });
     } else {
-      // Local update
+      // Local cart update
       const updated = items.map((i) => {
         if (i.cartItemId === cartItemId) {
           const newQty = i.quantity + delta;
@@ -289,6 +375,11 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     set({
       activeOrderId: null,
       orderNumber: null,
+      orderMode: "DINE_IN",
+      tableId: null,
+      tableNumber: null,
+      paxCount: 1,
+      assignedWaiter: "Counter",
       items: [],
       discount: undefined,
       customer: null,
@@ -301,7 +392,21 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     
     let orderId = activeOrderId;
 
-    // 1. Create order if it doesn't exist
+    // 1. Bind to active table order if exists, otherwise create new order
+    if (!orderId) {
+      if (orderMode === "DINE_IN" && tableId) {
+        try {
+          const tableOrderRes = await apiClient<{ success: boolean; data: any }>(`/tables/${tableId}/order`);
+          if (tableOrderRes.success && tableOrderRes.data?.id) {
+            orderId = tableOrderRes.data.id;
+            set({ activeOrderId: orderId, orderNumber: tableOrderRes.data.orderNumber });
+          }
+        } catch (checkErr) {
+          console.warn("Could not check active order for table before create:", checkErr);
+        }
+      }
+    }
+
     if (!orderId) {
       const payload = {
         orderMode,
@@ -461,6 +566,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
           notes: i.notes || "",
           isSaved: true,
+          kotId: i.kotId || null,
         })),
         discount: order.discountType ? { type: order.discountType, value: order.discountValue } : undefined,
         heldAt: new Date(order.createdAt),
@@ -494,6 +600,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
           notes: i.notes || "",
           isSaved: true,
+          kotId: i.kotId || null,
         }));
 
         const { useTableStore } = await import("./useTableStore");
@@ -526,9 +633,30 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     const targetTable = tableStore.tables.find(t => t.id === tableId);
     const resolvedTableNumber = tableNumber || targetTable?.tableNumber || tableId;
 
-    // If there's unsaved work on a different table/order, hold it first if applicable
-    if (items.length > 0 && activeOrderId && activeOrderId !== orderId && items.some(i => !i.isSaved)) {
-      await get().holdCurrentBill("Auto-held during table switch");
+    const currentTableId = get().tableId;
+    // If there are items in the current cart and we are switching to a different table/order
+    const isDifferentTable = currentTableId && currentTableId !== tableId;
+    const isDifferentOrder = activeOrderId && activeOrderId !== (orderId || targetTable?.currentOrderId);
+    const hasCartWithoutTable = !currentTableId && items.length > 0;
+
+    if (items.length > 0 && (isDifferentTable || isDifferentOrder || hasCartWithoutTable)) {
+      if (items.some(i => !i.isSaved)) {
+        // Has unsaved items — auto-hold/save current bill before switching
+        await get().holdCurrentBill("Auto-held during table switch");
+      }
+      if (currentTableId) {
+        import("../hooks/useSocket").then(({ getSocket }) => {
+          getSocket().emit("table:unlock", { tableId: currentTableId });
+        }).catch(() => {});
+      }
+      set({
+        activeOrderId: null,
+        orderNumber: null,
+        items: [],
+        discount: undefined,
+        customer: null,
+        isProcessingPayment: false,
+      });
     }
 
     // Determine orderId to fetch
@@ -588,7 +716,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     const orderId = await get().syncOrderToBackend("Fire KOT");
     if (orderId) {
       try {
-        await apiClient(`/orders/${orderId}/kot`, { method: "POST" });
+        await apiClient(`/orders/${orderId}/kot`, { method: "POST", body: JSON.stringify({}) });
         await get().retrieveHeldBill(orderId);
       } catch (e) {
         console.error("Failed to fire KOT, queuing offline", e);
@@ -647,6 +775,10 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     }
     set({ isProcessingPayment: true });
 
+    // Capture table info BEFORE any clearing happens
+    const preCheckoutTableId = get().tableId;
+    const preCheckoutOrderMode = get().orderMode;
+
     const orderId = await get().syncOrderToBackend("Checkout");
     if (!orderId) {
       set({ isProcessingPayment: false });
@@ -654,6 +786,16 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     }
 
     try {
+      // If there are any unfired items in the cart, fire KOT first so KDS gets the order ticket
+      const hasUnfired = get().items.some(i => !i.kotId);
+      if (hasUnfired) {
+        try {
+          await apiClient(`/orders/${orderId}/kot`, { method: "POST", body: JSON.stringify({}) });
+        } catch (kotErr) {
+          console.warn("Could not fire KOT before checkout, backend will auto-fire:", kotErr);
+        }
+      }
+
       const res = await apiClient<{ success: boolean; data?: { orderId: string; invoiceNumber?: string } }>(`/orders/${orderId}/checkout`, {
         method: "POST",
         body: JSON.stringify(payload)
@@ -670,21 +812,40 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         } catch (printError) {
           console.error("Failed to print bill", printError);
         }
-        const finalTableId = get().tableId;
-        set({ isProcessingPayment: false });
-        get().clearCart();
-        if (finalTableId) {
-          import("./useTableStore").then(({ useTableStore }) => {
-            useTableStore.getState().setTableStatus(finalTableId, "VACANT");
-            useTableStore.getState().fetchTables();
+        
+        // Release table BEFORE clearing cart (using captured pre-checkout values)
+        if (preCheckoutOrderMode === "DINE_IN" && preCheckoutTableId) {
+          try {
+            const { useTableStore } = await import("./useTableStore");
+            useTableStore.getState().setTableStatus(preCheckoutTableId, "VACANT");
+          } catch {} // Table store update is best-effort
+          import("../hooks/useSocket").then(({ getSocket }) => {
+            getSocket().emit("table:unlock", { tableId: preCheckoutTableId });
           }).catch(() => {});
         }
+        
+        set({ isProcessingPayment: false });
+        get().clearCart();
+        
+        // Fetch fresh table data from server to ensure sync
+        import("./useTableStore").then(({ useTableStore }) => {
+          useTableStore.getState().fetchTables();
+        }).catch(() => {});
+        
         return { success: true, printed, invoiceNumber: res.data?.invoiceNumber };
       }
       set({ isProcessingPayment: false });
       return { success: false, printed: false, error: "Checkout was not accepted by the server." };
     } catch (e) {
       console.error("Failed to checkout, queuing offline", e);
+      
+      // Release table even in offline mode
+      if (preCheckoutOrderMode === "DINE_IN" && preCheckoutTableId) {
+        import("./useTableStore").then(({ useTableStore }) => {
+          useTableStore.getState().setTableStatus(preCheckoutTableId, "VACANT");
+        }).catch(() => {});
+      }
+      
       await db.syncQueue.add({
         action: "CHECKOUT",
         orderId: orderId,
@@ -693,8 +854,8 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         createdAt: new Date().toISOString(),
         retryCount: 0,
       });
-      get().clearCart();
       set({ isProcessingPayment: false });
+      get().clearCart();
       return { success: true, printed: false, invoiceNumber: `OFFLINE-${orderId.slice(-4)}` };
     }
   },

@@ -32,15 +32,21 @@ const getInitialServerUrl = (): string => {
     const stored = localStorage.getItem("gusto_kds_server_url");
     if (stored) return stored;
 
+    // If served directly from the POS local server on port 8080 or /kds
+    if (window.location.port === "8080" || window.location.pathname.startsWith("/kds")) {
+      return window.location.origin;
+    }
+
+    // If loaded on a remote device / tablet over LAN
+    if (window.location.hostname && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+      return `http://${window.location.hostname}:8080`;
+    }
+
     const envUrl =
       (typeof import.meta !== "undefined" &&
         (import.meta as unknown as Record<string, Record<string, string>>).env
           ?.VITE_POS_SERVER_URL);
     if (envUrl) return envUrl;
-
-    if (window.location.hostname && window.location.hostname !== "localhost") {
-      return `http://${window.location.hostname}:8080`;
-    }
   }
 
   return "http://localhost:8080";

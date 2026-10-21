@@ -23,12 +23,16 @@ import { KOTCard } from "./components/KOTCard";
 import { EmptyState } from "./components/EmptyState";
 import { ConnectionOverlay } from "./components/ConnectionOverlay";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { getTimerStatus, TIMER_RED_THRESHOLD, getItemStationId } from "./types";
+import { getTimerStatus, TIMER_RED_THRESHOLD, getItemStationId, KDS_STATIONS } from "./types";
 
 export function App() {
   const [selectedStation, setSelectedStation] = useState<string | null>(() => {
     try {
-      return localStorage.getItem("kds-selected-station");
+      const stored = localStorage.getItem("kds-selected-station");
+      if (stored && KDS_STATIONS.some((s) => s.id === stored)) {
+        return stored;
+      }
+      return null;
     } catch {
       return null;
     }

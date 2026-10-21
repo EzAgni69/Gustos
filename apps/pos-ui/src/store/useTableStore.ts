@@ -52,21 +52,26 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   setSelectedArea: (areaId) => set({ selectedAreaId: areaId }),
 
   setTableStatus: (tableId, status, billAmount, waiter, orderNumber, orderId) => {
-    set({
-      tables: get().tables.map((t) =>
-        t.id === tableId
-          ? {
-              ...t,
-              status,
-              currentOrderId: status === "VACANT" ? undefined : (orderId ?? t.currentOrderId),
-              currentBillAmount: status === "VACANT" ? undefined : (billAmount ?? t.currentBillAmount),
-              assignedWaiter: status === "VACANT" ? undefined : (waiter ?? t.assignedWaiter),
-              seatedSince: status === "OCCUPIED" && t.status !== "OCCUPIED" ? new Date() : (status === "VACANT" ? undefined : t.seatedSince),
-              orderNumber: status === "VACANT" ? undefined : (orderNumber ?? t.orderNumber),
-            }
-          : t
-      ),
-    });
+    const updatedTables = get().tables.map((t) =>
+      t.id === tableId
+        ? {
+            ...t,
+            status,
+            currentOrderId: status === "VACANT" ? undefined : (orderId ?? t.currentOrderId),
+            currentBillAmount: status === "VACANT" ? undefined : (billAmount ?? t.currentBillAmount),
+            assignedWaiter: status === "VACANT" ? undefined : (waiter ?? t.assignedWaiter),
+            seatedSince: status === "OCCUPIED" && t.status !== "OCCUPIED" ? new Date() : (status === "VACANT" ? undefined : t.seatedSince),
+            orderNumber: status === "VACANT" ? undefined : (orderNumber ?? t.orderNumber),
+          }
+        : t
+    );
+    set({ tables: updatedTables });
+    
+    // Also persist changed table to IndexedDB so local cache is never stale
+    const changedTable = updatedTables.find(t => t.id === tableId);
+    if (changedTable) {
+      db.posTables.put(changedTable).catch(() => {});
+    }
   },
 
   setTableLock: (tableId, lockedBy) => {
@@ -105,15 +110,17 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
 
   fetchTables: async () => {
     try {
-      // 1. Load from IndexedDB
-      const cachedAreas = await db.areas.toArray();
-      const cachedTables = await db.posTables.toArray();
-      if (cachedAreas.length > 0 && cachedTables.length > 0) {
-        set({
-          areas: cachedAreas,
-          tables: cachedTables,
-          selectedAreaId: get().selectedAreaId || cachedAreas[0]?.id
-        });
+      // 1. Load from IndexedDB ONLY if tables are not yet loaded in memory
+      if (get().tables.length === 0) {
+        const cachedAreas = await db.areas.toArray();
+        const cachedTables = await db.posTables.toArray();
+        if (cachedAreas.length > 0 && cachedTables.length > 0) {
+          set({
+            areas: cachedAreas,
+            tables: cachedTables,
+            selectedAreaId: get().selectedAreaId || cachedAreas[0]?.id
+          });
+        }
       }
 
       // 2. Fetch from network

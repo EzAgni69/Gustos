@@ -81,7 +81,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({ table, onClo
         {/* Header */}
         <div className="p-4 border-b border-border flex justify-between items-center bg-background">
           <div>
-            <h2 className="text-lg font-bold text-text-inverse">Reservations: {table.tableNumber}</h2>
+            <h2 className="text-lg font-bold text-text-main">Reservations: {table.tableNumber}</h2>
             <p className="text-xs text-text-muted font-mono">Capacity: {table.capacity} Pax</p>
           </div>
           <button
@@ -158,7 +158,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({ table, onClo
                 {reservations.map((res) => (
                   <div key={res.id} className="bg-background border border-border p-3 rounded flex justify-between items-center">
                     <div>
-                      <div className="text-sm font-bold text-text-inverse">{res.customerName || "Anonymous"}</div>
+                      <div className="text-sm font-bold text-text-main">{res.customerName || "Anonymous"}</div>
                       <div className="text-xs text-text-muted font-mono">
                         {new Date(res.reservationTime).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })} ({res.durationMins}m)
                       </div>

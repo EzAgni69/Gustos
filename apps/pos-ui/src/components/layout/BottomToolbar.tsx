@@ -4,7 +4,7 @@ import { useUIStore, type POSModal } from "../../store/useUIStore";
 import { CashIcon, SplitIcon } from "../common/PaymentIcons";
 
 export const BottomToolbar: React.FC = () => {
-  const { items, holdCurrentBill } = useCartStore();
+  const { items, holdCurrentBill, fireKOT, tableId, tableNumber, activeOrderId, loadTableOrder, retrieveHeldBill } = useCartStore();
   const { activeView, setActiveView, openModal, showNotification } = useUIStore();
 
   const buttons: {
@@ -13,7 +13,7 @@ export const BottomToolbar: React.FC = () => {
     label: string;
     icon: React.ReactNode;
     color: string;
-    action: () => void;
+    action: () => void | Promise<void>;
   }[] = [
     {
       key: "F1",
@@ -21,11 +21,17 @@ export const BottomToolbar: React.FC = () => {
       label: "Save & Print KOT",
       icon: "🖨️",
       color: "bg-emerald-700 hover:bg-emerald-600 border-emerald-600 text-text-inverse font-bold",
-      action: () => {
+      action: async () => {
+        const unfiredItems = items.filter(i => !i.kotId);
         if (items.length === 0) {
           showNotification("⚠️ Cart is empty. Add items before firing KOT.");
           return;
         }
+        if (unfiredItems.length === 0) {
+          showNotification("ℹ️ All items already fired to kitchen. Add new items to fire another KOT.");
+          return;
+        }
+        await fireKOT();
         showNotification("🖨️ KOT Fired! Sent to Kitchen Display & Thermal Printer.");
       },
     },
@@ -135,8 +141,22 @@ export const BottomToolbar: React.FC = () => {
       label: "Bill Paper (Flip)",
       icon: "🧾",
       color: "bg-surface-hover hover:bg-surface-hover border-border-hover text-text-main",
-      action: () => {
+      action: async () => {
         if (items.length === 0) {
+          if (tableId) {
+            showNotification(`🔄 Loading active bill for ${tableNumber || "table"}...`);
+            const hasOrder = await loadTableOrder(tableId, tableNumber || undefined, activeOrderId || undefined);
+            if (hasOrder && useCartStore.getState().items.length > 0) {
+              openModal("BILL_PREVIEW");
+              return;
+            }
+          } else if (activeOrderId) {
+            await retrieveHeldBill(activeOrderId);
+            if (useCartStore.getState().items.length > 0) {
+              openModal("BILL_PREVIEW");
+              return;
+            }
+          }
           showNotification("⚠️ Cart is empty. Add items before viewing bill paper.");
           return;
         }
@@ -149,8 +169,22 @@ export const BottomToolbar: React.FC = () => {
       label: "Settle & Pay",
       icon: <CashIcon className="w-3.5 h-3.5" />,
       color: "bg-primary hover:bg-primary-hover border-primary text-text-inverse font-extrabold shadow-lg shadow-primary/30",
-      action: () => {
+      action: async () => {
         if (items.length === 0) {
+          if (tableId) {
+            showNotification(`🔄 Loading active bill for ${tableNumber || "table"}...`);
+            const hasOrder = await loadTableOrder(tableId, tableNumber || undefined, activeOrderId || undefined);
+            if (hasOrder && useCartStore.getState().items.length > 0) {
+              openModal("PAYMENT");
+              return;
+            }
+          } else if (activeOrderId) {
+            await retrieveHeldBill(activeOrderId);
+            if (useCartStore.getState().items.length > 0) {
+              openModal("PAYMENT");
+              return;
+            }
+          }
           showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
           return;
         }

@@ -24,6 +24,7 @@ export const OrderCart: React.FC = () => {
     holdCurrentBill,
     fireKOT,
     loadTableOrder,
+    retrieveHeldBill,
   } = useCartStore();
 
   const { openModal, showNotification } = useUIStore();
@@ -45,7 +46,7 @@ export const OrderCart: React.FC = () => {
                     : "⚡"}
             </span>
             <div>
-              <div className="text-sm font-extrabold text-text-inverse flex items-center gap-1.5">
+              <div className="text-sm font-extrabold text-text-main flex items-center gap-1.5">
                 <span>{orderMode === "DINE_IN" ? tableNumber || "Table Not Selected" : orderMode}</span>
                 {activeOrderId && (
                   <span className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-mono">
@@ -97,7 +98,7 @@ export const OrderCart: React.FC = () => {
               </div>
               <button
                 onClick={() => openModal("CUSTOMER")}
-                className="text-[11px] text-text-muted hover:text-text-inverse ml-2 shrink-0"
+                className="text-[11px] text-text-muted hover:text-text-main ml-2 shrink-0"
               >
                 Edit
               </button>
@@ -125,7 +126,7 @@ export const OrderCart: React.FC = () => {
               <div className="flex items-start justify-between gap-2">
                 {/* Item Name & Quantity Stepper */}
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs font-bold text-text-main group-hover:text-text-inverse leading-snug flex items-center gap-1.5">
+                  <div className="text-xs font-bold text-text-main group-hover:text-primary-hover leading-snug flex items-center gap-1.5">
                     {item.menuItemName}
                     {item.isSaved && (
                       <span className="text-[9px] bg-secondary/20 text-secondary-hover px-1 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap">
@@ -280,8 +281,22 @@ export const OrderCart: React.FC = () => {
           <div className="flex items-center gap-1.5">
             <span className="text-sm text-text-main">NET PAYABLE</span>
             <button
-              onClick={() => {
+              onClick={async () => {
                 if (items.length === 0) {
+                  if (tableId) {
+                    showNotification(`🔄 Loading active bill for ${tableNumber || "table"}...`);
+                    const hasOrder = await loadTableOrder(tableId, tableNumber || undefined, activeOrderId || undefined);
+                    if (hasOrder && useCartStore.getState().items.length > 0) {
+                      openModal("BILL_PREVIEW");
+                      return;
+                    }
+                  } else if (activeOrderId) {
+                    await retrieveHeldBill(activeOrderId);
+                    if (useCartStore.getState().items.length > 0) {
+                      openModal("BILL_PREVIEW");
+                      return;
+                    }
+                  }
                   showNotification("⚠️ Cart is empty. Add items before viewing bill paper.");
                   return;
                 }
@@ -317,22 +332,36 @@ export const OrderCart: React.FC = () => {
 
         <button
           onClick={async () => {
-            if (items.length > 0 && items.some(i => !i.isSaved)) {
+            const unfiredItems = items.filter(i => !i.kotId);
+            if (items.length === 0) {
+              showNotification("⚠️ Cart is empty. Cannot fire KOT.");
+            } else if (unfiredItems.length > 0) {
               await fireKOT();
               showNotification("🔥 KOT Fired to Kitchen!");
-            } else if (items.length === 0) {
-              showNotification("⚠️ Cart is empty. Cannot fire KOT.");
             } else {
-              showNotification("ℹ️ All items are already fired to KOT.");
+              showNotification("✅ All items already sent to kitchen. Add new items to fire another KOT.");
             }
           }}
           className={`border py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all ${
-            items.some(i => !i.isSaved) 
+            items.some(i => !i.kotId) 
               ? "bg-highlight hover:bg-highlight-hover text-text-inverse border-highlight/50 shadow-md shadow-amber-600/20" 
-              : "bg-surface-hover border-border-hover text-text-muted cursor-not-allowed"
+              : items.length > 0 && items.every(i => !!i.kotId)
+                ? "bg-emerald-700/30 border-emerald-500/40 text-emerald-400 cursor-default"
+                : "bg-surface-hover border-border-hover text-text-muted cursor-not-allowed"
           }`}
         >
-          <span>🔥 Fire KOT</span>
+          {items.some(i => !i.kotId) ? (
+            <>
+              <span>🔥 Fire KOT</span>
+              <span className="text-[10px] bg-amber-800/50 px-1 rounded font-mono">
+                {items.filter(i => !i.kotId).length} new
+              </span>
+            </>
+          ) : items.length > 0 && items.every(i => !!i.kotId) ? (
+            <span>✅ KOT Sent</span>
+          ) : (
+            <span>🔥 Fire KOT</span>
+          )}
         </button>
 
         <button
@@ -353,8 +382,22 @@ export const OrderCart: React.FC = () => {
         </button>
 
         <button
-          onClick={() => {
+          onClick={async () => {
             if (items.length === 0) {
+              if (tableId) {
+                showNotification(`🔄 Loading active bill for ${tableNumber || "table"}...`);
+                const hasOrder = await loadTableOrder(tableId, tableNumber || undefined, activeOrderId || undefined);
+                if (hasOrder && useCartStore.getState().items.length > 0) {
+                  openModal("PAYMENT");
+                  return;
+                }
+              } else if (activeOrderId) {
+                await retrieveHeldBill(activeOrderId);
+                if (useCartStore.getState().items.length > 0) {
+                  openModal("PAYMENT");
+                  return;
+                }
+              }
               showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
               return;
             }

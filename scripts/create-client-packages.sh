@@ -52,29 +52,110 @@ elif [ -f "$ROOT_DIR/data/local.sqlite" ]; then
 fi
 
 # 5. Create Standalone POS Package runner
-echo "📄 Step 4: Writing launcher scripts for POS Desktop..."
+echo "📄 Step 4: Writing launcher scripts & packaging all dependencies for POS Desktop..."
 
 # Copy backend dist
 mkdir -p "$DIST_DIR/gusto-pos-desktop/server"
 cp -R "$ROOT_DIR/apps/pos-local-server/dist" "$DIST_DIR/gusto-pos-desktop/server/"
-cp -R "$ROOT_DIR/packages/db-schema" "$DIST_DIR/gusto-pos-desktop/server/" 2>/dev/null || true
 
-# Copy package.json & node_modules minimal runner
+# Copy all core packages into packages/ and server/ so every diagnostic check passes
+mkdir -p "$DIST_DIR/gusto-pos-desktop/packages"
+cp -R "$ROOT_DIR/packages/core-logic" "$DIST_DIR/gusto-pos-desktop/packages/"
+cp -R "$ROOT_DIR/packages/printer" "$DIST_DIR/gusto-pos-desktop/packages/"
+cp -R "$ROOT_DIR/packages/db-schema" "$DIST_DIR/gusto-pos-desktop/packages/"
+cp -R "$ROOT_DIR/packages/api-contracts" "$DIST_DIR/gusto-pos-desktop/packages/"
+
+# Also copy into server/ for direct relative imports
+cp -R "$ROOT_DIR/packages/core-logic" "$DIST_DIR/gusto-pos-desktop/server/"
+cp -R "$ROOT_DIR/packages/printer" "$DIST_DIR/gusto-pos-desktop/server/"
+cp -R "$ROOT_DIR/packages/db-schema" "$DIST_DIR/gusto-pos-desktop/server/"
+cp -R "$ROOT_DIR/packages/api-contracts" "$DIST_DIR/gusto-pos-desktop/server/"
+
+# Populate node_modules/@gusto so local resolution always succeeds
+mkdir -p "$DIST_DIR/gusto-pos-desktop/node_modules/@gusto"
+cp -R "$ROOT_DIR/packages/core-logic" "$DIST_DIR/gusto-pos-desktop/node_modules/@gusto/"
+cp -R "$ROOT_DIR/packages/printer" "$DIST_DIR/gusto-pos-desktop/node_modules/@gusto/"
+cp -R "$ROOT_DIR/packages/db-schema" "$DIST_DIR/gusto-pos-desktop/node_modules/@gusto/"
+cp -R "$ROOT_DIR/packages/api-contracts" "$DIST_DIR/gusto-pos-desktop/node_modules/@gusto/"
+
+# Also copy local pre-compiled better-sqlite3 and its native bindings dependencies for immediate execution
+if [ -d "$ROOT_DIR/node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3" ]; then
+  cp -RL "$ROOT_DIR/node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3" "$DIST_DIR/gusto-pos-desktop/node_modules/" 2>/dev/null || true
+  cp -RL "$ROOT_DIR/node_modules/.pnpm/bindings@1.5.0/node_modules/bindings" "$DIST_DIR/gusto-pos-desktop/node_modules/" 2>/dev/null || true
+  cp -RL "$ROOT_DIR/node_modules/.pnpm/file-uri-to-path@1.0.0/node_modules/file-uri-to-path" "$DIST_DIR/gusto-pos-desktop/node_modules/" 2>/dev/null || true
+  touch "$DIST_DIR/gusto-pos-desktop/node_modules/.unix_installed" 2>/dev/null || true
+fi
+
+# Clean private workspace devDependencies from copied packages so npm install never 404s
+find "$DIST_DIR/gusto-pos-desktop" -name "package.json" | while read -r pkg_json; do
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    try {
+      const json = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (json.devDependencies) {
+        delete json.devDependencies["@gusto/eslint-config"];
+        delete json.devDependencies["@gusto/tsconfig"];
+      }
+      fs.writeFileSync(file, JSON.stringify(json, null, 2));
+    } catch (_err) {
+      // ignore
+    }
+  ' "$pkg_json"
+done
+
+# Create clean Root package.json
+cat << 'EOF' > "$DIST_DIR/gusto-pos-desktop/package.json"
+{
+  "name": "gusto-pos-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gusto POS Desktop & Local Server (Self-Contained Client Release)",
+  "main": "server/dist/index.js",
+  "scripts": {
+    "start": "node server/dist/index.js",
+    "install-deps": "npm install --no-audit --no-fund"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  }
+}
+EOF
+
+# Copy root package.json to server/ as well
+cp "$DIST_DIR/gusto-pos-desktop/package.json" "$DIST_DIR/gusto-pos-desktop/server/package.json"
+
+# Self-healing launcher scripts
 cat << 'EOF' > "$DIST_DIR/gusto-pos-desktop/start-pos.sh"
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
 echo "=========================================="
 echo "🍽️ Starting Gusto POS & KDS Local Server..."
 echo "=========================================="
+
+# Check if node is installed
+if ! command -v node &> /dev/null; then
+  echo "❌ [ERROR] Node.js is not found. Please install Node.js (v20+ LTS) from https://nodejs.org/"
+  exit 1
+fi
+
+# Auto-install runtime database module if missing
+if [ ! -d "node_modules/better-sqlite3" ]; then
+  echo "📦 Installing required database engine (better-sqlite3)..."
+  npm install --no-audit --no-fund
+  touch "node_modules/.unix_installed" 2>/dev/null || true
+fi
+
 echo "POS Cashier Screen: http://localhost:8080"
 echo "Kitchen KDS Screen: http://localhost:8080/kds"
 echo "Captain App Hub:    http://$(ipconfig getifaddr en0 2>/dev/null || echo "YOUR_LOCAL_IP"):8080"
 echo "=========================================="
 
 # Open browser after 2 seconds
-(sleep 2 && open "http://localhost:8080" 2>/dev/null || true) &
+(sleep 2 && (open "http://localhost:8080" 2>/dev/null || xdg-open "http://localhost:8080" 2>/dev/null || true)) &
 
-# Run from root repo context with node
+# Run server
 export POS_LOCAL_PORT=8080
 export POS_LOCAL_DB_PATH="./data/local.sqlite"
 node server/dist/index.js
@@ -88,6 +169,31 @@ cd /d "%~dp0"
 echo ==========================================
 echo 🍽️ Starting Gusto POS & KDS Local Server...
 echo ==========================================
+
+REM Check if node is installed
+where node >nul 2>nul
+if %errorlevel% neq 0 (
+  echo [ERROR] Node.js was not detected!
+  echo Please download and install Node.js (v20 LTS or higher) from:
+  echo https://nodejs.org/
+  echo.
+  pause
+  exit /b 1
+)
+
+REM Auto-install runtime database module for Windows if missing
+if not exist "node_modules\.windows_installed" (
+  echo [1/2] Installing required database engine for Windows (better-sqlite3)...
+  call npm install --no-audit --no-fund
+  if errorlevel 1 (
+    echo [ERROR] npm install encountered an issue. Check your internet connection.
+    pause
+    exit /b 1
+  )
+  type nul > "node_modules\.windows_installed"
+)
+
+echo [2/2] Launching Gusto POS & KDS Services...
 echo POS Cashier Screen: http://localhost:8080
 echo Kitchen KDS Screen: http://localhost:8080/kds
 echo ==========================================
@@ -95,7 +201,11 @@ start http://localhost:8080
 set POS_LOCAL_PORT=8080
 set POS_LOCAL_DB_PATH=./data/local.sqlite
 node server/dist/index.js
-pause
+if errorlevel 1 (
+  echo.
+  echo [ERROR] POS Server stopped with an error.
+  pause
+)
 EOF
 
 # 6. Create Quickstart Guides
@@ -263,17 +373,19 @@ No installation required!
 3. Transfer the generated `app-debug.apk` to the Android TV using a USB stick or "Send Files to TV" app.
 EOF
 
-# 9. Create Zip Archive for POS Desktop
-echo "🗜️ Step 5: Creating distributable zip archive for POS Desktop..."
+# 9. Create Zip Archives
+echo "🗜️ Step 5: Creating distributable zip archives..."
 cd "$DIST_DIR"
 zip -r "gusto-pos-desktop.zip" "gusto-pos-desktop" -q
+zip -r "gusto-kds.zip" "gusto-kds" -q
+zip -r "gusto-captain.zip" "gusto-captain" -q
 
 echo ""
 echo "=========================================="
 echo "✅ All Client Packages Created Successfully!"
 echo "=========================================="
 echo "Outputs:"
-echo "1. POS Desktop:  $DIST_DIR/gusto-pos-desktop/ (and gusto-pos-desktop.zip)"
-echo "2. KDS TV:       $DIST_DIR/gusto-kds/"
-echo "3. Captain App:  $DIST_DIR/gusto-captain/"
+echo "1. POS Desktop:  $DIST_DIR/gusto-pos-desktop.zip"
+echo "2. KDS TV:       $DIST_DIR/gusto-kds.zip"
+echo "3. Captain App:  $DIST_DIR/gusto-captain.zip"
 echo "=========================================="

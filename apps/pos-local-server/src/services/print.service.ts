@@ -178,6 +178,7 @@ export function getPrintQueueStatus() {
   
   return {
     pending: jobs.filter(j => j.status === "PENDING").length,
+    printing: jobs.filter(j => j.status === "PRINTING").length,
     failed: jobs.filter(j => j.status === "FAILED").length,
     completed: jobs.filter(j => j.status === "COMPLETED").length,
   };

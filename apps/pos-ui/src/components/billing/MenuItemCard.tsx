@@ -61,7 +61,7 @@ export const MenuItemCard: React.FC<MenuItemCardProps> = React.memo(({ item }) =
       </div>
 
       {/* Item Name */}
-      <div className="text-xs font-bold text-text-main group-hover:text-text-inverse line-clamp-2 leading-snug flex-1 mb-2">
+      <div className="text-xs font-bold text-text-main group-hover:text-primary-hover line-clamp-2 leading-snug flex-1 mb-2">
         {item.name}
       </div>
 

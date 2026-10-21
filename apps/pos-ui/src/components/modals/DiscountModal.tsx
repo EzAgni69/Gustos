@@ -57,7 +57,7 @@ export const DiscountModal: React.FC = () => {
         {/* Header */}
         <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
+            <h2 className="text-base font-black text-text-main flex items-center gap-2">
               <span>🏷️ APPLY BILL DISCOUNT</span>
               <span className="text-[10px] font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
                 F4
@@ -84,7 +84,7 @@ export const DiscountModal: React.FC = () => {
               className={`py-2 rounded-lg text-xs font-bold transition-all ${
                 type === "PERCENTAGE"
                   ? "bg-primary text-text-inverse shadow"
-                  : "text-text-muted hover:text-text-inverse"
+                  : "text-text-muted hover:text-text-main"
               }`}
             >
               Percentage (%)
@@ -92,7 +92,7 @@ export const DiscountModal: React.FC = () => {
             <button
               onClick={() => setType("FLAT")}
               className={`py-2 rounded-lg text-xs font-bold transition-all ${
-                type === "FLAT" ? "bg-primary text-text-inverse shadow" : "text-text-muted hover:text-text-inverse"
+                type === "FLAT" ? "bg-primary text-text-inverse shadow" : "text-text-muted hover:text-text-main"
               }`}
             >
               Flat Amount (₹)
@@ -156,7 +156,7 @@ export const DiscountModal: React.FC = () => {
           {discount && (
             <button
               onClick={handleRemove}
-              className="w-full py-2 bg-rose-950/40 hover:bg-rose-900/50 border border-rose-500/40 text-rose-300 rounded-xl text-xs font-bold transition-colors"
+              className="w-full py-2 bg-rose-50 hover:bg-rose-100 border border-rose-300 text-rose-700 rounded-xl text-xs font-bold transition-colors"
             >
               Remove Active Discount
             </button>

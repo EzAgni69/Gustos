@@ -29,14 +29,14 @@ export const useSocket = (): Socket => {
       setOnlineStatus(false);
     });
 
-    socket.on("table:status-changed", (data: { tableId: string; status: TableStatus; orderId?: string }) => {
+    socket.on("table:status-changed", (data: { tableId: string; status: any; orderId?: string }) => {
+      const normalizedStatus: TableStatus = (data.status === "AVAILABLE" || data.status === "VACANT") ? "VACANT" : data.status;
+      setTableStatus(data.tableId, normalizedStatus, undefined, undefined, undefined, data.orderId);
       fetchTables();
       const currentCart = useCartStore.getState();
       if (currentCart.orderMode === "DINE_IN" && currentCart.tableId === data.tableId) {
-        if (data.status === "VACANT" || data.status === "AVAILABLE" as any) {
-          if (currentCart.activeOrderId && (!data.orderId || data.orderId === currentCart.activeOrderId)) {
-            currentCart.clearCart();
-          }
+        if (normalizedStatus === "VACANT") {
+          currentCart.clearCart();
         } else if (data.orderId && data.orderId !== currentCart.activeOrderId) {
           currentCart.retrieveHeldBill(data.orderId);
         }
@@ -101,7 +101,7 @@ export const useSocket = (): Socket => {
       socket.off("sync:tables-updated");
       socket.disconnect();
     };
-  }, [setOnlineStatus, fetchTables, activeOrderId, retrieveHeldBill, setTableLock, openOnlineOrderModal]);
+  }, [setOnlineStatus, fetchTables, setTableLock, openOnlineOrderModal]);
 
   return socket;
 };

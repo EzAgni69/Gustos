@@ -4,13 +4,13 @@ import { useMenuStore } from "../store/useMenuStore";
 import { useUIStore } from "../store/useUIStore";
 
 export function useKeyboardShortcuts() {
-  const { items, holdCurrentBill } = useCartStore();
+  const { items, holdCurrentBill, fireKOT, tableId, tableNumber, activeOrderId, loadTableOrder, retrieveHeldBill } = useCartStore();
   const { categories, setSelectedCategory, resetSearch } = useMenuStore();
   const { activeView, activeModal, setActiveView, openModal, closeModal, showNotification } =
     useUIStore();
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       // Allow normal typing when input/textarea focused, EXCEPT for F-keys and Alt combinations
       const activeEl = document.activeElement;
       const isInputFocused =
@@ -39,10 +39,18 @@ export function useKeyboardShortcuts() {
       // ─── F1 / Alt+K : Fire KOT ───
       if (e.key === "F1" || (e.altKey && e.key.toLowerCase() === "k")) {
         e.preventDefault();
-        if (items.length === 0) {
+        const currentCart = useCartStore.getState();
+        const currentItems = currentCart.items;
+        const unfiredItems = currentItems.filter(i => !i.kotId);
+        if (currentItems.length === 0) {
           showNotification("⚠️ Cart is empty. Add items before printing KOT.");
           return;
         }
+        if (unfiredItems.length === 0) {
+          showNotification("ℹ️ All items already fired to kitchen. Add new items to fire another KOT.");
+          return;
+        }
+        await currentCart.fireKOT();
         showNotification("🖨️ KOT Fired! Sent to Kitchen Display & Thermal Printer.");
         return;
       }
@@ -65,8 +73,9 @@ export function useKeyboardShortcuts() {
           closeModal();
           return;
         }
-        if (items.length > 0) {
-          holdCurrentBill("Customer parked bill (F3)");
+        const currentCart = useCartStore.getState();
+        if (currentCart.items.length > 0) {
+          currentCart.holdCurrentBill("Customer parked bill (F3)");
           showNotification("⏸️ Order parked on hold. Screen cleared for next customer.");
         } else {
           openModal("HOLD_BILLS");
@@ -121,19 +130,62 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         if (activeModal === "BILL_PREVIEW") closeModal();
         else if (items.length > 0) openModal("BILL_PREVIEW");
-        else showNotification("⚠️ Add items to bill before viewing bill paper.");
+        else if (tableId) {
+          showNotification(`🔄 Loading active bill for ${tableNumber || "table"}...`);
+          loadTableOrder(tableId, tableNumber || undefined, activeOrderId || undefined).then((hasOrder) => {
+            if (hasOrder && useCartStore.getState().items.length > 0) {
+              openModal("BILL_PREVIEW");
+            } else {
+              showNotification("⚠️ Cart is empty. Add items before viewing bill paper.");
+            }
+          });
+        } else if (activeOrderId) {
+          retrieveHeldBill(activeOrderId).then(() => {
+            if (useCartStore.getState().items.length > 0) {
+              openModal("BILL_PREVIEW");
+            } else {
+              showNotification("⚠️ Cart is empty. Add items before viewing bill paper.");
+            }
+          });
+        } else {
+          showNotification("⚠️ Add items to bill before viewing bill paper.");
+        }
         return;
       }
 
       // ─── F12 / Ctrl+Enter : Settle & Pay (Payment Modal) ───
       if (e.key === "F12" || (e.ctrlKey && e.key === "Enter")) {
         e.preventDefault();
-        if (items.length === 0) {
-          showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
+        if (activeModal === "PAYMENT") {
+          closeModal();
           return;
         }
-        if (activeModal === "PAYMENT") closeModal();
-        else openModal("PAYMENT");
+        if (items.length > 0) {
+          openModal("PAYMENT");
+          return;
+        }
+        if (tableId) {
+          showNotification(`🔄 Loading active bill for ${tableNumber || "table"}...`);
+          loadTableOrder(tableId, tableNumber || undefined, activeOrderId || undefined).then((hasOrder) => {
+            if (hasOrder && useCartStore.getState().items.length > 0) {
+              openModal("PAYMENT");
+            } else {
+              showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
+            }
+          });
+          return;
+        }
+        if (activeOrderId) {
+          retrieveHeldBill(activeOrderId).then(() => {
+            if (useCartStore.getState().items.length > 0) {
+              openModal("PAYMENT");
+            } else {
+              showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
+            }
+          });
+          return;
+        }
+        showNotification("⚠️ Cart is empty. Cannot open settlement screen.");
         return;
       }
 

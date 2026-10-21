@@ -8,8 +8,9 @@ export async function apiClient<T>(
   endpoint: string,
   { requireAuth = true, ...customConfig }: FetchOptions = {}
 ): Promise<T> {
+  const isMutating = customConfig.method && ["POST", "PATCH", "PUT"].includes(customConfig.method.toUpperCase());
   const headers: Record<string, string> = {
-    ...(customConfig.body ? { "Content-Type": "application/json" } : {}),
+    ...(customConfig.body || isMutating ? { "Content-Type": "application/json" } : {}),
   };
 
   if (requireAuth) {

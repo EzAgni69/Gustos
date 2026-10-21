@@ -221,13 +221,7 @@ export const PaymentModal: React.FC = () => {
     if (result.success) {
       setSettleResult({ success: true, invoiceNumber: result.invoiceNumber });
 
-      if (orderMode === "DINE_IN" && tableId) {
-        setTableStatus(tableId, "VACANT");
-        import("../../hooks/useSocket").then(({ getSocket }) => {
-          getSocket().emit("table:unlock", { tableId });
-        }).catch(() => {});
-      }
-      useTableStore.getState().fetchTables();
+      // Table release is now handled by checkoutOrder in cart store — no duplicate needed here
 
       // Auto-kick cash drawer if cash was involved
       if (
@@ -308,7 +302,7 @@ export const PaymentModal: React.FC = () => {
           <div className="flex justify-center mb-4">
             <CheckmarkIcon className="w-16 h-16" />
           </div>
-          <h2 className="text-2xl font-black text-text-inverse mb-2">Payment Received!</h2>
+          <h2 className="text-2xl font-black text-text-main mb-2">Payment Received!</h2>
           {settleResult.invoiceNumber && (
             <p className="text-sm font-mono text-secondary-hover">
               Invoice: {settleResult.invoiceNumber}
@@ -331,7 +325,7 @@ export const PaymentModal: React.FC = () => {
         {/* ═══ Header ═══ */}
         <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-lg font-black text-text-inverse flex items-center gap-2">
+            <h2 className="text-lg font-black text-text-main flex items-center gap-2">
               <CashIcon className="w-5 h-5 shrink-0" />
               <span>BILL SETTLEMENT</span>
               <span className="text-xs font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
@@ -475,7 +469,7 @@ export const PaymentModal: React.FC = () => {
                 <div className="flex justify-center mb-1">
                   <EdcTerminalIcon className="w-12 h-12" />
                 </div>
-                <p className="text-sm font-bold text-text-inverse">Swipe / Dip / Tap Card on EDC Terminal</p>
+                <p className="text-sm font-bold text-text-main">Swipe / Dip / Tap Card on EDC Terminal</p>
                 <p className="text-xs text-text-muted max-w-sm mx-auto">
                   Once approved on physical terminal, select card network and confirm below.
                 </p>
@@ -492,7 +486,7 @@ export const PaymentModal: React.FC = () => {
                         onClick={() => setCardSubMethod(sub.id)}
                         className={`px-2 py-2 rounded-lg border text-xs font-bold transition-all flex flex-col items-center justify-center gap-1.5 ${
                           cardSubMethod === sub.id
-                            ? "bg-blue-600/20 border-blue-500 text-blue-300"
+                            ? "bg-blue-600/15 border-blue-500 text-blue-700"
                             : "bg-surface-hover border-border-hover text-text-muted hover:text-text-main hover:bg-surface-hover"
                         }`}
                       >
@@ -525,7 +519,7 @@ export const PaymentModal: React.FC = () => {
                   </div>
                 </div>
                 <div className="space-y-2 text-left">
-                  <div className="text-sm font-bold text-text-inverse">UPI Payment</div>
+                  <div className="text-sm font-bold text-text-main">UPI Payment</div>
                   <div className="text-xs text-secondary-hover flex items-center gap-2 font-medium">
                     <span className="w-2 h-2 rounded-full bg-secondary-hover animate-pulse" />
                     <span>Awaiting customer payment...</span>

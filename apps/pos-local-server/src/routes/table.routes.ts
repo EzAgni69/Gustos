@@ -46,7 +46,7 @@ router.get("/", (_req, res) => {
 
       // Fallback: check for active order on this table
       if (!order) {
-        order = db
+        const candidateOrder = db
           .select()
           .from(schema.orders)
           .where(
@@ -57,6 +57,22 @@ router.get("/", (_req, res) => {
           )
           .orderBy(desc(schema.orders.createdAt))
           .get();
+
+        if (candidateOrder) {
+          // If candidate is a DRAFT, ensure it actually has order items
+          if (candidateOrder.status === "DRAFT") {
+            const hasItems = db
+              .select()
+              .from(schema.orderItems)
+              .where(eq(schema.orderItems.orderId, candidateOrder.id))
+              .get();
+            if (hasItems) {
+              order = candidateOrder;
+            }
+          } else {
+            order = candidateOrder;
+          }
+        }
       }
 
       const activeStatus = order
@@ -132,10 +148,20 @@ router.get("/:id/order", (req, res) => {
 
       if (active) {
         orderId = active.id;
+        db.update(schema.diningTables)
+          .set({ status: "OCCUPIED", currentOrderId: active.id })
+          .where(eq(schema.diningTables.id, id!))
+          .run();
       }
     }
 
     if (!orderId) {
+      if (table.status === "OCCUPIED") {
+        db.update(schema.diningTables)
+          .set({ status: "AVAILABLE", currentOrderId: null })
+          .where(eq(schema.diningTables.id, id!))
+          .run();
+      }
       res.json({ success: true, data: null, message: "No active order for this table" });
       return;
     }

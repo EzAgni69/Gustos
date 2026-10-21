@@ -60,8 +60,8 @@ export const ShiftManagementModal: React.FC = () => {
       <div className="bg-surface border border-border-hover rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         
         {/* Header */}
-        <div className="flex justify-between items-center p-4 border-b border-border bg-surface/50">
-          <h2 className="text-lg font-bold text-text-inverse flex items-center gap-2">
+        <div className="flex justify-between items-center p-4 border-b border-border bg-background">
+          <h2 className="text-lg font-bold text-text-main flex items-center gap-2">
             <span>👤</span>
             {activeShift ? "Shift Management" : "Open Shift"}
           </h2>
@@ -133,11 +133,11 @@ export const ShiftManagementModal: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <div className="text-text-muted mb-1">Cashier</div>
-                    <div className="font-bold text-text-inverse">{activeShift.cashierName}</div>
+                    <div className="font-bold text-text-main">{activeShift.cashierName}</div>
                   </div>
                   <div>
                     <div className="text-text-muted mb-1">Opened At</div>
-                    <div className="font-bold text-text-inverse">
+                    <div className="font-bold text-text-main">
                       {new Date(activeShift.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   </div>
@@ -147,7 +147,7 @@ export const ShiftManagementModal: React.FC = () => {
                   </div>
                   <div>
                     <div className="text-text-muted mb-1">Status</div>
-                    <div className="font-bold text-blue-400 flex items-center gap-1">
+                    <div className="font-bold text-blue-600 flex items-center gap-1">
                       <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
                       ACTIVE
                     </div>
@@ -241,18 +241,18 @@ export const ShiftManagementModal: React.FC = () => {
               <div className="bg-background p-5 rounded-xl border border-border space-y-3 font-mono text-sm">
                 <div className="flex justify-between border-b border-border pb-2">
                   <span className="text-text-muted">Total Sales</span>
-                  <span className="font-bold text-text-inverse">₹{((reportSummary.totalCashSales || 0) + (reportSummary.totalCardSales || 0) + (reportSummary.totalUpiSales || 0) + (reportSummary.totalOnlineSales || 0) + (reportSummary.totalSplitSales || 0)).toFixed(2)}</span>
+                  <span className="font-bold text-text-main">₹{((reportSummary.totalCashSales || 0) + (reportSummary.totalCardSales || 0) + (reportSummary.totalUpiSales || 0) + (reportSummary.totalOnlineSales || 0) + (reportSummary.totalSplitSales || 0)).toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-text-muted">Expected Cash</span>
-                  <span className="font-bold text-text-inverse">₹{(reportSummary.expectedCashInDrawer || 0).toFixed(2)}</span>
+                  <span className="font-bold text-text-main">₹{(reportSummary.expectedCashInDrawer || 0).toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-text-muted">Actual Cash</span>
-                  <span className="font-bold text-text-inverse">₹{(reportSummary.actualCashInDrawer || 0).toFixed(2)}</span>
+                  <span className="font-bold text-text-main">₹{(reportSummary.actualCashInDrawer || 0).toFixed(2)}</span>
                 </div>
                 <div className={`flex justify-between pt-2 border-t border-border font-bold ${
-                  (reportSummary.cashVariance || 0) < 0 ? "text-rose-400" : (reportSummary.cashVariance || 0) > 0 ? "text-secondary-hover" : "text-text-inverse"
+                  (reportSummary.cashVariance || 0) < 0 ? "text-rose-600" : (reportSummary.cashVariance || 0) > 0 ? "text-secondary-hover" : "text-text-main"
                 }`}>
                   <span>Variance</span>
                   <span>₹{(reportSummary.cashVariance || 0).toFixed(2)}</span>

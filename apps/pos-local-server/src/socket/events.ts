@@ -20,9 +20,12 @@ export function initSocketEvents(socketServer: SocketIOServer): void {
   io.on("connection", (socket) => {
     console.log(`[Socket.IO] Device connected: ${socket.id}`);
 
-    socket.on("join:kitchen", () => {
+    socket.on("join:kitchen", (outletId?: string) => {
       socket.join("kitchen");
-      console.log(`[Socket.IO] ${socket.id} joined kitchen channel`);
+      if (outletId) {
+        socket.join(`kitchen:${outletId}`);
+      }
+      console.log(`[Socket.IO] ${socket.id} joined kitchen channel${outletId ? ` (${outletId})` : ""}`);
     });
 
     socket.on("join:captain", () => {
@@ -61,31 +64,30 @@ export function initSocketEvents(socketServer: SocketIOServer): void {
 }
 
 /**
- * Emit a new KOT event to the kitchen display.
+ * Emit a new KOT event to the kitchen display and all devices.
  */
 export function emitKOTNew(kotData: Record<string, unknown>): void {
-  io?.to("kitchen").emit("kot:new", kotData);
+  io?.emit("kot:new", kotData);
 }
 
 /**
- * Emit a KOT status update to kitchen + captains.
+ * Emit a KOT status update to kitchen, captains, and POS.
  */
 export function emitKOTStatusUpdate(
   kotId: string,
   status: string,
-  orderNumber: string
+  orderNumber: string,
+  orderId?: string
 ): void {
-  const data = { kotId, status, orderNumber };
-  io?.to("kitchen").emit("kot:status-update", data);
-  io?.to("captains").emit("kot:status-update", data);
+  const data = { kotId, status, orderNumber, orderId };
+  io?.emit("kot:status-update", data);
 }
 
 /**
- * Emit an order update to captains.
+ * Emit an order update to captains and POS.
  */
 export function emitOrderUpdated(orderData: Record<string, unknown>): void {
-  io?.to("captains").emit("order:updated", orderData);
-  io?.to("pos").emit("order:updated", orderData);
+  io?.emit("order:updated", orderData);
 }
 
 /**
@@ -103,7 +105,7 @@ export function emitTableStatusChanged(tableData: Record<string, unknown>): void
 // ─── Edge Case Events ───
 
 /**
- * Emit a KOT cancellation to kitchen displays.
+ * Emit a KOT cancellation to all displays.
  */
 export function emitKOTCancelled(data: {
   kotId: string;
@@ -112,9 +114,7 @@ export function emitKOTCancelled(data: {
   orderNumber: string;
   reason: string;
 }): void {
-  io?.to("kitchen").emit("kot:cancelled", data);
-  io?.to("captains").emit("kot:cancelled", data);
-  io?.to("pos").emit("kot:cancelled", data);
+  io?.emit("kot:cancelled", data);
 }
 
 /**
@@ -127,7 +127,7 @@ export function emitKOTRush(data: {
   orderNumber: string;
   tableName?: string;
 }): void {
-  io?.to("kitchen").emit("kot:rush", data);
+  io?.emit("kot:rush", data);
 }
 
 /**
@@ -146,7 +146,7 @@ export function emitKOTModification(data: {
     newValue?: string;
   }>;
 }): void {
-  io?.to("kitchen").emit("kot:modification", data);
+  io?.emit("kot:modification", data);
 }
 
 /**

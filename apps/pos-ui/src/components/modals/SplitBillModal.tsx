@@ -161,7 +161,7 @@ export const SplitBillModal: React.FC = () => {
         {/* Header */}
         <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
+            <h2 className="text-base font-black text-text-main flex items-center gap-2">
               <SplitIcon className="w-5 h-5 shrink-0" />
               <span>SPLIT BILL</span>
               <span className="text-[10px] font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
@@ -184,7 +184,7 @@ export const SplitBillModal: React.FC = () => {
         <div className="bg-background border-b border-border px-6 py-3 flex items-center justify-between shrink-0">
           <div>
             <div className="text-[10px] text-text-muted font-mono">Bill Total</div>
-            <div className="text-2xl font-black font-mono text-text-inverse">₹{totals.grandTotal}</div>
+            <div className="text-2xl font-black font-mono text-text-main">₹{totals.grandTotal}</div>
           </div>
           <div className="text-right text-xs text-text-muted font-mono">
             {totals.itemCount} items • {totals.totalQuantity} qty
@@ -270,7 +270,7 @@ export const SplitBillModal: React.FC = () => {
                     className="bg-background border border-border rounded-lg p-2 text-center"
                   >
                     <div className="text-[10px] text-text-muted font-mono">Guest {i + 1}</div>
-                    <div className="text-sm font-bold font-mono text-text-inverse">
+                    <div className="text-sm font-bold font-mono text-text-main">
                       ₹{i === splitWays - 1 && equalRemainder !== 0
                         ? Math.round((perPerson + equalRemainder) * 100) / 100
                         : perPerson}

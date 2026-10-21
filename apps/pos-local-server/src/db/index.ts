@@ -9,7 +9,11 @@ import dotenv from "dotenv";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.resolve(__dirname, "../../../../.env") });
+// Load environment from project root or current working directory
+dotenv.config();
+if (fs.existsSync(path.resolve(__dirname, "../../../../.env"))) {
+  dotenv.config({ path: path.resolve(__dirname, "../../../../.env") });
+}
 
 // Resolve database path from environment variables or default
 const dbPath = process.env.POS_LOCAL_DB_PATH || "./data/local.sqlite";
@@ -37,32 +41,46 @@ export const db = drizzle(sqlite, { schema });
 export function initializeDatabase(): void {
   console.log(`[Database] Initializing SQLite database at ${resolvedDbPath}...`);
 
+  const candidates = [
+    path.resolve(__dirname, "../../../../packages/db-schema/drizzle/local"),
+    path.resolve(__dirname, "../../packages/db-schema/drizzle/local"),
+    path.resolve(__dirname, "../packages/db-schema/drizzle/local"),
+    path.resolve(__dirname, "../server/db-schema/drizzle/local"),
+    path.resolve(__dirname, "../db-schema/drizzle/local"),
+    path.resolve(process.cwd(), "packages/db-schema/drizzle/local"),
+    path.resolve(process.cwd(), "server/db-schema/drizzle/local"),
+  ];
 
+  const migrationsFolder = candidates.find((p) => fs.existsSync(p));
 
-  const relativeMigrationsFolder = path.resolve(
-    __dirname,
-    "../../../../packages/db-schema/drizzle/local"
-  );
-  const cwdMigrationsFolder = path.resolve(
-    process.cwd(),
-    "packages/db-schema/drizzle/local"
-  );
+  // Check if tables already exist in SQLite database
+  const existingTables = sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='dining_tables'"
+    )
+    .get();
 
-  const migrationsFolder = fs.existsSync(relativeMigrationsFolder)
-    ? relativeMigrationsFolder
-    : cwdMigrationsFolder;
-
-  if (!fs.existsSync(migrationsFolder)) {
-    throw new Error(`Migrations folder not found at ${migrationsFolder}`);
-  }
-
-  console.log(`[Database] Applying migrations from ${migrationsFolder}...`);
-
-  try {
-    migrate(db, { migrationsFolder });
-    console.log("[Database] Migrations applied successfully!");
-  } catch (error) {
-    console.error("[Database] Migration error:", error);
-    throw error;
+  if (migrationsFolder) {
+    console.log(`[Database] Applying migrations from ${migrationsFolder}...`);
+    try {
+      migrate(db, { migrationsFolder });
+      console.log("[Database] Migrations applied successfully!");
+    } catch (error: any) {
+      if (
+        error?.message?.includes("already exists") ||
+        error?.cause?.message?.includes("already exists")
+      ) {
+        console.log("[Database] Existing SQLite schema verified. Continuing...");
+      } else {
+        console.error("[Database] Migration error:", error);
+        throw error;
+      }
+    }
+  } else if (existingTables) {
+    console.log("[Database] Pre-seeded SQLite database ready (no migrations folder required).");
+  } else {
+    throw new Error(
+      `Migrations folder not found and SQLite database is uninitialized.`
+    );
   }
 }

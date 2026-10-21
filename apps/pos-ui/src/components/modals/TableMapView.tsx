@@ -106,25 +106,25 @@ export const TableMapView: React.FC = () => {
         {/* Legend / Status Counters */}
         <div className="flex items-center gap-3 bg-background px-3 py-1.5 rounded-xl border border-border text-xs font-semibold shrink-0">
           <div className="flex items-center gap-1.5 text-text-main">
-            <span className="w-2.5 h-2.5 rounded-full bg-gray-600" />
+            <span className="w-2.5 h-2.5 rounded-full bg-gray-500" />
             <span>Vacant ({counts.VACANT})</span>
           </div>
-          <div className="flex items-center gap-1.5 text-rose-400">
-            <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+          <div className="flex items-center gap-1.5 text-primary">
+            <span className="w-2.5 h-2.5 rounded-full bg-primary" />
             <span>Occupied ({counts.OCCUPIED})</span>
           </div>
-          <div className="flex items-center gap-1.5 text-highlight-hover">
+          <div className="flex items-center gap-1.5 text-amber-700">
             <span className="w-2.5 h-2.5 rounded-full bg-highlight-hover animate-pulse" />
             <span>Billed ({counts.BILLED})</span>
           </div>
-          <div className="flex items-center gap-1.5 text-blue-400 border-r border-border pr-3">
-            <span className="w-2.5 h-2.5 rounded-full bg-blue-500" />
+          <div className="flex items-center gap-1.5 text-blue-700 border-r border-border pr-3">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
             <span>Reserved ({counts.RESERVED})</span>
           </div>
           
           <button
             onClick={() => setShowGlobalReservations(true)}
-            className="flex items-center gap-2 text-text-muted hover:text-text-inverse transition-colors"
+            className="flex items-center gap-2 text-text-muted hover:text-text-main transition-colors"
             title="View All Bookings"
           >
             <ListTodo size={14} />
@@ -136,22 +136,22 @@ export const TableMapView: React.FC = () => {
       {/* Tables Grid */}
       <div className="flex-1 overflow-y-auto p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 content-start">
         {areaTables.map((table) => {
-          let statusStyle = "border-border bg-surface hover:border-emerald-500 text-text-main";
+          let statusStyle = "border-border bg-surface hover:border-emerald-500 text-text-main shadow-xs";
           let badgeText = "VACANT";
-          let badgeColor = "bg-surface-hover text-text-muted border-border-hover";
+          let badgeColor = "bg-surface-hover text-text-muted border border-border";
 
           if (table.status === "OCCUPIED") {
-            statusStyle = "border-rose-500/70 bg-rose-950/20 hover:border-rose-400 text-rose-200 shadow-lg shadow-rose-900/10";
+            statusStyle = "border-rose-300 bg-rose-500/10 hover:border-rose-400 text-text-main shadow-xs";
             badgeText = "OCCUPIED";
-            badgeColor = "bg-rose-600 text-text-inverse font-bold";
+            badgeColor = "bg-primary text-text-inverse font-bold shadow-xs";
           } else if (table.status === "BILLED") {
-            statusStyle = "border-highlight/70 bg-amber-950/20 hover:border-highlight text-amber-200 shadow-lg shadow-amber-900/10 animate-pulse";
+            statusStyle = "border-amber-300 bg-amber-500/10 hover:border-amber-400 text-text-main shadow-xs animate-pulse";
             badgeText = "BILLED";
-            badgeColor = "bg-highlight text-text-inverse font-bold";
+            badgeColor = "bg-highlight text-text-inverse font-bold shadow-xs";
           } else if (table.status === "RESERVED") {
-            statusStyle = "border-blue-500/70 bg-blue-950/20 hover:border-blue-400 text-blue-200";
+            statusStyle = "border-blue-300 bg-blue-500/10 hover:border-blue-400 text-text-main shadow-xs";
             badgeText = "RESERVED";
-            badgeColor = "bg-blue-600 text-text-inverse font-bold";
+            badgeColor = "bg-blue-600 text-text-inverse font-bold shadow-xs";
           }
 
           const elapsedMins = table.seatedSince
@@ -181,8 +181,8 @@ export const TableMapView: React.FC = () => {
               {/* Top: Table Name & Status Badge */}
               <div className="flex items-start justify-between gap-1">
                 <div>
-                  <div className="text-base font-black tracking-tight">{table.tableNumber}</div>
-                  <div className="text-[11px] font-mono opacity-70">Capacity: {table.capacity} Pax</div>
+                  <div className="text-base font-black tracking-tight text-text-main">{table.tableNumber}</div>
+                  <div className="text-[11px] font-mono text-text-muted font-medium">Capacity: {table.capacity} Pax</div>
                 </div>
                 <div className="flex flex-col gap-1 items-end">
                   <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${badgeColor}`}>
@@ -193,7 +193,7 @@ export const TableMapView: React.FC = () => {
                       e.stopPropagation();
                       setReservingTable(table);
                     }}
-                    className="p-1 text-text-muted hover:text-text-main bg-surface-hover hover:bg-surface-hover rounded transition-colors"
+                    className="p-1 text-text-muted hover:text-text-main bg-background hover:bg-surface-hover rounded transition-colors border border-border/60"
                     title="Reservations"
                   >
                     <Calendar size={14} />
@@ -203,27 +203,27 @@ export const TableMapView: React.FC = () => {
 
               {/* Middle / Bottom: Bill Info or Vacant prompt */}
               {(table.status === "OCCUPIED" || table.status === "BILLED") && (
-                <div className="mt-3 pt-3 border-t border-white/10 space-y-2 text-xs">
+                <div className="mt-3 pt-2.5 border-t border-border/80 space-y-1.5 text-xs">
                   <div className="flex justify-between items-center font-mono">
-                    <span className="opacity-70">Running Bill:</span>
-                    <span className="font-extrabold text-sm text-primary-hover">
+                    <span className="text-text-muted font-medium">Running Bill:</span>
+                    <span className="font-extrabold text-sm text-primary">
                       ₹{table.currentBillAmount ?? 0}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center text-[11px] opacity-70">
+                  <div className="flex justify-between items-center text-[11px] text-text-muted font-medium">
                     <span>{table.assignedWaiter || "Counter"}</span>
                     {elapsedMins !== null && <span>⏱️ {elapsedMins}m ago</span>}
                   </div>
 
                   {/* Quick Bill & Settle Action Buttons */}
-                  <div className="pt-1.5 flex items-center gap-1.5 border-t border-white/10">
+                  <div className="pt-2 flex items-center gap-1.5 border-t border-border/80">
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
                         await handleTableClick(table);
                         openModal("BILL_PREVIEW");
                       }}
-                      className="flex-1 bg-surface-hover hover:bg-surface-hover/80 text-[10px] font-bold py-1 px-1.5 rounded text-text-main border border-border-hover flex items-center justify-center gap-1 transition-all"
+                      className="flex-1 bg-surface hover:bg-surface-hover text-[10px] font-bold py-1.5 px-1.5 rounded-lg text-text-main border border-border-hover flex items-center justify-center gap-1 shadow-xs transition-all active:scale-95"
                       title="Preview / Print Bill Paper [F11]"
                     >
                       <span>🧾</span>
@@ -235,7 +235,7 @@ export const TableMapView: React.FC = () => {
                         await handleTableClick(table);
                         openModal("PAYMENT");
                       }}
-                      className="flex-1 bg-primary hover:bg-primary-hover text-[10px] font-bold py-1 px-1.5 rounded text-text-inverse shadow-md shadow-primary/20 flex items-center justify-center gap-1 transition-all"
+                      className="flex-1 bg-primary hover:bg-primary-hover text-[10px] font-bold py-1.5 px-1.5 rounded-lg text-text-inverse shadow-xs flex items-center justify-center gap-1 transition-all active:scale-95"
                       title="Settle Payment [F12]"
                     >
                       <span>💳</span>

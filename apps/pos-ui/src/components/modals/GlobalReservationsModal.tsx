@@ -49,7 +49,7 @@ export const GlobalReservationsModal: React.FC<GlobalReservationsModalProps> = (
               <Calendar size={20} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-text-inverse">All Bookings</h2>
+              <h2 className="text-lg font-bold text-text-main">All Bookings</h2>
               <div className="text-xs text-text-muted font-mono">Future & Active Reservations</div>
             </div>
           </div>
@@ -77,11 +77,11 @@ export const GlobalReservationsModal: React.FC<GlobalReservationsModalProps> = (
               {reservations.map((res) => (
                 <div key={res.id} className="bg-background border border-border rounded-xl p-4 flex justify-between items-center hover:border-border-hover transition-colors">
                   <div>
-                    <div className="text-sm font-bold text-text-inverse">{res.tableName || `Table ${res.tableId}`}</div>
+                    <div className="text-sm font-bold text-text-main">{res.tableName || `Table ${res.tableId}`}</div>
                     <div className="text-sm text-text-muted mt-1">{res.customerName || "Anonymous"}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-sm font-bold text-blue-400">
+                    <div className="text-sm font-bold text-blue-600">
                       {new Date(res.reservationTime).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}
                     </div>
                     <div className="text-xs text-text-muted mt-1 font-mono">{res.durationMins} mins duration</div>

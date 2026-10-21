@@ -4,7 +4,7 @@
  * Payment processing, invoice generation, and order completion.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and, ne, notInArray } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
@@ -23,6 +23,7 @@ import { getNextInvoiceNumber } from "./sequence.service.js";
 import { queueSyncEvent } from "./sync.service.js";
 import { getActiveShift } from "./shift.service.js";
 import { emitOrderUpdated, emitTableStatusChanged } from "../socket/events.js";
+import { generateKOT } from "./kot.service.js";
 
 const OUTLET_ID = process.env.OUTLET_ID || "local-outlet";
 
@@ -70,6 +71,16 @@ export function processCheckout(
 
   if (items.length === 0) {
     throw new Error("Cannot checkout an empty order");
+  }
+
+  // Auto-generate KOT for any items not yet sent to kitchen so KDS displays the order ticket
+  const unfiredItems = items.filter((item) => !item.kotId);
+  if (unfiredItems.length > 0) {
+    try {
+      generateKOT(orderId, undefined, undefined, userId);
+    } catch (kotErr) {
+      console.warn(`[Checkout] Auto-KOT notice for ${order.orderNumber}:`, kotErr);
+    }
   }
 
   // Calculate final totals
@@ -169,6 +180,18 @@ export function processCheckout(
     db.update(schema.diningTables)
       .set({ status: "AVAILABLE", currentOrderId: null })
       .where(eq(schema.diningTables.id, order.tableId))
+      .run();
+
+    // Cancel any stale, abandoned, or lingering orders on this table so table status doesn't revert to OCCUPIED
+    db.update(schema.orders)
+      .set({ status: "CANCELLED", updatedAt: now })
+      .where(
+        and(
+          eq(schema.orders.tableId, order.tableId),
+          notInArray(schema.orders.status, ["COMPLETED", "CANCELLED", "MERGED"]),
+          ne(schema.orders.id, orderId)
+        )
+      )
       .run();
 
     emitTableStatusChanged({

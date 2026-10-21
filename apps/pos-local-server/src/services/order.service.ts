@@ -5,7 +5,7 @@
  * All operations hit local SQLite — zero cloud dependency.
  */
 
-import { eq, and, notInArray } from "drizzle-orm";
+import { eq, and, notInArray, desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
@@ -136,6 +136,30 @@ function logEvent(
  * Create a new order.
  */
 export function createOrder(input: CreateOrderInput, userId?: string) {
+  // If dine-in, check if there is already an active order on this table to prevent duplicates
+  if (input.orderMode === "DINE_IN" && input.tableId) {
+    const existingOrder = db
+      .select()
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.tableId, input.tableId),
+          notInArray(schema.orders.status, ["COMPLETED", "CANCELLED", "MERGED"])
+        )
+      )
+      .orderBy(desc(schema.orders.createdAt))
+      .get();
+
+    if (existingOrder) {
+      db.update(schema.diningTables)
+        .set({ status: "OCCUPIED", currentOrderId: existingOrder.id })
+        .where(eq(schema.diningTables.id, input.tableId))
+        .run();
+
+      return getOrderById(existingOrder.id);
+    }
+  }
+
   const id = uuid();
   const orderNumber = getNextOrderNumber("OUT");
   const now = new Date().toISOString();

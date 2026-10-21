@@ -29,11 +29,11 @@ export const useOfflineSync = () => {
         } else if (item.action === "UPDATE_ITEMS") {
           await apiClient(`/orders/${item.orderId}/items`, { method: "POST", body: JSON.stringify(item.payload) });
         } else if (item.action === "HOLD_ORDER") {
-          await apiClient(`/orders/${item.orderId}/hold`, { method: "POST" });
+          await apiClient(`/orders/${item.orderId}/hold`, { method: "POST", body: JSON.stringify({}) });
         } else if (item.action === "CHECKOUT") {
           await apiClient(`/orders/${item.orderId}/checkout`, { method: "POST", body: JSON.stringify(item.payload) });
         } else if (item.action === "FIRE_KOT") {
-          await apiClient(`/orders/${item.orderId}/kot`, { method: "POST" });
+          await apiClient(`/orders/${item.orderId}/kot`, { method: "POST", body: JSON.stringify({}) });
         }
 
         await db.syncQueue.delete(item.id!);

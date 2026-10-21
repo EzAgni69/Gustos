@@ -62,7 +62,7 @@ export const ModifiersModal: React.FC = () => {
         {/* Header */}
         <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
+            <h2 className="text-base font-black text-text-main flex items-center gap-2">
               <span>🏷️ ITEM MODIFIERS & NOTES</span>
               <span className="text-[10px] font-mono bg-primary/20 text-primary-hover px-2 py-0.5 rounded border border-primary">
                 Alt+M

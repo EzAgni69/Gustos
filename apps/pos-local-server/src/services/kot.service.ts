@@ -13,6 +13,7 @@ import { buildKOTReceipt, type KOTData } from "@gusto/printer";
 import {
   emitKOTNew,
   emitKOTStatusUpdate,
+  emitOrderUpdated,
   emitKOTCancelled,
   emitKOTRush,
   emitKOTModification,
@@ -164,6 +165,14 @@ export function generateKOT(
     createdAt: now,
   });
 
+  emitOrderUpdated({
+    type: "KOT_GENERATED",
+    kotId,
+    kotNumber,
+    orderId,
+    orderNumber: order.orderNumber,
+  });
+
   return {
     kotId,
     kotNumber,
@@ -280,11 +289,17 @@ export function updateKOTStatus(
       (k) => k.id === kotId ? true : k.status === "READY" || k.status === "SERVED"
     );
 
-    if (allReady) {
+    if (allReady && order?.status !== "COMPLETED" && order?.status !== "CANCELLED") {
       db.update(schema.orders)
         .set({ status: "READY", updatedAt: new Date().toISOString() })
         .where(eq(schema.orders.id, kot.orderId))
         .run();
+
+      emitOrderUpdated({
+        type: "ORDER_READY",
+        orderId: kot.orderId,
+        orderNumber: order?.orderNumber,
+      });
 
       if (order?.orderMode === "ONLINE") {
         const match = order.notes?.match(/onlineOrderId:([^\s|]+)/);
@@ -298,7 +313,14 @@ export function updateKOTStatus(
     }
   }
 
-  emitKOTStatusUpdate(kotId, status, order?.orderNumber ?? "");
+  emitKOTStatusUpdate(kotId, status, order?.orderNumber ?? "", kot.orderId);
+  emitOrderUpdated({
+    type: "KOT_STATUS_UPDATED",
+    kotId,
+    status,
+    orderId: kot.orderId,
+    orderNumber: order?.orderNumber,
+  });
 
   return { kotId, status, orderId: kot.orderId };
 }

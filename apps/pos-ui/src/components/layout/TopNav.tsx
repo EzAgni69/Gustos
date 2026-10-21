@@ -6,9 +6,9 @@ import { useShiftStore } from "../../store/useShiftStore";
 import { usePrinterStore } from "../../store/usePrinterStore";
 
 export const TopNav: React.FC = () => {
-  const { orderMode, setOrderMode, tableNumber, paxCount, addItem, heldBills } = useCartStore();
+  const { orderMode, setOrderMode, switchOrderMode, tableId, tableNumber, paxCount, addItem, heldBills, activeOrderId, items, holdCurrentBill, syncOrderToBackend } = useCartStore();
   const { searchQuery, setSearchQuery, getItemByShortCode, resetSearch } = useMenuStore();
-  const { activeView, setActiveView, openModal, notification, isOnline, serverIp, fetchServerIp } = useUIStore();
+  const { activeView, setActiveView, openModal, notification, showNotification, isOnline, serverIp, fetchServerIp } = useUIStore();
   const { activeShift, shiftWarning, fetchActiveShift, fetchShiftWarning } = useShiftStore();
   const { status: printerStatus } = usePrinterStore();
 
@@ -72,7 +72,35 @@ export const TopNav: React.FC = () => {
             return (
               <button
                 key={item.mode}
-                onClick={() => setOrderMode(item.mode)}
+                onClick={async () => {
+                  if (item.mode === orderMode) return; // Already in this mode
+                  
+                  // If current cart has items, handle them safely before switching
+                  if (items.length > 0) {
+                    if (orderMode === "DINE_IN" && tableId) {
+                      // Save/sync current table order so it remains safely on the table
+                      if (items.some(i => !i.isSaved)) {
+                        await syncOrderToBackend("Auto-saved on mode switch");
+                      }
+                      showNotification(`💾 Table ${tableNumber || tableId} order saved.`);
+                    } else {
+                      // Non-dine-in order with items: hold/park it
+                      await holdCurrentBill(`Auto-held: ${orderMode} order`);
+                      showNotification(`⏸️ Current ${orderMode} order held.`);
+                    }
+                  }
+                  
+                  // Clean switch to new mode
+                  switchOrderMode(item.mode);
+                  
+                  if (item.mode === "DINE_IN") {
+                    setActiveView("TABLES"); // Open table view to choose table
+                    showNotification("🍽️ Dine-In mode: Select a table to begin.");
+                  } else {
+                    setActiveView("BILLING"); // Ensure billing screen is active
+                    showNotification(`${item.icon} ${item.label} mode: Ready for new order.`);
+                  }
+                }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
                   isActive
                     ? "bg-primary text-text-inverse shadow-sm font-bold"
@@ -171,15 +199,20 @@ export const TopNav: React.FC = () => {
           onClick={() => openModal("PRINTER")}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
             printerStatus?.failed && printerStatus.failed > 0
-              ? "bg-rose-500/20 text-rose-400 border-rose-500/40 animate-pulse"
+              ? "bg-rose-500/15 text-rose-700 border-rose-500/40 animate-pulse shadow-xs"
               : "bg-surface-hover text-text-muted border-border-hover hover:text-text-main"
           }`}
           title="Printer Queue Status"
         >
           <span>🖨️</span>
-          {printerStatus?.failed ? (
+          {printerStatus?.failed && printerStatus.failed > 0 ? (
             <span className="bg-rose-600 text-text-inverse px-1.5 py-0.5 rounded-full text-[10px] font-mono">
               {printerStatus.failed} Failed
+            </span>
+          ) : printerStatus?.printing && printerStatus.printing > 0 ? (
+            <span className="text-[10px] text-amber-700 font-bold flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping inline-block" />
+              Printing
             </span>
           ) : (
             <span className="text-[10px] text-text-muted font-normal">Ready</span>
@@ -191,7 +224,7 @@ export const TopNav: React.FC = () => {
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold border ${
             isOnline
               ? "bg-secondary/10 text-secondary-hover border-emerald-500/20"
-              : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+              : "bg-rose-500/10 text-rose-700 border-rose-500/30"
           }`}
           title="Socket.IO connection status to Local Server"
         >

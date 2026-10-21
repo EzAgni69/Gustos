@@ -11,8 +11,10 @@ interface QueueStatus {
 interface PrinterState {
   status: QueueStatus | null;
   isLoading: boolean;
+  isRetrying: boolean;
   
   fetchQueueStatus: () => Promise<void>;
+  retryFailedJobs: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
 }
@@ -22,6 +24,7 @@ let pollingInterval: number | null = null;
 export const usePrinterStore = create<PrinterState>((set, get) => ({
   status: null,
   isLoading: false,
+  isRetrying: false,
 
   fetchQueueStatus: async () => {
     try {
@@ -31,6 +34,24 @@ export const usePrinterStore = create<PrinterState>((set, get) => ({
       }
     } catch (err) {
       // Ignore poll errors
+    }
+  },
+
+  retryFailedJobs: async () => {
+    set({ isRetrying: true });
+    try {
+      const res = await apiClient<{ success: boolean; data: QueueStatus }>("/print/retry", {
+        method: "POST",
+      });
+      if (res.success && res.data) {
+        set({ status: res.data });
+      } else {
+        await get().fetchQueueStatus();
+      }
+    } catch (err) {
+      // Ignore errors
+    } finally {
+      set({ isRetrying: false });
     }
   },
 

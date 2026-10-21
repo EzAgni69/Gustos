@@ -39,14 +39,14 @@ export const MenuItemGrid: React.FC = () => {
         <div className="bg-primary/10 border-b border-primary px-4 py-2 flex items-center justify-between text-xs text-primary-hover">
           <div className="flex items-center gap-2">
             <span className="font-bold">⚡ Active Search Filter:</span>
-            <span className="bg-primary/30 font-mono px-2 py-0.5 rounded text-text-inverse border border-primary">
+            <span className="bg-primary/15 font-mono px-2 py-0.5 rounded text-primary-hover font-bold border border-primary/30">
               "{searchQuery}"
             </span>
             <span className="text-text-muted">({filteredItems.length} results)</span>
           </div>
           <button
             onClick={resetSearch}
-            className="text-text-muted hover:text-text-inverse underline text-[11px] flex items-center gap-1"
+            className="text-text-muted hover:text-text-main underline text-[11px] flex items-center gap-1"
           >
             <span>Clear [Esc]</span>
           </button>

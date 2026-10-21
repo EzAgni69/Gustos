@@ -19,7 +19,7 @@ import {
   type GSTRate,
   type InvoiceRecord,
 } from "@gusto/core-logic";
-import { printBillTemplate, queuePrint, getPrintQueueStatus, triggerCashDrawer, type PrintSource } from "../services/print.service.js";
+import { printBillTemplate, queuePrint, getPrintQueueStatus, retryFailedPrints, triggerCashDrawer, type PrintSource } from "../services/print.service.js";
 import { emitTableStatusChanged } from "../socket/events.js";
 
 const router = Router();
@@ -278,6 +278,26 @@ router.get("/queue-status", async (req, res) => {
     res.json({ success: true, data: status });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to get print queue status";
+    res.status(500).json({ success: false, message });
+  }
+});
+
+/**
+ * POST /api/print/retry
+ * Manually trigger retry of failed print jobs.
+ */
+router.post("/retry", async (req, res) => {
+  if (!canPrintBill(req.currentUser?.role)) {
+    res.status(403).json({ success: false, message: "Insufficient permissions" });
+    return;
+  }
+
+  try {
+    await retryFailedPrints();
+    const status = getPrintQueueStatus();
+    res.json({ success: true, message: "Retried failed print jobs", data: status });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to retry print jobs";
     res.status(500).json({ success: false, message });
   }
 });

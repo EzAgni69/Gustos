@@ -23,7 +23,7 @@ const router = Router();
  */
 router.post("/orders/:id/kot", (req, res) => {
   try {
-    const { itemIds, station } = req.body as {
+    const { itemIds, station } = (req.body || {}) as {
       itemIds?: string[];
       station?: string;
     };
@@ -66,7 +66,7 @@ router.get("/kots", (req, res) => {
  */
 router.patch("/kots/:id/status", (req, res) => {
   try {
-    const { status } = req.body as {
+    const { status } = (req.body || {}) as {
       status: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED";
     };
     const result = updateKOTStatus(req.params.id!, status);
@@ -107,7 +107,7 @@ router.post("/orders/:orderId/kot/:kotId/reprint", (req, res) => {
  */
 router.post("/orders/:orderId/kot/:kotId/cancel", (req, res) => {
   try {
-    const { reason, approvedBy } = req.body as { reason: string; approvedBy: string };
+    const { reason, approvedBy } = (req.body || {}) as { reason: string; approvedBy: string };
     if (!reason || !approvedBy) {
       res.status(400).json({ success: false, message: "reason and approvedBy are required" });
       return;
@@ -130,7 +130,7 @@ router.post("/orders/:orderId/kot/:kotId/cancel", (req, res) => {
  */
 router.post("/orders/:orderId/kot/modify", (req, res) => {
   try {
-    const { modifications, station } = req.body as {
+    const { modifications, station } = (req.body || {}) as {
       modifications: Array<{
         orderItemId: string;
         changeType: "MODIFIER_CHANGE" | "QUANTITY_CHANGE" | "NOTE_CHANGE";

@@ -62,6 +62,10 @@ const PORT = Number(process.env.PORT ?? process.env.POS_LOCAL_PORT ?? 8080);
 // ─── Middleware ───
 app.use(cors());
 app.use(express.json());
+app.use((req, _res, next) => {
+  if (!req.body || typeof req.body !== "object") req.body = {};
+  next();
+});
 app.use(authMiddleware);
 
 import os from "os";
@@ -118,8 +122,14 @@ const possibleKdsPaths = [
 const kdsDist = possibleKdsPaths.find((p) => fs.existsSync(p));
 if (kdsDist) {
   console.log(`[Static] Serving KDS TV from: ${kdsDist}`);
+  app.use("/kds", (req, res, next) => {
+    if (req.originalUrl === "/kds") {
+      return res.redirect(301, "/kds/");
+    }
+    next();
+  });
   app.use("/kds", express.static(kdsDist));
-  app.get("/kds/*", (_req, res) => {
+  app.use("/kds", (_req, res) => {
     res.sendFile(path.join(kdsDist, "index.html"));
   });
 }
@@ -134,12 +144,17 @@ const posUiDist = possiblePosUiPaths.find((p) => fs.existsSync(p));
 if (posUiDist) {
   console.log(`[Static] Serving POS UI from: ${posUiDist}`);
   app.use(express.static(posUiDist));
-  app.get("*", (req, res, next) => {
+  // Fallback static lookup for KDS assets if requested at /assets
+  if (kdsDist && fs.existsSync(path.join(kdsDist, "assets"))) {
+    app.use("/assets", express.static(path.join(kdsDist, "assets")));
+  }
+  app.use((req, res, next) => {
     if (
       req.path.startsWith("/api") ||
       req.path.startsWith("/socket.io") ||
       req.path.startsWith("/health") ||
-      req.path.startsWith("/kds")
+      req.path.startsWith("/kds") ||
+      req.path.match(/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot)$/)
     ) {
       return next();
     }
