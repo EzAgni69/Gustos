@@ -22,6 +22,8 @@ COPY turbo.json turbo.json
 
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG API_GATEWAY_URL
+ENV API_GATEWAY_URL=$API_GATEWAY_URL
 
 RUN pnpm turbo run build --filter=@gusto/web-admin...
 

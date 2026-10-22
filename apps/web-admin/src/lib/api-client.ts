@@ -1,8 +1,17 @@
-const RAW_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-const BASE_URL_CLEAN = RAW_BASE_URL.replace(/\/+$/, "");
-const API_BASE_URL = BASE_URL_CLEAN.endsWith("/api/v1")
-  ? BASE_URL_CLEAN
-  : `${BASE_URL_CLEAN}/api/v1`;
+export function getApiBaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (envUrl && envUrl.trim() !== "") {
+    const clean = envUrl.trim().replace(/\/+$/, "");
+    return clean.endsWith("/api/v1") ? clean : `${clean}/api/v1`;
+  }
+  // In the browser, use relative path so Next.js rewrites proxy to backend without CORS issues
+  if (typeof window !== "undefined") {
+    return "/api/v1";
+  }
+  // On the server (SSR), use API_GATEWAY_URL or local default
+  const serverUrl = (process.env.API_GATEWAY_URL || "http://localhost:3001").replace(/\/+$/, "");
+  return serverUrl.endsWith("/api/v1") ? serverUrl : `${serverUrl}/api/v1`;
+}
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -40,10 +49,16 @@ export async function apiFetch<T>(
   }
 
   // Handle endpoints whether they start with slash or already contain /api/v1
+  const apiBase = getApiBaseUrl();
   const cleanEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-  const requestUrl = cleanEndpoint.startsWith("/api/v1/")
-    ? `${BASE_URL_CLEAN.replace(/\/api\/v1$/, "")}${cleanEndpoint}`
-    : `${API_BASE_URL}${cleanEndpoint}`;
+  let requestUrl: string;
+
+  if (cleanEndpoint.startsWith("/api/v1/")) {
+    const baseWithoutV1 = apiBase.endsWith("/api/v1") ? apiBase.slice(0, -7) : apiBase;
+    requestUrl = `${baseWithoutV1}${cleanEndpoint}`;
+  } else {
+    requestUrl = `${apiBase}${cleanEndpoint}`;
+  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30_000);

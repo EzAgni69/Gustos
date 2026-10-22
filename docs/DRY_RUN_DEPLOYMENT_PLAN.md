@@ -82,7 +82,8 @@ Railway allows deploying from your monorepo GitHub repository with Dockerfiles f
    | `JWT_EXPIRY` | `7d` | Token lifetime |
    | `CORS_ORIGIN` | `*` | Or specify Web Admin domain |
    | `NODE_ENV` | `production` | Production mode |
-5. In **Networking**, click **"Generate Domain"** (e.g., `api-gateway-production.up.railway.app`).
+5. In **Networking**, click **"Generate Domain"** (Railway will assign a unique public domain, e.g. `api-gateway-production-xxxx.up.railway.app`).
+   > ⚠️ **Important:** Copy the **exact generated domain** from Railway. Do not manually type `api-gateway.up.railway.app` as Railway subdomains have unique project suffixes. Test your domain in your browser: `https://<your-generated-domain>.up.railway.app/health` should return `{"status":"ok"}`.
 6. Set **Healthcheck Path:** `/health`.
 
 ---
@@ -115,11 +116,14 @@ Railway allows deploying from your monorepo GitHub repository with Dockerfiles f
    - **Dockerfile Path:** `apps/web-admin/Dockerfile`
    - **Watch Paths:** `/apps/web-admin/**`, `/packages/**`
 4. Set **Variables & Build Args**:
-   | Variable | Value |
-   |---|---|
-   | `NEXT_PUBLIC_API_URL` | `https://${{api-gateway.RAILWAY_PUBLIC_DOMAIN}}/api/v1` *(or paste the actual api-gateway URL)* |
-   | `NODE_ENV` | `production` |
-5. In **Networking**, click **"Generate Domain"** (e.g., `web-admin-production.up.railway.app`).
+   | Variable | Value | Notes |
+   |---|---|---|
+   | `API_GATEWAY_URL` | `https://${{api-gateway.RAILWAY_PUBLIC_DOMAIN}}/api/v1` *(or paste exact api-gateway URL)* | Powers server-side Next.js `/api/v1` proxy rewrite (avoids CORS) |
+   | `NEXT_PUBLIC_API_URL` | `https://${{api-gateway.RAILWAY_PUBLIC_DOMAIN}}/api/v1` *(or paste exact api-gateway URL)* | For direct browser API calls |
+   | `NODE_ENV` | `production` | Production mode |
+
+   > 💡 **Next.js Rebuild Note:** If you ever change `NEXT_PUBLIC_API_URL`, you must click **"Redeploy"** on `web-admin` because `NEXT_PUBLIC_*` variables are baked into static JavaScript at Docker build time.
+5. In **Networking**, click **"Generate Domain"** (e.g., `web-admin-production-xxxx.up.railway.app`).
 6. Healthcheck: `/login`.
 
 ---

@@ -45,11 +45,15 @@ cp -R "$ROOT_DIR/apps/kds-tv/dist/"* "$DIST_DIR/gusto-kds/web/"
 
 # 4. Copy pre-seeded SQLite database
 echo "💾 Step 3: Copying pre-seeded local database..."
+if command -v sqlite3 &> /dev/null && [ -f "$ROOT_DIR/apps/pos-local-server/data/local.sqlite" ]; then
+  sqlite3 "$ROOT_DIR/apps/pos-local-server/data/local.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+fi
 if [ -f "$ROOT_DIR/apps/pos-local-server/data/local.sqlite" ]; then
   cp "$ROOT_DIR/apps/pos-local-server/data/local.sqlite" "$DIST_DIR/gusto-pos-desktop/data/local.sqlite"
 elif [ -f "$ROOT_DIR/data/local.sqlite" ]; then
   cp "$ROOT_DIR/data/local.sqlite" "$DIST_DIR/gusto-pos-desktop/data/local.sqlite"
 fi
+chmod 666 "$DIST_DIR/gusto-pos-desktop/data/local.sqlite" 2>/dev/null || true
 
 # 5. Create Standalone POS Package runner
 echo "📄 Step 4: Writing launcher scripts & packaging all dependencies for POS Desktop..."
@@ -140,8 +144,8 @@ if ! command -v node &> /dev/null; then
   exit 1
 fi
 
-# Auto-install runtime database module if missing
-if [ ! -d "node_modules/better-sqlite3" ]; then
+# Auto-install runtime database module if missing or binary incompatible
+if ! node -e 'require("better-sqlite3")' 2>/dev/null; then
   echo "📦 Installing required database engine (better-sqlite3)..."
   npm install --no-audit --no-fund
   touch "node_modules/.unix_installed" 2>/dev/null || true
@@ -181,8 +185,9 @@ if %errorlevel% neq 0 (
   exit /b 1
 )
 
-REM Auto-install runtime database module for Windows if missing
-if not exist "node_modules\.windows_installed" (
+REM Auto-install runtime database module for Windows if missing or incompatible
+node -e "require('better-sqlite3')" >nul 2>nul
+if %errorlevel% neq 0 (
   echo [1/2] Installing required database engine for Windows (better-sqlite3)...
   call npm install --no-audit --no-fund
   if errorlevel 1 (
@@ -207,6 +212,12 @@ if errorlevel 1 (
   pause
 )
 EOF
+
+# Copy comprehensive client handover guide if available
+if [ -f "$ROOT_DIR/docs/CLIENT_HANDOVER_AND_RUN_GUIDE.md" ]; then
+  cp "$ROOT_DIR/docs/CLIENT_HANDOVER_AND_RUN_GUIDE.md" "$DIST_DIR/gusto-pos-desktop/CLIENT_HANDOVER_AND_RUN_GUIDE.md"
+  cp "$ROOT_DIR/docs/CLIENT_HANDOVER_AND_RUN_GUIDE.md" "$DIST_DIR/CLIENT_HANDOVER_AND_RUN_GUIDE.md"
+fi
 
 # 6. Create Quickstart Guides
 cat << 'EOF' > "$DIST_DIR/gusto-pos-desktop/CLIENT_TESTING_GUIDE.md"
@@ -307,12 +318,78 @@ To generate an installable `.apk` file that can be distributed directly to the c
 3. Select an available table, add food items, tap **"Fire KOT"**, and watch it pop up on the KDS screen instantly!
 EOF
 
+# Copy Captain App source and configuration for standalone operation
+mkdir -p "$DIST_DIR/gusto-captain/app"
+mkdir -p "$DIST_DIR/gusto-captain/src"
+mkdir -p "$DIST_DIR/gusto-captain/assets"
+
+cp -R "$ROOT_DIR/apps/app-captain/app/"* "$DIST_DIR/gusto-captain/app/"
+cp -R "$ROOT_DIR/apps/app-captain/src/"* "$DIST_DIR/gusto-captain/src/"
+cp -R "$ROOT_DIR/apps/app-captain/assets/"* "$DIST_DIR/gusto-captain/assets/" 2>/dev/null || true
+cp "$ROOT_DIR/apps/app-captain/app.json" "$DIST_DIR/gusto-captain/app.json"
+cp "$ROOT_DIR/apps/app-captain/babel.config.js" "$DIST_DIR/gusto-captain/babel.config.js"
+cp "$ROOT_DIR/apps/app-captain/eas.json" "$DIST_DIR/gusto-captain/eas.json" 2>/dev/null || true
+
+# Standalone tsconfig
+cat << 'EOF' > "$DIST_DIR/gusto-captain/tsconfig.json"
+{
+  "compilerOptions": {
+    "strict": true,
+    "jsx": "react-native",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+EOF
+
+# Standalone metro.config.js
+cat << 'EOF' > "$DIST_DIR/gusto-captain/metro.config.js"
+const { getDefaultConfig } = require('expo/metro-config');
+const config = getDefaultConfig(__dirname);
+config.resolver.unstable_enablePackageExports = false;
+module.exports = config;
+EOF
+
+# Clean standalone package.json
+node -e '
+  const fs = require("fs");
+  const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (pkg.dependencies) {
+    delete pkg.dependencies["@gusto/api-contracts"];
+    delete pkg.dependencies["@gusto/core-logic"];
+  }
+  if (pkg.devDependencies) {
+    delete pkg.devDependencies["@gusto/tsconfig"];
+  }
+  pkg.name = "gusto-captain";
+  fs.writeFileSync(process.argv[2], JSON.stringify(pkg, null, 2));
+' "$ROOT_DIR/apps/app-captain/package.json" "$DIST_DIR/gusto-captain/package.json"
+
 cat << 'EOF' > "$DIST_DIR/gusto-captain/start-expo-go.sh"
 #!/usr/bin/env bash
-cd "$(dirname "$0")/../../apps/app-captain"
+if [ -d "$(dirname "$0")/../../apps/app-captain" ]; then
+  cd "$(dirname "$0")/../../apps/app-captain"
+else
+  cd "$(dirname "$0")"
+fi
 echo "=========================================="
 echo "📱 Starting Gusto Captain in Expo Go mode..."
 echo "=========================================="
+if [ ! -d "node_modules" ]; then
+  echo "📦 Installing required dependencies for Captain App..."
+  npm install --no-audit --no-fund
+fi
 echo "1. Open Expo Go on your mobile phone"
 echo "2. Scan the QR code below"
 echo "=========================================="
@@ -320,9 +397,40 @@ npx expo start --go
 EOF
 chmod +x "$DIST_DIR/gusto-captain/start-expo-go.sh"
 
+cat << 'EOF' > "$DIST_DIR/gusto-captain/start-expo-go.bat"
+@echo off
+title Gusto Captain Waiter App
+if exist "%~dp0..\..\apps\app-captain" (
+  cd /d "%~dp0..\..\apps\app-captain"
+) else (
+  cd /d "%~dp0"
+)
+echo ==========================================
+echo 📱 Starting Gusto Captain in Expo Go mode...
+echo ==========================================
+if not exist "node_modules" (
+  echo [1/2] Installing required dependencies for Captain App...
+  call npm install --no-audit --no-fund
+)
+echo [2/2] Launching Expo Go...
+echo 1. Open Expo Go on your mobile phone
+echo 2. Scan the QR code below
+echo ==========================================
+call npx expo start --go
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Expo process stopped.
+  pause
+)
+EOF
+
 cat << 'EOF' > "$DIST_DIR/gusto-captain/build-apk.sh"
 #!/usr/bin/env bash
-cd "$(dirname "$0")/../../apps/app-captain"
+if [ -d "$(dirname "$0")/../../apps/app-captain" ]; then
+  cd "$(dirname "$0")/../../apps/app-captain"
+else
+  cd "$(dirname "$0")"
+fi
 echo "=========================================="
 echo "🔨 Building Standalone Android APK..."
 echo "=========================================="
@@ -331,6 +439,21 @@ echo "=========================================="
 npx eas-cli build -p android --profile preview
 EOF
 chmod +x "$DIST_DIR/gusto-captain/build-apk.sh"
+
+cat << 'EOF' > "$DIST_DIR/gusto-captain/build-apk.bat"
+@echo off
+title Build Standalone Android APK
+if exist "%~dp0..\..\apps\app-captain" (
+  cd /d "%~dp0..\..\apps\app-captain"
+) else (
+  cd /d "%~dp0"
+)
+echo ==========================================
+echo 🔨 Building Standalone Android APK...
+echo ==========================================
+call npx eas-cli build -p android --profile preview
+pause
+EOF
 
 # 8. Create KDS Setup Guide
 cat << 'EOF' > "$DIST_DIR/gusto-kds/KDS_SETUP_GUIDE.md"
@@ -371,6 +494,30 @@ No installation required!
 1. Open `apps/kds-tv/android` in Android Studio.
 2. Select **Build > Build Bundle(s) / APK(s) > Build APK(s)**.
 3. Transfer the generated `app-debug.apk` to the Android TV using a USB stick or "Send Files to TV" app.
+EOF
+
+cat << 'EOF' > "$DIST_DIR/gusto-kds/start-kds.sh"
+#!/usr/bin/env bash
+cd "$(dirname "$0")/web"
+echo "=========================================="
+echo "📺 Starting Gusto KDS Kitchen Display..."
+echo "=========================================="
+PORT=${KDS_PORT:-3002}
+echo "KDS Web URL: http://localhost:$PORT"
+(sleep 2 && (open "http://localhost:$PORT" 2>/dev/null || xdg-open "http://localhost:$PORT" 2>/dev/null || true)) &
+npx -y serve . -p "$PORT"
+EOF
+chmod +x "$DIST_DIR/gusto-kds/start-kds.sh"
+
+cat << 'EOF' > "$DIST_DIR/gusto-kds/start-kds.bat"
+@echo off
+title Gusto KDS Kitchen Display
+cd /d "%~dp0\web"
+echo ==========================================
+echo 📺 Starting Gusto KDS Kitchen Display...
+echo ==========================================
+start http://localhost:3002
+call npx -y serve . -p 3002
 EOF
 
 # 9. Create Zip Archives

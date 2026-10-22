@@ -62,7 +62,7 @@ import {
   Eye,
 } from "lucide-react";
 import type { Order, OrderStatus, Outlet } from "@gusto/api-contracts";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, getApiBaseUrl } from "@/lib/api-client";
 
 // ─── Status Config ───
 
@@ -365,8 +365,7 @@ export default function OrdersPage() {
     setPdfDownloading(orderId);
     try {
       const token = document.cookie.match(/(?:^|; )gusto_token=([^;]*)/)?.[1];
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001").replace(/\/+$/, "");
-      const apiUrl = baseUrl.endsWith("/api/v1") ? baseUrl : `${baseUrl}/api/v1`;
+      const apiUrl = getApiBaseUrl();
 
       const res = await fetch(`${apiUrl}/orders/${orderId}/invoice/pdf`, {
         headers: token ? { Authorization: `Bearer ${decodeURIComponent(token)}` } : {},
@@ -395,8 +394,7 @@ export default function OrdersPage() {
   const exportOrdersCsv = async () => {
     try {
       const token = document.cookie.match(/(?:^|; )gusto_token=([^;]*)/)?.[1];
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001").replace(/\/+$/, "");
-      const apiUrl = baseUrl.endsWith("/api/v1") ? baseUrl : `${baseUrl}/api/v1`;
+      const apiUrl = getApiBaseUrl();
 
       const params = new URLSearchParams();
       if (currentOutletId && currentOutletId !== "all") params.set("outletId", currentOutletId);

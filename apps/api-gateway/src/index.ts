@@ -73,18 +73,36 @@ const fastify = Fastify({
 
 // ─── CORS Configuration ───
 const rawCors = process.env.CORS_ORIGIN;
-const allowedOrigin = rawCors
-  ? rawCors === "*"
-    ? true
-    : rawCors.includes(",")
-    ? rawCors.split(",").map((s) => s.trim())
-    : rawCors
-  : true;
+
+function checkOriginAllowed(origin: string | undefined): boolean {
+  // Allow non-browser requests (no origin header, e.g. curl, mobile apps, server-to-server)
+  if (!origin) return true;
+
+  // If CORS_ORIGIN is unset or "*", allow all origins (reflecting request origin)
+  if (!rawCors || rawCors.trim() === "*" || rawCors.trim() === "") return true;
+
+  const normalizedOrigin = origin.trim().replace(/\/+$/, "").toLowerCase();
+
+  // Always permit local development and Railway cloud deployments
+  if (
+    normalizedOrigin.includes("localhost") ||
+    normalizedOrigin.includes("127.0.0.1") ||
+    normalizedOrigin.endsWith(".up.railway.app") ||
+    normalizedOrigin.endsWith(".railway.app")
+  ) {
+    return true;
+  }
+
+  const origins = rawCors.split(",").map((s) => s.trim().replace(/\/+$/, "").toLowerCase());
+  return origins.includes(normalizedOrigin);
+}
 
 // ─── Initialize Socket.IO ───
 const io = new SocketServer(fastify.server, {
   cors: {
-    origin: allowedOrigin,
+    origin: (origin, callback) => {
+      callback(null, checkOriginAllowed(origin));
+    },
     credentials: true,
   },
 });
@@ -92,9 +110,20 @@ initCloudSocket(io);
 
 // ─── Register Plugins ───
 await fastify.register(cors, {
-  origin: allowedOrigin,
+  origin: (origin, cb) => {
+    cb(null, checkOriginAllowed(origin));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization",
+    "x-organization-id",
+    "x-outlet-id",
+  ],
 });
 await fastify.register(authPlugin);
 await fastify.register(errorHandlerPlugin);
