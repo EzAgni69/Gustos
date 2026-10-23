@@ -176,10 +176,10 @@ Best for dry-run demonstrations without distributing APK files:
 
 For management dashboards, inventory, recipe costing, and analytics:
 
-#### Option A: Running via Pre-Deployed Cloud (e.g. Railway / Render / AWS)
-- **Web Admin URL:** `https://your-web-admin.up.railway.app`
-- **Cloud API Gateway URL:** `https://your-api-gateway.up.railway.app`
-- **Default Super Admin:** `manager@gusto.dev` | Password: `Admin@123456`
+- **Web Admin URL:** `https://web-admin-erp-production.up.railway.app`
+- **Cloud API Gateway URL:** `https://api-service-production-a0cd.up.railway.app`
+- **Owner Admin Login:** `admin@gusto.dev` | Password: `admin123`
+- **Manager Staff Login:** `manager@gusto.dev` | Password: `staff123`
 
 #### Option B: Running Locally via Docker Compose
 From the root workspace:

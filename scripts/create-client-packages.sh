@@ -162,6 +162,11 @@ echo "=========================================="
 # Run server
 export POS_LOCAL_PORT=8080
 export POS_LOCAL_DB_PATH="./data/local.sqlite"
+export API_GATEWAY_URL="${API_GATEWAY_URL:-https://api-service-production-a0cd.up.railway.app}"
+export CLOUD_API_URL="${CLOUD_API_URL:-https://api-service-production-a0cd.up.railway.app}"
+export OUTLET_ID="${OUTLET_ID:-00000000-0000-0000-0000-000000000003}"
+export ORGANIZATION_ID="${ORGANIZATION_ID:-00000000-0000-0000-0000-000000000001}"
+export CLOUD_SYNC_ENABLED="true"
 node server/dist/index.js
 EOF
 chmod +x "$DIST_DIR/gusto-pos-desktop/start-pos.sh"
@@ -205,12 +210,28 @@ echo ==========================================
 start http://localhost:8080
 set POS_LOCAL_PORT=8080
 set POS_LOCAL_DB_PATH=./data/local.sqlite
+if "%API_GATEWAY_URL%"=="" set API_GATEWAY_URL=https://api-service-production-a0cd.up.railway.app
+if "%CLOUD_API_URL%"=="" set CLOUD_API_URL=https://api-service-production-a0cd.up.railway.app
+if "%OUTLET_ID%"=="" set OUTLET_ID=00000000-0000-0000-0000-000000000003
+if "%ORGANIZATION_ID%"=="" set ORGANIZATION_ID=00000000-0000-0000-0000-000000000001
+set CLOUD_SYNC_ENABLED=true
 node server/dist/index.js
 if errorlevel 1 (
   echo.
   echo [ERROR] POS Server stopped with an error.
   pause
 )
+EOF
+
+# Pre-configure .env for local server
+cat << 'EOF' > "$DIST_DIR/gusto-pos-desktop/.env"
+POS_LOCAL_PORT=8080
+POS_LOCAL_DB_PATH=./data/local.sqlite
+API_GATEWAY_URL=https://api-service-production-a0cd.up.railway.app
+CLOUD_API_URL=https://api-service-production-a0cd.up.railway.app
+ORGANIZATION_ID=00000000-0000-0000-0000-000000000001
+OUTLET_ID=00000000-0000-0000-0000-000000000003
+CLOUD_SYNC_ENABLED=true
 EOF
 
 # Copy comprehensive client handover guide if available

@@ -6,9 +6,14 @@ import { pullFromCloud } from "./cloud-sync.service.js";
 import { generateKOT } from "./kot.service.js";
 
 let socket: Socket | null = null;
-const API_URL = process.env.CLOUD_API_URL ?? "http://localhost:3001";
-const ORGANIZATION_ID = process.env.ORGANIZATION_ID ?? "org_default";
-const OUTLET_ID = process.env.OUTLET_ID ?? "outlet_default";
+const API_URL =
+  process.env.API_GATEWAY_URL ||
+  process.env.CLOUD_API_URL ||
+  "http://localhost:3001";
+const ORGANIZATION_ID =
+  process.env.ORGANIZATION_ID ?? "00000000-0000-0000-0000-000000000001";
+const OUTLET_ID =
+  process.env.OUTLET_ID ?? "00000000-0000-0000-0000-000000000003";
 
 // If explicitly disabled, skip uplink entirely (standalone client desktops)
 const CLOUD_SYNC_ENABLED =
