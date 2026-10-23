@@ -6,9 +6,8 @@
 
 import React, { useEffect } from "react";
 import { View, StyleSheet, Dimensions, TouchableWithoutFeedback, Modal } from "react-native";
-import { PanGestureHandler } from "react-native-gesture-handler";
+import { GestureDetector, Gesture } from "react-native-gesture-handler";
 import Animated, {
-  useAnimatedGestureHandler,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -53,24 +52,20 @@ export function BottomSheet({ isVisible, onClose, children, height = "80%" }: Bo
     opacity.value = withTiming(0, { duration: 200 });
   };
 
-  const gestureHandler = useAnimatedGestureHandler({
-    onStart: (_: any, ctx: { startY: number }) => {
-      ctx.startY = translateY.value;
-    },
-    onActive: (event: any, ctx: { startY: number }) => {
+  const panGesture = Gesture.Pan()
+    .onChange((event) => {
       // Only allow dragging down
       if (event.translationY > 0) {
-        translateY.value = ctx.startY + event.translationY;
+        translateY.value = event.translationY;
       }
-    },
-    onEnd: (event: any) => {
+    })
+    .onEnd((event) => {
       if (event.translationY > sheetHeight / 3 || event.velocityY > 500) {
         runOnJS(handleClose)();
       } else {
         translateY.value = withSpring(0, { damping: 20, stiffness: 150 });
       }
-    },
-  });
+    });
 
   const animatedStyle = useAnimatedStyle(() => {
     return {
@@ -93,14 +88,14 @@ export function BottomSheet({ isVisible, onClose, children, height = "80%" }: Bo
           <Animated.View style={[styles.backdrop, backdropStyle]} />
         </TouchableWithoutFeedback>
 
-        <PanGestureHandler onGestureEvent={gestureHandler}>
+        <GestureDetector gesture={panGesture}>
           <Animated.View style={[styles.sheet, { height: sheetHeight }, animatedStyle]}>
             <View style={styles.handleContainer}>
               <View style={styles.handle} />
             </View>
             <View style={styles.content}>{children}</View>
           </Animated.View>
-        </PanGestureHandler>
+        </GestureDetector>
       </View>
     </Modal>
   );
@@ -112,7 +107,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0,0,0,0.6)",
   },
   sheet: {

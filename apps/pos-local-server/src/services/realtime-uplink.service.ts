@@ -10,17 +10,31 @@ const API_URL = process.env.CLOUD_API_URL ?? "http://localhost:3001";
 const ORGANIZATION_ID = process.env.ORGANIZATION_ID ?? "org_default";
 const OUTLET_ID = process.env.OUTLET_ID ?? "outlet_default";
 
+// If explicitly disabled, skip uplink entirely (standalone client desktops)
+const CLOUD_SYNC_ENABLED =
+  process.env.CLOUD_SYNC_ENABLED !== "false" &&
+  !!API_URL &&
+  API_URL !== "";
+
+let hasLoggedUplinkOffline = false;
+
 export function initRealtimeUplink() {
+  if (!CLOUD_SYNC_ENABLED) {
+    console.log(`[Realtime Uplink] Cloud sync disabled — skipping ERP uplink`);
+    return;
+  }
+
   console.log(`[Realtime Uplink] Connecting to Cloud API at ${API_URL}`);
   
   socket = io(API_URL, {
     transports: ["websocket"],
     reconnection: true,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
+    reconnectionDelay: 2000,
+    reconnectionDelayMax: 30000, // Back off more aggressively when unreachable
   });
 
   socket.on("connect", () => {
+    hasLoggedUplinkOffline = false;
     console.log(`[Realtime Uplink] Connected to Cloud ERP!`);
     
     // Authenticate / Join Store Room
@@ -31,6 +45,14 @@ export function initRealtimeUplink() {
     
     // Flush outbox on connect
     flushOutbox();
+  });
+
+  // Suppress noisy reconnection errors — log once then go silent
+  socket.on("connect_error", () => {
+    if (!hasLoggedUplinkOffline) {
+      console.log(`[Realtime Uplink] Cloud ERP unreachable — operating in offline mode (retrying silently)`);
+      hasLoggedUplinkOffline = true;
+    }
   });
 
   socket.on("store:joined", (data) => {

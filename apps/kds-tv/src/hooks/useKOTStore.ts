@@ -10,7 +10,14 @@
  */
 
 import { useReducer, useCallback, useMemo } from "react";
-import type { KDSKot, KotNewPayload, KotListItem, CompletedKot, HoldStatus } from "../types";
+import type {
+  KDSKot,
+  KotNewPayload,
+  KotListItem,
+  CompletedKot,
+  HoldStatus,
+  KotModificationPayload,
+} from "../types";
 import { getCourseNumber } from "../types";
 
 const MAX_COMPLETED_KOTS = 50;
@@ -28,6 +35,8 @@ type KOTAction =
   | { type: "HYDRATE"; kots: KDSKot[] }
   | { type: "ADD_KOT"; kot: KDSKot }
   | { type: "REMOVE_KOT"; kotId: string }
+  | { type: "CANCEL_KOT"; kotId: string }
+  | { type: "MODIFY_KOT"; kotId: string; modifications: KotModificationPayload["modifications"] }
   | { type: "UPDATE_STATUS"; kotId: string; status: KDSKot["status"] }
   | { type: "COMPLETE_KOT"; kotId: string }
   | { type: "RECALL_KOT"; kotId: string };
@@ -36,8 +45,16 @@ type KOTAction =
 
 function kotReducer(state: KOTState, action: KOTAction): KOTState {
   switch (action.type) {
-    case "HYDRATE":
-      return { ...state, kots: sortByCreatedAt(action.kots) };
+    case "HYDRATE": {
+      // Deduplicate by kotId — hydration can receive overlapping data
+      const seen = new Set<string>();
+      const uniqueKots = action.kots.filter((k) => {
+        if (seen.has(k.kotId)) return false;
+        seen.add(k.kotId);
+        return true;
+      });
+      return { ...state, kots: sortByCreatedAt(uniqueKots) };
+    }
 
     case "ADD_KOT": {
       // Deduplicate — if KOT already exists, skip
@@ -46,7 +63,55 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
     }
 
     case "REMOVE_KOT":
+    case "CANCEL_KOT":
       return { ...state, kots: state.kots.filter((k) => k.kotId !== action.kotId) };
+
+    case "MODIFY_KOT": {
+      return {
+        ...state,
+        kots: state.kots
+          .map((k) => {
+            if (k.kotId !== action.kotId) return k;
+
+            // Apply item modifications
+            const updatedItems = k.items
+              .map((item) => {
+                const mod = action.modifications.find((m) => m.itemName === item.name);
+                if (!mod) return item;
+
+                if (mod.changeType === "QUANTITY_CHANGE") {
+                  // Check if full cancellation
+                  if (mod.newValue?.startsWith("CANCELLED")) {
+                    return null;
+                  }
+                  const parsed = parseInt(mod.newValue || "", 10);
+                  const newQty = !isNaN(parsed) && parsed > 0 ? parsed : item.quantity;
+                  return {
+                    ...item,
+                    quantity: newQty,
+                    notes: mod.newValue ? `[QTY: ${mod.newValue}] ${item.notes || ""}`.trim() : item.notes,
+                  };
+                }
+
+                if (mod.changeType === "NOTE_CHANGE") {
+                  return {
+                    ...item,
+                    notes: mod.newValue || item.notes,
+                  };
+                }
+
+                return item;
+              })
+              .filter((i): i is NonNullable<typeof i> => i !== null);
+
+            return {
+              ...k,
+              items: updatedItems,
+            };
+          })
+          .filter((k) => k.items.length > 0),
+      };
+    }
 
     case "UPDATE_STATUS":
       return {
@@ -236,6 +301,17 @@ export function useKOTStore() {
     dispatch({ type: "REMOVE_KOT", kotId });
   }, []);
 
+  const cancelKOT = useCallback((kotId: string) => {
+    dispatch({ type: "CANCEL_KOT", kotId });
+  }, []);
+
+  const modifyKOT = useCallback(
+    (kotId: string, modifications: KotModificationPayload["modifications"]) => {
+      dispatch({ type: "MODIFY_KOT", kotId, modifications });
+    },
+    []
+  );
+
   const updateStatus = useCallback(
     (kotId: string, status: KDSKot["status"]) => {
       dispatch({ type: "UPDATE_STATUS", kotId, status });
@@ -276,6 +352,8 @@ export function useKOTStore() {
     hydrate,
     addKOT,
     removeKOT,
+    cancelKOT,
+    modifyKOT,
     updateStatus,
     completeKOT,
     recallKOT,

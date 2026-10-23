@@ -23,8 +23,17 @@ const API_GATEWAY_URL = process.env.API_GATEWAY_URL || "http://localhost:3001";
 const POS_API_KEY = process.env.POS_API_KEY || "";
 const SYNC_INTERVAL_MS = Number(process.env.CLOUD_SYNC_INTERVAL_MS ?? 60_000);
 
+// If explicitly disabled or gateway URL is empty/placeholder, skip cloud sync entirely
+const CLOUD_SYNC_ENABLED =
+  process.env.CLOUD_SYNC_ENABLED !== "false" &&
+  !!API_GATEWAY_URL &&
+  API_GATEWAY_URL !== "";
+
 let syncIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let isSyncing = false;
+let consecutiveFailures = 0;
+const MAX_SILENT_FAILURES = 3; // After this many failures, go silent
+let hasLoggedOfflineMode = false;
 
 // Callback to notify connected devices when data changes
 let onSyncComplete: ((changes: SyncChangeSummary) => void) | null = null;
@@ -86,6 +95,14 @@ function setLastSyncTimestamp(timestamp: string): void {
  * If fullSync is true, ignores lastSyncTimestamp and reconciles all items and categories.
  */
 export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary | null> {
+  if (!CLOUD_SYNC_ENABLED) {
+    if (!hasLoggedOfflineMode) {
+      console.log("[CloudSync] Cloud sync disabled — operating in standalone offline mode");
+      hasLoggedOfflineMode = true;
+    }
+    return null;
+  }
+
   if (isSyncing) {
     console.log("[CloudSync] Sync already in progress, skipping...");
     return null;
@@ -427,13 +444,29 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
       onSyncComplete?.(summary);
     }
 
+    // Reset failure counter on success
+    consecutiveFailures = 0;
+    hasLoggedOfflineMode = false;
+
     return summary;
   } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
-      console.warn("[CloudSync] ⏱️ Cloud API timed out — POS continues with cached data");
-    } else {
-      console.warn("[CloudSync] ❌ Cloud sync failed:", err instanceof Error ? err.message : err);
+    consecutiveFailures++;
+
+    // Only log errors for the first few failures; after that, go silent to avoid log spam
+    if (consecutiveFailures <= MAX_SILENT_FAILURES) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        console.warn("[CloudSync] ⏱️ Cloud API timed out — POS continues with cached data");
+      } else {
+        console.warn("[CloudSync] ❌ Cloud sync failed:", err instanceof Error ? err.message : err);
+      }
+    } else if (consecutiveFailures === MAX_SILENT_FAILURES + 1) {
+      console.log(
+        `[CloudSync] Cloud gateway unreachable after ${MAX_SILENT_FAILURES} attempts — ` +
+        `operating in standalone offline mode. Suppressing further warnings.`
+      );
     }
+    // else: stay silent
+
     return null;
   } finally {
     isSyncing = false;

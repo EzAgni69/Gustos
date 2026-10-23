@@ -51,7 +51,7 @@ export const SyncQueueModal: React.FC = () => {
       <div className="bg-surface border border-border-hover rounded-2xl w-full max-w-2xl max-h-[80vh] shadow-2xl flex flex-col">
         {/* Header */}
         <div className="flex justify-between items-center p-4 border-b border-border bg-surface/50 shrink-0">
-          <h2 className="text-lg font-bold text-text-inverse flex items-center gap-2">
+          <h2 className="text-lg font-bold text-text-main flex items-center gap-2">
             <span>🔄</span>
             Cloud Sync Queue
           </h2>
@@ -75,7 +75,7 @@ export const SyncQueueModal: React.FC = () => {
           ) : events.length === 0 ? (
             <div className="text-center py-12 flex flex-col items-center gap-2">
               <span className="text-4xl">✅</span>
-              <p className="text-text-inverse font-bold">All caught up!</p>
+              <p className="text-text-main font-bold">All caught up!</p>
               <p className="text-text-muted text-sm">No pending changes to sync to the cloud.</p>
             </div>
           ) : (

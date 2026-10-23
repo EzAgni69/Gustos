@@ -86,11 +86,16 @@ export function markEventFailed(eventId: string, errorMessage?: string): void {
  * Returns the number of successfully synced events.
  */
 export async function pushToCloud(): Promise<number> {
-  const events = getUnsyncedEvents();
-  if (events.length === 0) return 0;
-
   const apiUrl =
     process.env.API_GATEWAY_URL || "http://localhost:3001";
+
+  // Skip if cloud sync is disabled
+  if (process.env.CLOUD_SYNC_ENABLED === "false" || !apiUrl) {
+    return 0;
+  }
+
+  const events = getUnsyncedEvents();
+  if (events.length === 0) return 0;
 
   let syncedCount = 0;
 

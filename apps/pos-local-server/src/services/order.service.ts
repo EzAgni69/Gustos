@@ -25,6 +25,7 @@ import {
   emitOrderItemsMoved,
   emitOnlineOrderReceived,
 } from "../socket/events.js";
+import { cancelKOT, generateModificationKOT } from "./kot.service.js";
 
 // ─── Types ───
 
@@ -62,7 +63,7 @@ const ORGANIZATION_ID = process.env.ORGANIZATION_ID || "local-org";
 
 // ─── Helpers ───
 
-function recalculateOrderTotals(orderId: string): void {
+export function recalculateOrderTotals(orderId: string): void {
   const items = db
     .select()
     .from(schema.orderItems)
@@ -77,16 +78,19 @@ function recalculateOrderTotals(orderId: string): void {
 
   if (!order) return;
 
+  // Filter out voided items so they are not charged to customer
+  const activeItems = items.filter((item) => item.status !== "VOIDED");
+
   // Build CartItem array for core-logic (including add-ons and variant info)
-  const cartItems: CartItem[] = items.map((item) => ({
+  const cartItems: CartItem[] = activeItems.map((item) => ({
     menuItemId: item.menuItemId,
     menuItemName: item.menuItemName,
     variantName: item.variantName ?? undefined,
     quantity: item.quantity,
     unitPrice: item.unitPrice,
     gstRate: item.gstRate as GSTRate,
-    modifiers: item.modifiers ? JSON.parse(item.modifiers) : undefined,
-    addOns: item.addOns ? JSON.parse(item.addOns) : undefined,
+    modifiers: item.modifiers ? (typeof item.modifiers === "string" ? JSON.parse(item.modifiers) : item.modifiers) : undefined,
+    addOns: item.addOns ? (typeof item.addOns === "string" ? JSON.parse(item.addOns) : item.addOns) : undefined,
   }));
 
   // Build discount config if set
@@ -520,8 +524,17 @@ export function updateItemQuantity(
     throw new Error("Order is past the 48-hour edit window");
   }
 
+  const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
+  if (!item) throw new Error("Item not found");
+  if (item.status === "VOIDED") throw new Error("Cannot update a voided item");
+
   if (quantity <= 0) {
     return removeItem(orderId, itemId, userId);
+  }
+
+  const oldQty = item.quantity;
+  if (oldQty === quantity) {
+    return getOrderById(orderId);
   }
 
   db.update(schema.orderItems)
@@ -529,9 +542,40 @@ export function updateItemQuantity(
     .where(eq(schema.orderItems.id, itemId))
     .run();
 
+  // If item was already sent to kitchen, update kotItems & inform kitchen via modification KOT
+  if (item.kotId) {
+    db.update(schema.kotItems)
+      .set({ quantity })
+      .where(
+        and(
+          eq(schema.kotItems.kotId, item.kotId),
+          eq(schema.kotItems.orderItemId, itemId)
+        )
+      )
+      .run();
+
+    try {
+      generateModificationKOT(
+        orderId,
+        [
+          {
+            orderItemId: itemId,
+            changeType: "QUANTITY_CHANGE",
+            oldValue: `${oldQty}`,
+            newValue: `${quantity}`,
+          },
+        ],
+        undefined,
+        userId
+      );
+    } catch (e) {
+      console.warn("[KOT] Could not generate modification KOT:", e);
+    }
+  }
+
   recalculateOrderTotals(orderId);
 
-  logEvent(orderId, "ITEM_QUANTITY_UPDATED", { itemId, quantity }, userId);
+  logEvent(orderId, "ITEM_QUANTITY_UPDATED", { itemId, oldQuantity: oldQty, quantity }, userId);
 
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ITEM_UPDATED", order: updated });
@@ -547,6 +591,13 @@ export function removeItem(
   userId?: string
 ) {
   const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
+  if (!item) return getOrderById(orderId);
+
+  // If item was already sent on a KOT, it cannot be hard deleted due to foreign key constraints and audit trail.
+  // We automatically void it and notify the kitchen!
+  if (item.kotId) {
+    return voidItem(orderId, itemId, "Item removed from order", userId || "Staff", userId);
+  }
 
   db.delete(schema.orderItems)
     .where(eq(schema.orderItems.id, itemId))
@@ -683,7 +734,8 @@ export function voidItem(
   itemId: string,
   reason: string,
   approvedBy: string,
-  userId?: string
+  userId?: string,
+  voidQuantity?: number
 ) {
   const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
   if (!order) throw new Error("Order not found");
@@ -693,24 +745,131 @@ export function voidItem(
   if (item.status === "VOIDED") throw new Error("Item is already voided");
 
   const now = new Date().toISOString();
+  const isPartial = voidQuantity !== undefined && voidQuantity > 0 && voidQuantity < item.quantity;
+  const qtyToVoid = isPartial ? voidQuantity : item.quantity;
+  const remainingQty = item.quantity - qtyToVoid;
 
-  db.update(schema.orderItems)
-    .set({
-      status: "VOIDED",
-      voidedAt: now,
-      voidReason: reason,
-      voidApprovedBy: approvedBy,
-      isNcr: true,
-    })
-    .where(eq(schema.orderItems.id, itemId))
-    .run();
+  if (isPartial) {
+    // 1. Update existing item with remaining quantity
+    db.update(schema.orderItems)
+      .set({ quantity: remainingQty })
+      .where(eq(schema.orderItems.id, itemId))
+      .run();
+
+    // 2. Insert new audit record for the voided portion
+    const voidRecordId = uuid();
+    db.insert(schema.orderItems)
+      .values({
+        id: voidRecordId,
+        orderId,
+        menuItemId: item.menuItemId,
+        menuItemName: item.menuItemName,
+        variantName: item.variantName,
+        quantity: qtyToVoid,
+        unitPrice: item.unitPrice,
+        gstRate: item.gstRate,
+        modifiers: item.modifiers,
+        notes: item.notes,
+        addOns: item.addOns,
+        status: "VOIDED",
+        kotId: item.kotId,
+        voidedAt: now,
+        voidReason: reason,
+        voidApprovedBy: approvedBy,
+        isNcr: true,
+      })
+      .run();
+
+    // 3. If item was fired on KOT, update kotItems quantity & notify kitchen
+    if (item.kotId) {
+      db.update(schema.kotItems)
+        .set({ quantity: remainingQty })
+        .where(
+          and(
+            eq(schema.kotItems.kotId, item.kotId),
+            eq(schema.kotItems.orderItemId, itemId)
+          )
+        )
+        .run();
+
+      try {
+        generateModificationKOT(
+          orderId,
+          [
+            {
+              orderItemId: itemId,
+              changeType: "QUANTITY_CHANGE",
+              oldValue: `${item.quantity}`,
+              newValue: `${remainingQty} (Voided ${qtyToVoid}: ${reason})`,
+            },
+          ],
+          undefined,
+          userId
+        );
+      } catch (e) {
+        console.warn("[KOT] Could not generate modification KOT:", e);
+      }
+    }
+  } else {
+    // Full void
+    db.update(schema.orderItems)
+      .set({
+        status: "VOIDED",
+        voidedAt: now,
+        voidReason: reason,
+        voidApprovedBy: approvedBy,
+        isNcr: true,
+      })
+      .where(eq(schema.orderItems.id, itemId))
+      .run();
+
+    if (item.kotId) {
+      // Check if all items in this KOT are now voided
+      const allOrderItemsInOrder = db.select().from(schema.orderItems)
+        .where(eq(schema.orderItems.orderId, orderId))
+        .all();
+
+      const activeInSameKOT = allOrderItemsInOrder.filter(
+        (i) => i.kotId === item.kotId && i.id !== itemId && i.status !== "VOIDED"
+      );
+
+      if (activeInSameKOT.length === 0) {
+        // Entire KOT is now voided, cancel the KOT ticket
+        try {
+          cancelKOT(item.kotId, reason, approvedBy, userId);
+        } catch (e) {
+          console.warn("[KOT] KOT cancellation notice:", e);
+        }
+      } else {
+        // Send modification slip to kitchen for the cancelled item
+        try {
+          generateModificationKOT(
+            orderId,
+            [
+              {
+                orderItemId: itemId,
+                changeType: "QUANTITY_CHANGE",
+                oldValue: `${item.quantity}x ${item.menuItemName}`,
+                newValue: `CANCELLED (${reason})`,
+              },
+            ],
+            undefined,
+            userId
+          );
+        } catch (e) {
+          console.warn("[KOT] Could not generate modification KOT:", e);
+        }
+      }
+    }
+  }
 
   recalculateOrderTotals(orderId);
 
   logEvent(orderId, "ITEM_VOIDED", {
     itemId,
     menuItemName: item.menuItemName,
-    quantity: item.quantity,
+    voidQuantity: qtyToVoid,
+    remainingQuantity: remainingQty,
     reason,
     approvedBy,
   }, userId);

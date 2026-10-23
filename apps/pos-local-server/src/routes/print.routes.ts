@@ -72,7 +72,12 @@ function buildOrderBill(orderId: string, duplicate = false) {
   }
 
   const invoice = db.select().from(schema.invoices).where(eq(schema.invoices.orderId, orderId)).get() ?? null;
-  const items = db.select().from(schema.orderItems).where(eq(schema.orderItems.orderId, orderId)).all();
+  const items = db
+    .select()
+    .from(schema.orderItems)
+    .where(eq(schema.orderItems.orderId, orderId))
+    .all()
+    .filter((i) => i.status !== "VOIDED");
   if (items.length === 0) {
     return { error: "Cannot print an empty order" as const };
   }

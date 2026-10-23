@@ -3,6 +3,7 @@ import { calculateCartTotals, type CartItem, type CartItemAddOn, type CartTotals
 import type { POSMenuItem } from "./useMenuStore";
 import { apiClient } from "../api/client";
 import { db } from "../lib/db";
+import { useUIStore } from "./useUIStore";
 
 export type OrderMode = "DINE_IN" | "TAKEAWAY" | "DELIVERY" | "QUICK_BILL";
 
@@ -75,7 +76,8 @@ export interface CartStoreState {
   setDiscount: (discount: DiscountConfig | undefined) => void;
   clearCart: () => void;
   
-  // Split Bill Actions
+  // Split & Void Actions
+  voidItem: (cartItemId: string, reason: string, approvedBy: string, voidQuantity?: number) => Promise<void>;
   splitItemQuantity: (cartItemId: string, splitQuantity: number) => Promise<void>;
   moveItemsToNewOrder: (cartItemIds: string[]) => Promise<{ success: boolean; newOrderId?: string; error?: string }>;
   
@@ -272,29 +274,14 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           set({ items: [...items, newItem] });
         }
       } else if (activeOrderId) {
-        // Reducing a fired item
-        const newQty = item.quantity + delta;
-        if (newQty <= 0) {
-          apiClient(`/orders/${activeOrderId}/items/${item.cartItemId}`, { method: "DELETE" })
-            .then(() => get().retrieveHeldBill(activeOrderId))
-            .catch(console.error);
-        } else {
-          apiClient(`/orders/${activeOrderId}/items/${item.cartItemId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ quantity: newQty }),
-          })
-            .then(() => get().retrieveHeldBill(activeOrderId))
-            .catch(console.error);
-        }
-        
-        // Optimistic update
-        const updated = items.map((i) => {
-          if (i.cartItemId === cartItemId) {
-            return newQty > 0 ? { ...i, quantity: newQty } : null;
-          }
-          return i;
-        }).filter((i): i is POSCartItem => i !== null);
-        set({ items: updated });
+        // Reducing a fired item: open Void Modal to capture void reason & manager approval
+        useUIStore.getState().openVoidModal({
+          cartItemId: item.cartItemId,
+          menuItemName: item.menuItemName,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          kotId: item.kotId,
+        });
       }
       return;
     } else if (item.isSaved && activeOrderId) {
@@ -335,8 +322,21 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   removeItem: (cartItemId) => {
     const { items, activeOrderId } = get();
     const item = items.find(i => i.cartItemId === cartItemId);
+    if (!item) return;
+
+    if (item.kotId) {
+      // Item was already fired to kitchen: open Void Modal
+      useUIStore.getState().openVoidModal({
+        cartItemId: item.cartItemId,
+        menuItemName: item.menuItemName,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        kotId: item.kotId,
+      });
+      return;
+    }
     
-    if (item?.isSaved && activeOrderId) {
+    if (item.isSaved && activeOrderId) {
       apiClient(`/orders/${activeOrderId}/items/${item.cartItemId}`, { method: "DELETE" })
         .then(() => get().retrieveHeldBill(activeOrderId))
         .catch(console.error);
@@ -732,6 +732,28 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     }
   },
 
+  voidItem: async (cartItemId, reason, approvedBy, voidQuantity) => {
+    const { activeOrderId } = get();
+    if (!activeOrderId) return;
+    try {
+      const res = await apiClient<{ success: boolean; message?: string }>(
+        `/orders/${activeOrderId}/items/${cartItemId}/void`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason, approvedBy, voidQuantity }),
+        }
+      );
+      if (res.success) {
+        await get().retrieveHeldBill(activeOrderId);
+      } else {
+        throw new Error(res.message || "Failed to void item");
+      }
+    } catch (e) {
+      console.error("Failed to void item", e);
+      throw e;
+    }
+  },
+
   splitItemQuantity: async (cartItemId, splitQuantity) => {
     const { activeOrderId } = get();
     if (!activeOrderId) return; // Cannot split an unsaved order.
@@ -786,15 +808,8 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     }
 
     try {
-      // If there are any unfired items in the cart, fire KOT first so KDS gets the order ticket
-      const hasUnfired = get().items.some(i => !i.kotId);
-      if (hasUnfired) {
-        try {
-          await apiClient(`/orders/${orderId}/kot`, { method: "POST", body: JSON.stringify({}) });
-        } catch (kotErr) {
-          console.warn("Could not fire KOT before checkout, backend will auto-fire:", kotErr);
-        }
-      }
+      // NOTE: Backend processCheckout auto-generates KOT for any unfired items.
+      // Do NOT fire KOT from frontend here — that would create duplicate kitchen tickets.
 
       const res = await apiClient<{ success: boolean; data?: { orderId: string; invoiceNumber?: string } }>(`/orders/${orderId}/checkout`, {
         method: "POST",

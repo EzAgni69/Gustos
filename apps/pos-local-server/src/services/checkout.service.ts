@@ -69,12 +69,14 @@ export function processCheckout(
     .where(eq(schema.orderItems.orderId, orderId))
     .all();
 
-  if (items.length === 0) {
+  const activeItems = items.filter((item) => item.status !== "VOIDED");
+
+  if (activeItems.length === 0) {
     throw new Error("Cannot checkout an empty order");
   }
 
   // Auto-generate KOT for any items not yet sent to kitchen so KDS displays the order ticket
-  const unfiredItems = items.filter((item) => !item.kotId);
+  const unfiredItems = activeItems.filter((item) => !item.kotId);
   if (unfiredItems.length > 0) {
     try {
       generateKOT(orderId, undefined, undefined, userId);
@@ -84,7 +86,7 @@ export function processCheckout(
   }
 
   // Calculate final totals
-  const cartItems: CartItem[] = items.map((item) => ({
+  const cartItems: CartItem[] = activeItems.map((item) => ({
     menuItemId: item.menuItemId,
     menuItemName: item.menuItemName,
     variantName: item.variantName ?? undefined,
@@ -346,10 +348,12 @@ export function getInvoice(orderId: string) {
     .where(eq(schema.orderItems.orderId, orderId))
     .all();
 
+  const activeItems = items.filter((i) => i.status !== "VOIDED");
+
   return {
     ...invoice,
     order,
-    items: items.map((i) => ({
+    items: activeItems.map((i) => ({
       ...i,
       modifiers: i.modifiers ? JSON.parse(i.modifiers) : [],
     })),

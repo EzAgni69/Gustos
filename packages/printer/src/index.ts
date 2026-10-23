@@ -168,6 +168,37 @@ export interface KOTData {
   createdAt: Date;
 }
 
+export interface ModificationKOTData {
+  kotNumber: string;
+  orderNumber: string;
+  tableName?: string;
+  waiterName?: string;
+  station?: string;
+  modifications: Array<{
+    itemName: string;
+    changeType: "MODIFIER_CHANGE" | "QUANTITY_CHANGE" | "NOTE_CHANGE";
+    oldValue?: string;
+    newValue?: string;
+  }>;
+  createdAt: Date;
+}
+
+export interface CancellationKOTData {
+  kotNumber: string;
+  orderNumber: string;
+  tableName?: string;
+  waiterName?: string;
+  station?: string;
+  reason: string;
+  approvedBy: string;
+  items: Array<{
+    name: string;
+    quantity: number;
+    variantName?: string;
+  }>;
+  createdAt: Date;
+}
+
 // ─── Constants ───
 
 /** 80mm thermal paper ≈ 42 characters at standard font width */
@@ -577,6 +608,91 @@ export function buildKOTReceipt(data: KOTData): ReceiptLine[] {
     }
     if (item.notes) {
       lines.push({ type: "text", content: `   Note: ${item.notes}` });
+    }
+  }
+
+  lines.push({ type: "divider" });
+  lines.push({ type: "blank" });
+
+  return lines;
+}
+
+/**
+ * Build a Modification KOT template for kitchen changes.
+ */
+export function buildModificationKOTReceipt(data: ModificationKOTData): ReceiptLine[] {
+  const lines: ReceiptLine[] = [];
+
+  lines.push({ type: "text", content: "*** KOT CORRECTION ***", align: "center", bold: true, size: "double" });
+  lines.push({ type: "divider" });
+  lines.push({ type: "text", content: `KOT: ${data.kotNumber}`, align: "left", bold: true });
+  lines.push({ type: "text", content: `Order: ${data.orderNumber}`, align: "left" });
+  if (data.tableName) {
+    lines.push({ type: "text", content: `Table: ${data.tableName}`, align: "left" });
+  }
+  if (data.station) {
+    lines.push({ type: "text", content: `Station: ${data.station}`, align: "left", bold: true });
+  }
+  lines.push({ type: "text", content: `Time: ${formatTime(data.createdAt)}`, align: "left" });
+  if (data.waiterName) {
+    lines.push({ type: "text", content: `Staff: ${data.waiterName}`, align: "left" });
+  }
+  lines.push({ type: "divider" });
+  lines.push({ type: "text", content: "ATTN KITCHEN: ORDER MODIFIED", align: "center", bold: true });
+  lines.push({ type: "divider" });
+
+  for (const mod of data.modifications) {
+    lines.push({
+      type: "text",
+      content: `⚠️ ${mod.itemName}`,
+      bold: true,
+      size: "double",
+    });
+    lines.push({
+      type: "text",
+      content: `   [${mod.changeType}] ${mod.oldValue ?? ""} → ${mod.newValue ?? ""}`,
+      bold: true,
+    });
+  }
+
+  lines.push({ type: "divider" });
+  lines.push({ type: "blank" });
+
+  return lines;
+}
+
+/**
+ * Build a Cancellation KOT template for voided items.
+ */
+export function buildCancellationKOTReceipt(data: CancellationKOTData): ReceiptLine[] {
+  const lines: ReceiptLine[] = [];
+
+  lines.push({ type: "text", content: "*** KOT CANCELLED ***", align: "center", bold: true, size: "double" });
+  lines.push({ type: "divider" });
+  lines.push({ type: "text", content: `KOT: ${data.kotNumber}`, align: "left", bold: true });
+  lines.push({ type: "text", content: `Order: ${data.orderNumber}`, align: "left" });
+  if (data.tableName) {
+    lines.push({ type: "text", content: `Table: ${data.tableName}`, align: "left" });
+  }
+  if (data.station) {
+    lines.push({ type: "text", content: `Station: ${data.station}`, align: "left", bold: true });
+  }
+  lines.push({ type: "text", content: `Reason: ${data.reason}`, align: "left", bold: true });
+  lines.push({ type: "text", content: `Approved By: ${data.approvedBy}`, align: "left" });
+  lines.push({ type: "text", content: `Time: ${formatTime(data.createdAt)}`, align: "left" });
+  lines.push({ type: "divider" });
+  lines.push({ type: "text", content: "DO NOT PREPARE CANCELLED ITEMS", align: "center", bold: true });
+  lines.push({ type: "divider" });
+
+  for (const item of data.items) {
+    lines.push({
+      type: "text",
+      content: `❌ CANCELLED: ${item.quantity}x ${item.name}`,
+      bold: true,
+      size: "double",
+    });
+    if (item.variantName) {
+      lines.push({ type: "text", content: `   ${item.variantName}` });
     }
   }
 

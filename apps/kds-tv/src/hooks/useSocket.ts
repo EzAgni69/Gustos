@@ -17,6 +17,8 @@ import type {
   ConnectionStatus,
   KotNewPayload,
   KotStatusUpdatePayload,
+  KotCancelledPayload,
+  KotModificationPayload,
   KotListItem,
 } from "../types";
 import { payloadToKDSKot, listItemToKDSKot } from "./useKOTStore";
@@ -68,9 +70,17 @@ interface UseSocketOptions {
   onNewKOT: (kot: KDSKot) => void;
   onStatusUpdate: (kotId: string, status: KDSKot["status"]) => void;
   onHydrate: (kots: KDSKot[]) => void;
+  onCancelKOT?: (payload: KotCancelledPayload) => void;
+  onModifyKOT?: (payload: KotModificationPayload) => void;
 }
 
-export function useSocket({ onNewKOT, onStatusUpdate, onHydrate }: UseSocketOptions) {
+export function useSocket({
+  onNewKOT,
+  onStatusUpdate,
+  onHydrate,
+  onCancelKOT,
+  onModifyKOT,
+}: UseSocketOptions) {
   const [serverUrl, setServerUrlState] = useState<string>(getInitialServerUrl);
   const socketRef = useRef<Socket | null>(null);
   const [connectionStatus, setConnectionStatus] =
@@ -83,12 +93,16 @@ export function useSocket({ onNewKOT, onStatusUpdate, onHydrate }: UseSocketOpti
   const onNewKOTRef = useRef(onNewKOT);
   const onStatusUpdateRef = useRef(onStatusUpdate);
   const onHydrateRef = useRef(onHydrate);
+  const onCancelKOTRef = useRef(onCancelKOT);
+  const onModifyKOTRef = useRef(onModifyKOT);
 
   useEffect(() => {
     onNewKOTRef.current = onNewKOT;
     onStatusUpdateRef.current = onStatusUpdate;
     onHydrateRef.current = onHydrate;
-  }, [onNewKOT, onStatusUpdate, onHydrate]);
+    onCancelKOTRef.current = onCancelKOT;
+    onModifyKOTRef.current = onModifyKOT;
+  }, [onNewKOT, onStatusUpdate, onHydrate, onCancelKOT, onModifyKOT]);
 
   const setServerUrl = useCallback((url: string) => {
     const trimmed = url.trim().replace(/\/+$/, "");
@@ -130,7 +144,16 @@ export function useSocket({ onNewKOT, onStatusUpdate, onHydrate }: UseSocketOpti
         );
       }
 
-      onHydrateRef.current(allKots);
+      // Deduplicate by kotId — PENDING and IN_PROGRESS queries can return overlapping KOTs
+      // (e.g. a KOT transitioning between states during the parallel fetch)
+      const seen = new Set<string>();
+      const uniqueKots = allKots.filter((kot) => {
+        if (seen.has(kot.kotId)) return false;
+        seen.add(kot.kotId);
+        return true;
+      });
+
+      onHydrateRef.current(uniqueKots);
     } catch (err) {
       console.error("[KDS] Failed to fetch active KOTs:", err);
     }
@@ -210,11 +233,26 @@ export function useSocket({ onNewKOT, onStatusUpdate, onHydrate }: UseSocketOpti
       onStatusUpdateRef.current(payload.kotId, payload.status);
     });
 
+    // ─── Listen for KOT cancellation ───
+    socket.on("kot:cancelled", (payload: KotCancelledPayload) => {
+      console.log("[KDS] KOT cancelled:", payload.kotNumber, payload.reason);
+      onCancelKOTRef.current?.(payload);
+    });
+
+    // ─── Listen for KOT modification ───
+    socket.on("kot:modification", (payload: KotModificationPayload) => {
+      console.log("[KDS] KOT modification received:", payload.kotNumber);
+      onModifyKOTRef.current?.(payload);
+    });
+
     return () => {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [serverUrl, fetchActiveKOTs, flushBumpQueue]);
+    // Only reconnect when serverUrl changes — fetchActiveKOTs and flushBumpQueue
+    // are accessed via refs to avoid triggering reconnection loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverUrl]);
 
   // ─── Mark KOT as Ready (via REST API) — with offline bump queue ───
   const markReady = useCallback(async (kotId: string) => {

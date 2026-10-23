@@ -128,9 +128,17 @@ export const OrderCart: React.FC = () => {
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-bold text-text-main group-hover:text-primary-hover leading-snug flex items-center gap-1.5">
                     {item.menuItemName}
-                    {item.isSaved && (
-                      <span className="text-[9px] bg-secondary/20 text-secondary-hover px-1 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap">
+                    {item.kotId ? (
+                      <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1 py-0.5 rounded border border-amber-500/40 whitespace-nowrap font-mono font-semibold">
                         🔥 FIRED
+                      </span>
+                    ) : item.isSaved ? (
+                      <span className="text-[9px] bg-secondary/20 text-secondary-hover px-1 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap font-mono">
+                        SAVED
+                      </span>
+                    ) : (
+                      <span className="text-[9px] bg-primary/20 text-primary-hover px-1 py-0.5 rounded border border-primary/30 whitespace-nowrap font-mono">
+                        NEW
                       </span>
                     )}
                   </div>
@@ -148,15 +156,19 @@ export const OrderCart: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Line Total & Remove */}
+                {/* Line Total & Remove / Void */}
                 <div className="text-right shrink-0">
                   <div className="text-xs font-black text-text-main font-mono">₹{itemSubtotal}</div>
                   <button
                     onClick={() => removeItem(item.cartItemId)}
-                    className="text-[11px] text-text-muted hover:text-rose-400 transition-colors mt-0.5 font-mono"
-                    title="Remove item from bill"
+                    className={`text-[11px] transition-colors mt-0.5 font-mono ${
+                      item.kotId
+                        ? "text-rose-400/90 hover:text-rose-300 hover:underline"
+                        : "text-text-muted hover:text-rose-400"
+                    }`}
+                    title={item.kotId ? "Void item (already fired to kitchen)" : "Remove item from bill"}
                   >
-                    × Remove
+                    {item.kotId ? "× Void (NCR)" : "× Remove"}
                   </button>
                 </div>
               </div>

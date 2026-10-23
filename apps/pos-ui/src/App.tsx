@@ -24,6 +24,7 @@ import { SyncQueueModal } from "./components/modals/SyncQueueModal";
 import { BillPreviewModal } from "./components/modals/BillPreviewModal";
 import { OnlineOrderModal } from "./components/modals/OnlineOrderModal";
 import { ItemCustomizerModal } from "./components/modals/ItemCustomizerModal";
+import { VoidItemModal } from "./components/modals/VoidItemModal";
 import { LoginScreen } from "./components/auth/LoginScreen";
 import { useSocket } from "./hooks/useSocket";
 import { useOfflineSync } from "./hooks/useOfflineSync";
@@ -93,6 +94,7 @@ export function App() {
       <BillPreviewModal />
       <OnlineOrderModal />
       <ItemCustomizerModal />
+      <VoidItemModal />
     </div>
   );
 }

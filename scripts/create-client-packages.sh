@@ -393,7 +393,7 @@ fi
 echo "1. Open Expo Go on your mobile phone"
 echo "2. Scan the QR code below"
 echo "=========================================="
-npx expo start --go
+npx expo start --go --clear
 EOF
 chmod +x "$DIST_DIR/gusto-captain/start-expo-go.sh"
 
@@ -416,7 +416,7 @@ echo [2/2] Launching Expo Go...
 echo 1. Open Expo Go on your mobile phone
 echo 2. Scan the QR code below
 echo ==========================================
-call npx expo start --go
+call npx expo start --go --clear
 if errorlevel 1 (
   echo.
   echo [ERROR] Expo process stopped.

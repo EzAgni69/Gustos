@@ -216,12 +216,23 @@ router.post("/:id/cancel", (req, res) => {
  */
 router.post("/:id/items/:itemId/void", (req, res) => {
   try {
-    const { reason, approvedBy } = req.body as { reason: string; approvedBy: string };
+    const { reason, approvedBy, voidQuantity } = req.body as {
+      reason: string;
+      approvedBy: string;
+      voidQuantity?: number;
+    };
     if (!reason || !approvedBy) {
       res.status(400).json({ success: false, message: "reason and approvedBy are required" });
       return;
     }
-    const order = voidItem(req.params.id!, req.params.itemId!, reason, approvedBy, req.currentUser?.id);
+    const order = voidItem(
+      req.params.id!,
+      req.params.itemId!,
+      reason,
+      approvedBy,
+      req.currentUser?.id,
+      voidQuantity
+    );
     res.json({ success: true, data: order, message: "Item voided (NCR)" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to void item";

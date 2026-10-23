@@ -26,7 +26,7 @@ export const HoldBillsModal: React.FC = () => {
         {/* Header */}
         <div className="bg-background px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-black text-text-inverse flex items-center gap-2">
+            <h2 className="text-lg font-black text-text-main flex items-center gap-2">
               <span>⏸️ PARKED / HELD BILLS</span>
               <span className="text-xs font-mono bg-highlight/20 text-highlight-hover px-2 py-0.5 rounded border border-highlight/30">
                 F3
@@ -62,7 +62,7 @@ export const HoldBillsModal: React.FC = () => {
                     <span className="font-mono text-xs font-black bg-highlight-hover/20 text-highlight-hover px-2 py-0.5 rounded border border-highlight/30">
                       #{bill.orderNumber || bill.id.slice(-6)}
                     </span>
-                    <span className="text-sm font-bold text-text-inverse">
+                    <span className="text-sm font-bold text-text-main">
                       {bill.tableNumber ? `📍 ${bill.tableNumber}` : `${bill.orderMode} Order`}
                     </span>
                     <span className="text-xs text-text-muted font-mono">({itemCount} items)</span>

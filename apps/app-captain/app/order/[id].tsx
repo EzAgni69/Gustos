@@ -1,12 +1,31 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert, DeviceEventEmitter } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+} from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { getOrder, fireKOT, printBill, type OrderResponse, type KOTResponse, type OrderItemResponse } from "../../src/services/api";
+import {
+  getOrder,
+  fireKOT,
+  printBill,
+  updateItemQuantity,
+  removeOrderItem,
+  type OrderResponse,
+  type KOTResponse,
+  type OrderItemResponse,
+} from "../../src/services/api";
 import { useCartStore } from "../../src/stores/cart.store";
 import { onSocketEvent } from "../../src/services/socket";
 import { SOCKET_EVENTS } from "../../src/config/constants";
 import { StatusBadge } from "../../src/components/StatusBadge";
+import { QuantityStepper } from "../../src/components/QuantityStepper";
+import { VoidItemModal } from "../../src/components/VoidItemModal";
 import { colors, spacing, fontSize, fontWeight, radius } from "../../src/config/theme";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -14,26 +33,28 @@ export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { setTable, setExistingOrder } = useCartStore();
-  
+
   const [order, setOrder] = useState<OrderResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [firingKOT, setFiringKOT] = useState(false);
   const [printingBill, setPrintingBill] = useState(false);
 
+  // Void modal state for fired items
+  const [voidTargetItem, setVoidTargetItem] = useState<OrderItemResponse | null>(null);
+  const [isVoidModalVisible, setIsVoidModalVisible] = useState(false);
+
   useEffect(() => {
     fetchOrder();
 
     // Listen for real-time updates to this order
-
     const unsubOrder = onSocketEvent(SOCKET_EVENTS.ORDER_UPDATED, (data: any) => {
       if (data?.order?.id === id) {
         setOrder(data.order);
       }
     });
 
-    const unsubKOT = onSocketEvent(SOCKET_EVENTS.KOT_STATUS_UPDATE, (data: any) => {
+    const unsubKOT = onSocketEvent(SOCKET_EVENTS.KOT_STATUS_UPDATE, () => {
       // Re-fetch order to get updated KOT and Item statuses
-      // We could patch the local state, but fetching is safer for consistency
       fetchOrder();
     });
 
@@ -71,7 +92,7 @@ export default function OrderDetailScreen() {
 
   const handleAddItems = () => {
     if (!order) return;
-    setTable(order.tableId || "takeaway", "Current Table"); // Ideally we fetch table name
+    setTable(order.tableId || "takeaway", "Current Table");
     setExistingOrder(order.id);
     router.push("/(tabs)/menu");
   };
@@ -91,6 +112,55 @@ export default function OrderDetailScreen() {
     }
   };
 
+  // Unsent item quantity updates (before KOT is fired)
+  const handleUpdateUnsentQuantity = async (item: OrderItemResponse, newQty: number) => {
+    if (!order) return;
+
+    if (newQty <= 0) {
+      Alert.alert(
+        "Remove Item",
+        `Remove "${item.menuItemName}" from order?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Remove",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await removeOrderItem(order.id, item.id);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                await fetchOrder();
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : "Failed to remove item";
+                Alert.alert("Error", msg);
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    try {
+      await updateItemQuantity(order.id, item.id, newQty);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await fetchOrder();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to update quantity";
+      Alert.alert("Error", msg);
+    }
+  };
+
+  const handleOpenVoidModal = (item: OrderItemResponse) => {
+    setVoidTargetItem(item);
+    setIsVoidModalVisible(true);
+  };
+
+  const handleCloseVoidModal = () => {
+    setIsVoidModalVisible(false);
+    setVoidTargetItem(null);
+  };
+
   if (loading) {
     return (
       <View style={styles.centerContainer}>
@@ -107,15 +177,15 @@ export default function OrderDetailScreen() {
     );
   }
 
-  // Group items by KOT
-  const unassignedItems = order.items.filter(i => !i.kotId);
-  const kotMap = new Map<string, { kot: KOTResponse, items: OrderItemResponse[] }>();
-  
-  order.kots.forEach(kot => {
+  // Filter out voided items from unassigned items
+  const unassignedItems = order.items.filter((i) => !i.kotId && i.status !== "VOIDED");
+  const kotMap = new Map<string, { kot: KOTResponse; items: OrderItemResponse[] }>();
+
+  order.kots.forEach((kot) => {
     kotMap.set(kot.id, { kot, items: [] });
   });
 
-  order.items.forEach(item => {
+  order.items.forEach((item) => {
     if (item.kotId && kotMap.has(item.kotId)) {
       kotMap.get(item.kotId)!.items.push(item);
     }
@@ -136,6 +206,8 @@ export default function OrderDetailScreen() {
     return [];
   };
 
+  const isOrderActive = order.status !== "COMPLETED" && order.status !== "CANCELLED";
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -151,22 +223,32 @@ export default function OrderDetailScreen() {
         {unassignedItems.length > 0 && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Unsent Items</Text>
-              <Text style={styles.sectionSubtitle}>Requires KOT</Text>
+              <View>
+                <Text style={styles.sectionTitle}>Unsent Items</Text>
+                <Text style={styles.sectionSubtitle}>
+                  Not yet fired to kitchen — modify or delete freely
+                </Text>
+              </View>
+              <View style={styles.badgePending}>
+                <Text style={styles.badgePendingText}>DRAFT</Text>
+              </View>
             </View>
             <View style={styles.card}>
-              {unassignedItems.map(item => {
+              {unassignedItems.map((item) => {
                 const modifiers = parseModifiers(item.modifiers);
                 return (
-                  <View key={item.id} style={styles.itemRow}>
-                    <View style={styles.itemQty}><Text style={styles.itemQtyText}>{item.quantity}x</Text></View>
+                  <View key={item.id} style={styles.unsentItemRow}>
                     <View style={styles.itemDetails}>
                       <View style={styles.itemHeaderLine}>
                         <Text style={styles.itemName}>{item.menuItemName}</Text>
                         {item.variantName ? (
                           <View style={styles.variantBadge}>
                             <Text style={styles.variantBadgeText}>
-                              {item.variantName === '12"' ? '12" L' : item.variantName === '8"' ? '8" R' : item.variantName}
+                              {item.variantName === '12"'
+                                ? '12" L'
+                                : item.variantName === '8"'
+                                ? '8" R'
+                                : item.variantName}
                             </Text>
                           </View>
                         ) : null}
@@ -203,23 +285,57 @@ export default function OrderDetailScreen() {
 
                       {item.notes && (
                         <View style={styles.itemNotesRow}>
-                          <Ionicons name="document-text-outline" size={13} color={colors.warning} />
+                          <Ionicons
+                            name="document-text-outline"
+                            size={13}
+                            color={colors.warning}
+                          />
                           <Text style={styles.itemNotes}>{item.notes}</Text>
                         </View>
                       )}
+
+                      <Text style={styles.itemUnitPrice}>
+                        ₹{item.unitPrice} each • Total: ₹
+                        {(item.unitPrice * item.quantity).toFixed(0)}
+                      </Text>
                     </View>
-                    <Text style={styles.itemPrice}>₹{(item.unitPrice * item.quantity).toFixed(0)}</Text>
+
+                    {/* Stepper & Delete Button for Unsent Items */}
+                    <View style={styles.unsentControls}>
+                      <QuantityStepper
+                        quantity={item.quantity}
+                        onChange={(newQ) => handleUpdateUnsentQuantity(item, newQ)}
+                        min={0}
+                      />
+                      <Pressable
+                        style={styles.deleteUnsentBtn}
+                        onPress={() => handleUpdateUnsentQuantity(item, 0)}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                      </Pressable>
+                    </View>
                   </View>
                 );
               })}
             </View>
 
-            <Pressable 
-              style={({pressed}) => [styles.fireButton, pressed && styles.fireButtonPressed, firingKOT && styles.fireButtonDisabled]}
+            <Pressable
+              style={({ pressed }) => [
+                styles.fireButton,
+                pressed && styles.fireButtonPressed,
+                firingKOT && styles.fireButtonDisabled,
+              ]}
               onPress={handleFireKOT}
               disabled={firingKOT}
             >
-              {firingKOT ? <ActivityIndicator color="#fff" /> : <Text style={styles.fireButtonText}>Fire KOT for Unsent Items</Text>}
+              {firingKOT ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <View style={styles.fireBtnContent}>
+                  <Ionicons name="flame" size={20} color="#000" />
+                  <Text style={styles.fireButtonText}>Fire KOT for Unsent Items</Text>
+                </View>
+              )}
             </Pressable>
           </View>
         )}
@@ -235,25 +351,70 @@ export default function OrderDetailScreen() {
                     <Text style={styles.stationBadgeText}>{kot.station}</Text>
                   </View>
                 )}
+                <View style={styles.firedBadge}>
+                  <Ionicons name="flame" size={11} color={colors.accent} />
+                  <Text style={styles.firedBadgeText}>FIRED</Text>
+                </View>
               </View>
               <StatusBadge status={kot.status} />
             </View>
             <View style={styles.card}>
-              {items.map(item => {
+              {items.map((item) => {
+                const isVoided = item.status === "VOIDED";
                 const modifiers = parseModifiers(item.modifiers);
+
                 return (
-                  <View key={item.id} style={styles.itemRow}>
-                    <View style={styles.itemQty}><Text style={styles.itemQtyText}>{item.quantity}x</Text></View>
+                  <View
+                    key={item.id}
+                    style={[styles.itemRow, isVoided && styles.itemRowVoided]}
+                  >
+                    <View style={styles.itemQty}>
+                      <Text
+                        style={[
+                          styles.itemQtyText,
+                          isVoided && styles.itemQtyTextVoided,
+                        ]}
+                      >
+                        {item.quantity}x
+                      </Text>
+                    </View>
                     <View style={styles.itemDetails}>
                       <View style={styles.itemHeaderLine}>
-                        <Text style={styles.itemName}>{item.menuItemName}</Text>
+                        <Text
+                          style={[
+                            styles.itemName,
+                            isVoided && styles.itemNameVoided,
+                          ]}
+                        >
+                          {item.menuItemName}
+                        </Text>
                         {item.variantName ? (
-                          <View style={styles.variantBadge}>
-                            <Text style={styles.variantBadgeText}>
-                              {item.variantName === '12"' ? '12" L' : item.variantName === '8"' ? '8" R' : item.variantName}
+                          <View
+                            style={[
+                              styles.variantBadge,
+                              isVoided && styles.badgeMuted,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.variantBadgeText,
+                                isVoided && styles.badgeTextMuted,
+                              ]}
+                            >
+                              {item.variantName === '12"'
+                                ? '12" L'
+                                : item.variantName === '8"'
+                                ? '8" R'
+                                : item.variantName}
                             </Text>
                           </View>
                         ) : null}
+
+                        {isVoided && (
+                          <View style={styles.voidBadge}>
+                            <Text style={styles.voidBadgeText}>VOIDED</Text>
+                          </View>
+                        )}
                       </View>
 
                       {modifiers.length > 0 && (
@@ -268,6 +429,7 @@ export default function OrderDetailScreen() {
                                   styles.modPill,
                                   isHalf && styles.modPillHalf,
                                   isDrink && styles.modPillDrink,
+                                  isVoided && styles.modPillVoided,
                                 ]}
                               >
                                 <Text
@@ -275,6 +437,7 @@ export default function OrderDetailScreen() {
                                     styles.modPillText,
                                     isHalf && styles.modPillTextHalf,
                                     isDrink && styles.modPillTextDrink,
+                                    isVoided && styles.modPillTextVoided,
                                   ]}
                                 >
                                   {m}
@@ -287,11 +450,53 @@ export default function OrderDetailScreen() {
 
                       {item.notes && (
                         <View style={styles.itemNotesRow}>
-                          <Ionicons name="document-text-outline" size={13} color={colors.warning} />
-                          <Text style={styles.itemNotes}>{item.notes}</Text>
+                          <Ionicons
+                            name="document-text-outline"
+                            size={13}
+                            color={isVoided ? colors.textMuted : colors.warning}
+                          />
+                          <Text
+                            style={[
+                              styles.itemNotes,
+                              isVoided && styles.itemNotesVoided,
+                            ]}
+                          >
+                            {item.notes}
+                          </Text>
                         </View>
                       )}
+
+                      <Text
+                        style={[
+                          styles.itemPrice,
+                          isVoided && styles.itemPriceVoided,
+                        ]}
+                      >
+                        {isVoided
+                          ? "Cancelled (Not Billed)"
+                          : `₹${(item.unitPrice * item.quantity).toFixed(0)}`}
+                      </Text>
                     </View>
+
+                    {/* Void / Modify Fired Item button */}
+                    {!isVoided && isOrderActive && (
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.voidItemBtn,
+                          pressed && styles.voidItemBtnPressed,
+                        ]}
+                        onPress={() => handleOpenVoidModal(item)}
+                      >
+                        <Ionicons
+                          name="close-circle-outline"
+                          size={14}
+                          color={colors.danger}
+                        />
+                        <Text style={styles.voidItemBtnText}>
+                          {item.quantity > 1 ? "Reduce / Void" : "Void"}
+                        </Text>
+                      </Pressable>
+                    )}
                   </View>
                 );
               })}
@@ -304,41 +509,63 @@ export default function OrderDetailScreen() {
           <View style={styles.totalsCard}>
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Subtotal</Text>
-              <Text style={styles.totalValue}>₹{Number(order.subtotal).toFixed(0)}</Text>
+              <Text style={styles.totalValue}>
+                ₹{Number(order.subtotal).toFixed(0)}
+              </Text>
             </View>
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Taxes</Text>
-              <Text style={styles.totalValue}>₹{Number(order.taxAmount).toFixed(0)}</Text>
+              <Text style={styles.totalValue}>
+                ₹{Number(order.taxAmount).toFixed(0)}
+              </Text>
             </View>
             <View style={[styles.totalRow, styles.grandTotalRow]}>
               <Text style={styles.grandTotalLabel}>Grand Total</Text>
-              <Text style={styles.grandTotalValue}>₹{Number(order.totalAmount).toFixed(0)}</Text>
+              <Text style={styles.grandTotalValue}>
+                ₹{Number(order.totalAmount).toFixed(0)}
+              </Text>
             </View>
           </View>
         </View>
 
         {/* Transfer Table — only for non-completed dine-in orders */}
-        {order.status !== "COMPLETED" && order.status !== "CANCELLED" && order.tableId && (
+        {isOrderActive && order.tableId && (
           <Pressable
-            style={({pressed}) => [styles.transferButton, pressed && styles.transferButtonPressed]}
-            onPress={() => router.push(`/order/transfer?id=${order.id}&tableId=${order.tableId}`)}
+            style={({ pressed }) => [
+              styles.transferButton,
+              pressed && styles.transferButtonPressed,
+            ]}
+            onPress={() =>
+              router.push(`/order/transfer?id=${order.id}&tableId=${order.tableId}`)
+            }
           >
             <Text style={styles.transferButtonText}>Transfer Table</Text>
           </Pressable>
         )}
 
         <Pressable
-          style={({pressed}) => [styles.printButton, pressed && styles.printButtonPressed, printingBill && styles.printButtonDisabled]}
+          style={({ pressed }) => [
+            styles.printButton,
+            pressed && styles.printButtonPressed,
+            printingBill && styles.printButtonDisabled,
+          ]}
           onPress={handlePrintBill}
           disabled={printingBill}
         >
-          {printingBill ? <ActivityIndicator color="#fff" /> : <Text style={styles.printButtonText}>Print Bill</Text>}
+          {printingBill ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.printButtonText}>Print Bill</Text>
+          )}
         </Pressable>
 
         {/* Settle Bill — only for non-completed orders */}
-        {order.status !== "COMPLETED" && order.status !== "CANCELLED" && (
+        {isOrderActive && (
           <Pressable
-            style={({pressed}) => [styles.settleButton, pressed && styles.settleButtonPressed]}
+            style={({ pressed }) => [
+              styles.settleButton,
+              pressed && styles.settleButtonPressed,
+            ]}
             onPress={() => router.push(`/order/checkout?id=${order.id}`)}
           >
             <Text style={styles.settleButtonText}>Settle Bill</Text>
@@ -347,8 +574,15 @@ export default function OrderDetailScreen() {
 
         {order.status === "COMPLETED" && (
           <View style={styles.settledBanner}>
-            <Ionicons name="checkmark-circle" size={18} color={colors.success} style={{ marginRight: 6 }} />
-            <Text style={styles.settledBannerText}>This order has been settled</Text>
+            <Ionicons
+              name="checkmark-circle"
+              size={18}
+              color={colors.success}
+              style={{ marginRight: 6 }}
+            />
+            <Text style={styles.settledBannerText}>
+              This order has been settled
+            </Text>
           </View>
         )}
 
@@ -356,83 +590,396 @@ export default function OrderDetailScreen() {
       </ScrollView>
 
       {/* Floating Add Items Button — hidden for completed/cancelled orders */}
-      {order.status !== "COMPLETED" && order.status !== "CANCELLED" && (
+      {isOrderActive && (
         <View style={styles.floatingAction}>
-          <Pressable 
-            style={({pressed}) => [styles.addButton, pressed && styles.addButtonPressed]}
+          <Pressable
+            style={({ pressed }) => [
+              styles.addButton,
+              pressed && styles.addButtonPressed,
+            ]}
             onPress={handleAddItems}
           >
             <Text style={styles.addButtonText}>+ Add More Items</Text>
           </Pressable>
         </View>
       )}
+
+      {/* Fired KOT Item Modification / Void Modal */}
+      <VoidItemModal
+        isVisible={isVoidModalVisible}
+        item={voidTargetItem}
+        orderId={order.id}
+        onClose={handleCloseVoidModal}
+        onSuccess={fetchOrder}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  centerContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.bg },
+  centerContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.bg,
+  },
   errorText: { color: colors.danger, fontSize: fontSize.lg },
-  header: { 
-    flexDirection: "row", alignItems: "center", padding: spacing.lg, 
-    paddingTop: 60, backgroundColor: colors.bgCard, borderBottomWidth: 1, borderBottomColor: colors.border 
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: spacing.lg,
+    paddingTop: 60,
+    backgroundColor: colors.bgCard,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   backButton: { marginRight: spacing.md, padding: spacing.xs },
-  backButtonText: { color: colors.accent, fontSize: fontSize.md, fontWeight: fontWeight.medium },
-  title: { flex: 1, fontSize: fontSize.xl, fontWeight: fontWeight.bold, color: colors.textPrimary },
+  backButtonText: {
+    color: colors.accent,
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.medium,
+  },
+  title: {
+    flex: 1,
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+    color: colors.textPrimary,
+  },
   scrollContent: { padding: spacing.md, gap: spacing.xl },
   section: { gap: spacing.sm },
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.xs },
-  sectionTitle: { fontSize: fontSize.lg, fontWeight: fontWeight.semibold, color: colors.textPrimary },
-  sectionSubtitle: { fontSize: fontSize.sm, color: colors.warning },
-  card: { backgroundColor: colors.bgCard, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md },
-  itemRow: { flexDirection: "row", paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.borderLight },
-  itemQty: { width: 30 },
-  itemQtyText: { color: colors.accent, fontWeight: fontWeight.bold, fontSize: fontSize.md },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: spacing.xs,
+  },
+  sectionTitle: {
+    fontSize: fontSize.lg,
+    fontWeight: fontWeight.semibold,
+    color: colors.textPrimary,
+  },
+  sectionSubtitle: { fontSize: fontSize.xs, color: colors.warning },
+  badgePending: {
+    backgroundColor: colors.warningBg,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  badgePendingText: {
+    fontSize: 10,
+    color: colors.warning,
+    fontWeight: fontWeight.bold,
+  },
+  card: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+    gap: spacing.sm,
+  },
+  itemRowVoided: {
+    opacity: 0.55,
+    backgroundColor: "rgba(239, 68, 68, 0.05)",
+  },
+  unsentItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+    gap: spacing.sm,
+  },
+  unsentControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  deleteUnsentBtn: {
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: colors.dangerBg,
+  },
+  itemQty: { width: 32 },
+  itemQtyText: {
+    color: colors.accent,
+    fontWeight: fontWeight.bold,
+    fontSize: fontSize.md,
+  },
+  itemQtyTextVoided: {
+    color: colors.textMuted,
+    textDecorationLine: "line-through",
+  },
   itemDetails: { flex: 1 },
-  itemHeaderLine: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
-  itemName: { fontSize: fontSize.md, color: colors.textPrimary, fontWeight: fontWeight.medium },
-  variantBadge: { backgroundColor: colors.accentBg, paddingHorizontal: spacing.xs, paddingVertical: 1, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.accent },
-  variantBadgeText: { fontSize: 10, color: colors.accent, fontWeight: fontWeight.bold },
+  itemHeaderLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    flexWrap: "wrap",
+  },
+  itemName: {
+    fontSize: fontSize.md,
+    color: colors.textPrimary,
+    fontWeight: fontWeight.medium,
+  },
+  itemNameVoided: {
+    textDecorationLine: "line-through",
+    color: colors.textMuted,
+  },
+  variantBadge: {
+    backgroundColor: colors.accentBg,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.accent,
+  },
+  variantBadgeText: {
+    fontSize: 10,
+    color: colors.accent,
+    fontWeight: fontWeight.bold,
+  },
+  voidBadge: {
+    backgroundColor: colors.dangerBg,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  voidBadgeText: {
+    fontSize: 9,
+    color: colors.danger,
+    fontWeight: fontWeight.bold,
+  },
+  badgeMuted: {
+    borderColor: colors.textMuted,
+    backgroundColor: "transparent",
+  },
+  badgeTextMuted: {
+    color: colors.textMuted,
+  },
   kotHeaderRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  stationBadge: { backgroundColor: colors.accentBg, borderWidth: 1, borderColor: colors.accent, paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.sm },
-  stationBadgeText: { fontSize: fontSize.xs, color: colors.accent, fontWeight: fontWeight.bold },
+  stationBadge: {
+    backgroundColor: colors.accentBg,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+  },
+  stationBadgeText: {
+    fontSize: fontSize.xs,
+    color: colors.accent,
+    fontWeight: fontWeight.bold,
+  },
+  firedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: colors.accentBg,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+  },
+  firedBadgeText: {
+    fontSize: 9,
+    color: colors.accent,
+    fontWeight: fontWeight.bold,
+  },
   modifiersWrap: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 3 },
-  modPill: { backgroundColor: colors.bgInput, paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.sm },
-  modPillHalf: { backgroundColor: "rgba(249, 115, 22, 0.15)", borderWidth: 1, borderColor: colors.accent },
-  modPillDrink: { backgroundColor: "rgba(59, 130, 246, 0.15)", borderWidth: 1, borderColor: colors.info },
+  modPill: {
+    backgroundColor: colors.bgInput,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+  },
+  modPillHalf: {
+    backgroundColor: "rgba(249, 115, 22, 0.15)",
+    borderWidth: 1,
+    borderColor: colors.accent,
+  },
+  modPillDrink: {
+    backgroundColor: "rgba(59, 130, 246, 0.15)",
+    borderWidth: 1,
+    borderColor: colors.info,
+  },
+  modPillVoided: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   modPillText: { fontSize: 11, color: colors.textSecondary },
   modPillTextHalf: { color: colors.accent, fontWeight: fontWeight.semibold },
   modPillTextDrink: { color: colors.info, fontWeight: fontWeight.semibold },
+  modPillTextVoided: { color: colors.textMuted, textDecorationLine: "line-through" },
   itemNotesRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
   itemNotes: { fontSize: fontSize.sm, color: colors.warning, fontStyle: "italic" },
-  itemPrice: { fontSize: fontSize.md, color: colors.textPrimary, fontWeight: fontWeight.medium },
-  fireButton: { backgroundColor: colors.warning, padding: spacing.lg, borderRadius: radius.md, alignItems: "center", marginTop: spacing.md },
+  itemNotesVoided: { color: colors.textMuted },
+  itemUnitPrice: {
+    fontSize: fontSize.xs,
+    color: colors.textSecondary,
+    marginTop: 3,
+  },
+  itemPrice: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+    fontWeight: fontWeight.medium,
+    marginTop: 2,
+  },
+  itemPriceVoided: {
+    color: colors.danger,
+    fontSize: fontSize.xs,
+    fontStyle: "italic",
+  },
+  voidItemBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.dangerBg,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+  },
+  voidItemBtnPressed: {
+    opacity: 0.7,
+  },
+  voidItemBtnText: {
+    fontSize: fontSize.xs,
+    color: colors.danger,
+    fontWeight: fontWeight.bold,
+  },
+  fireButton: {
+    backgroundColor: colors.warning,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+    marginTop: spacing.sm,
+  },
   fireButtonPressed: { opacity: 0.8 },
   fireButtonDisabled: { opacity: 0.5 },
-  fireButtonText: { color: "#000", fontSize: fontSize.md, fontWeight: fontWeight.bold },
-  printButton: { backgroundColor: colors.accent, padding: spacing.lg, borderRadius: radius.md, alignItems: "center" },
+  fireBtnContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  fireButtonText: {
+    color: "#000",
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.bold,
+  },
+  printButton: {
+    backgroundColor: colors.accent,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+  },
   printButtonPressed: { opacity: 0.8 },
   printButtonDisabled: { opacity: 0.5 },
-  printButtonText: { color: "#fff", fontSize: fontSize.md, fontWeight: fontWeight.bold },
-  settleButton: { backgroundColor: colors.success, padding: spacing.lg, borderRadius: radius.md, alignItems: "center" },
+  printButtonText: {
+    color: "#fff",
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.bold,
+  },
+  settleButton: {
+    backgroundColor: colors.success,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+  },
   settleButtonPressed: { opacity: 0.8 },
-  settleButtonText: { color: "#fff", fontSize: fontSize.md, fontWeight: fontWeight.bold },
-  transferButton: { backgroundColor: colors.info, padding: spacing.lg, borderRadius: radius.md, alignItems: "center", marginBottom: spacing.md },
+  settleButtonText: {
+    color: "#fff",
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.bold,
+  },
+  transferButton: {
+    backgroundColor: colors.info,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+    marginBottom: spacing.md,
+  },
   transferButtonPressed: { opacity: 0.8 },
-  transferButtonText: { color: "#fff", fontSize: fontSize.md, fontWeight: fontWeight.bold },
-  settledBanner: { backgroundColor: colors.successBg, padding: spacing.lg, borderRadius: radius.md, alignItems: "center", flexDirection: "row", justifyContent: "center" },
-  settledBannerText: { color: colors.success, fontSize: fontSize.md, fontWeight: fontWeight.semibold },
-  totalsCard: { backgroundColor: colors.bgCard, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, gap: spacing.sm },
+  transferButtonText: {
+    color: "#fff",
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.bold,
+  },
+  settledBanner: {
+    backgroundColor: colors.successBg,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+  },
+  settledBannerText: {
+    color: colors.success,
+    fontSize: fontSize.md,
+    fontWeight: fontWeight.semibold,
+  },
+  totalsCard: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
   totalRow: { flexDirection: "row", justifyContent: "space-between" },
   totalLabel: { color: colors.textSecondary, fontSize: fontSize.md },
   totalValue: { color: colors.textPrimary, fontSize: fontSize.md },
-  grandTotalRow: { borderTopWidth: 1, borderTopColor: colors.borderLight, paddingTop: spacing.sm, marginTop: spacing.xs },
-  grandTotalLabel: { color: colors.textPrimary, fontSize: fontSize.lg, fontWeight: fontWeight.bold },
-  grandTotalValue: { color: colors.textPrimary, fontSize: fontSize.xl, fontWeight: fontWeight.bold },
-  floatingAction: { position: "absolute", bottom: 0, left: 0, right: 0, padding: spacing.lg, paddingBottom: 40, backgroundColor: "rgba(9,9,11,0.9)", borderTopWidth: 1, borderTopColor: colors.border },
-  addButton: { backgroundColor: colors.accent, padding: spacing.lg, borderRadius: radius.md, alignItems: "center" },
+  grandTotalRow: {
+    borderTopWidth: 1,
+    borderTopColor: colors.borderLight,
+    paddingTop: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  grandTotalLabel: {
+    color: colors.textPrimary,
+    fontSize: fontSize.lg,
+    fontWeight: fontWeight.bold,
+  },
+  grandTotalValue: {
+    color: colors.textPrimary,
+    fontSize: fontSize.xl,
+    fontWeight: fontWeight.bold,
+  },
+  floatingAction: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: spacing.lg,
+    paddingBottom: 40,
+    backgroundColor: "rgba(9,9,11,0.9)",
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  addButton: {
+    backgroundColor: colors.accent,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+  },
   addButtonPressed: { opacity: 0.8 },
-  addButtonText: { color: "#fff", fontSize: fontSize.lg, fontWeight: fontWeight.bold },
+  addButtonText: {
+    color: "#fff",
+    fontSize: fontSize.lg,
+    fontWeight: fontWeight.bold,
+  },
 });

@@ -9,7 +9,12 @@ import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
 import { getNextKOTNumber } from "./sequence.service.js";
-import { buildKOTReceipt, type KOTData } from "@gusto/printer";
+import {
+  buildKOTReceipt,
+  buildModificationKOTReceipt,
+  buildCancellationKOTReceipt,
+  type KOTData,
+} from "@gusto/printer";
 import {
   emitKOTNew,
   emitKOTStatusUpdate,
@@ -19,6 +24,7 @@ import {
   emitKOTModification,
 } from "../socket/events.js";
 import { queueSyncEvent } from "./sync.service.js";
+import { queuePrint } from "./print.service.js";
 
 /**
  * Generate a KOT for items in an order that haven't been sent to kitchen yet.
@@ -220,11 +226,8 @@ export function listKOTs(status?: string) {
       tableName = table?.name;
     }
 
-    return {
-      ...kot,
-      orderNumber: order?.orderNumber,
-      tableName,
-      items: items.map((item) => {
+    const validItems = items
+      .map((item) => {
         const orderItem = item.orderItemId
           ? db
               .select()
@@ -232,6 +235,12 @@ export function listKOTs(status?: string) {
               .where(eq(schema.orderItems.id, item.orderItemId))
               .get()
           : null;
+
+        // If the linked order item is voided, exclude from kitchen display
+        if (orderItem && orderItem.status === "VOIDED") {
+          return null;
+        }
+
         const menuItem = orderItem?.menuItemId
           ? db
               .select()
@@ -239,13 +248,22 @@ export function listKOTs(status?: string) {
               .where(eq(schema.menuItems.id, orderItem.menuItemId))
               .get()
           : null;
+
         return {
           ...item,
+          quantity: orderItem ? orderItem.quantity : item.quantity,
           variantName: orderItem?.variantName ?? null,
           categoryId: menuItem?.categoryId ?? null,
           modifiers: item.modifiers ? JSON.parse(item.modifiers) : [],
         };
-      }),
+      })
+      .filter((i): i is NonNullable<typeof i> => i !== null);
+
+    return {
+      ...kot,
+      orderNumber: order?.orderNumber,
+      tableName,
+      items: validItems,
     };
   });
 }
@@ -497,6 +515,33 @@ export function cancelKOT(
 
   console.log(`\n❌ KOT CANCELLED — ${kot.kotNumber} (Reason: ${reason})`);
 
+  let tableName: string | undefined;
+  if (order?.tableId) {
+    const table = db
+      .select()
+      .from(schema.diningTables)
+      .where(eq(schema.diningTables.id, order.tableId))
+      .get();
+    tableName = table?.name;
+  }
+
+  // Queue physical cancellation slip for kitchen thermal printer
+  const cancelPrintTemplate = buildCancellationKOTReceipt({
+    kotNumber: kot.kotNumber,
+    orderNumber: order?.orderNumber ?? "--",
+    tableName,
+    waiterName: order?.waiterName ?? undefined,
+    station: kot.station ?? undefined,
+    reason,
+    approvedBy,
+    items: kotItemsList.map((i) => ({ name: i.menuItemName, quantity: i.quantity })),
+    createdAt: new Date(now),
+  });
+
+  queuePrint(cancelPrintTemplate, "KOT", "pos").catch((err) => {
+    console.warn("[Printer] Could not queue cancellation KOT print:", err);
+  });
+
   return { kotId, kotNumber: kot.kotNumber, status: "CANCELLED", reason };
 }
 
@@ -614,6 +659,26 @@ export function generateModificationKOT(
       createdAt: now,
     })
     .run();
+
+  // Queue physical modification slip for kitchen thermal printer
+  const modPrintTemplate = buildModificationKOTReceipt({
+    kotNumber,
+    orderNumber: order.orderNumber,
+    tableName,
+    waiterName: order.waiterName ?? undefined,
+    station: station ?? undefined,
+    modifications: modItems.map((m) => ({
+      itemName: m.itemName,
+      changeType: m.changeType as "MODIFIER_CHANGE" | "QUANTITY_CHANGE" | "NOTE_CHANGE",
+      oldValue: m.oldValue,
+      newValue: m.newValue,
+    })),
+    createdAt: new Date(now),
+  });
+
+  queuePrint(modPrintTemplate, "KOT", "pos").catch((err) => {
+    console.warn("[Printer] Could not queue modification KOT print:", err);
+  });
 
   return { kotId, kotNumber, kotType: "MODIFICATION", modifications: modItems };
 }

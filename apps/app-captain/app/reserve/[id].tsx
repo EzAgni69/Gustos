@@ -111,12 +111,9 @@ export default function ReserveTableScreen() {
               value={dateObj}
               mode="date"
               display="default"
-              onValueChange={(event, selectedDate) => {
+              onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
                 if (Platform.OS === 'android') setShowDatePicker(false);
                 if (selectedDate) setDateObj(selectedDate);
-              }}
-              onDismiss={() => {
-                setShowDatePicker(false);
               }}
             />
           )}
@@ -137,12 +134,9 @@ export default function ReserveTableScreen() {
               mode="time"
               is24Hour={true}
               display="default"
-              onValueChange={(event, selectedDate) => {
+              onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
                 if (Platform.OS === 'android') setShowTimePicker(false);
                 if (selectedDate) setDateObj(selectedDate);
-              }}
-              onDismiss={() => {
-                setShowTimePicker(false);
               }}
             />
           )}

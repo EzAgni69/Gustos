@@ -8,14 +8,16 @@
       "android": {
         "buildType": "apk"
       },
-      "channel": "preview"
+      "node": "20.18.3",
+      "pnpm": "10.29.3"
     },
     "development": {
       "developmentClient": true,
       "distribution": "internal"
     },
     "production": {
-      "channel": "production"
+      "node": "20.18.3",
+      "pnpm": "10.29.3"
     }
   },
   "submit": {

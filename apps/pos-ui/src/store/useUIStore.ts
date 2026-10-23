@@ -15,7 +15,16 @@ export type POSModal =
   | "SYNC_QUEUE"
   | "BILL_PREVIEW"
   | "ONLINE_ORDER"
-  | "ITEM_CUSTOMIZER";
+  | "ITEM_CUSTOMIZER"
+  | "VOID_ITEM";
+
+export interface VoidTargetData {
+  cartItemId: string;
+  menuItemName: string;
+  quantity: number;
+  unitPrice: number;
+  kotId?: string | null;
+}
 
 export interface BillPreviewData {
   orderId?: string;
@@ -46,6 +55,7 @@ export interface UIStoreState {
   activeView: POSView;
   activeModal: POSModal;
   selectedCartItemIdForModifiers: string | null;
+  voidItemTarget: VoidTargetData | null;
   customizerItemId: string | null; // menuItem.id currently open in the customizer
   billPreviewData: BillPreviewData | null;
   incomingOnlineOrder: any | null;
@@ -56,6 +66,7 @@ export interface UIStoreState {
   // Actions
   setActiveView: (view: POSView) => void;
   openModal: (modal: POSModal, cartItemId?: string | null) => void;
+  openVoidModal: (target: VoidTargetData) => void;
   openItemCustomizer: (menuItemId: string) => void;
   openBillPreview: (data?: BillPreviewData | null) => void;
   openOnlineOrderModal: (order: any) => void;
@@ -69,6 +80,7 @@ export const useUIStore = create<UIStoreState>((set) => ({
   activeView: "BILLING",
   activeModal: "NONE",
   selectedCartItemIdForModifiers: null,
+  voidItemTarget: null,
   customizerItemId: null,
   billPreviewData: null,
   incomingOnlineOrder: null,
@@ -82,6 +94,12 @@ export const useUIStore = create<UIStoreState>((set) => ({
     set({
       activeModal: modal,
       selectedCartItemIdForModifiers: cartItemId,
+    }),
+
+  openVoidModal: (target) =>
+    set({
+      activeModal: "VOID_ITEM",
+      voidItemTarget: target,
     }),
 
   openItemCustomizer: (menuItemId) =>
@@ -106,6 +124,7 @@ export const useUIStore = create<UIStoreState>((set) => ({
     set({
       activeModal: "NONE",
       selectedCartItemIdForModifiers: null,
+      voidItemTarget: null,
       customizerItemId: null,
       billPreviewData: null,
       incomingOnlineOrder: null,

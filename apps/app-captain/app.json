@@ -5,15 +5,13 @@
     "version": "0.0.1",
     "orientation": "portrait",
     "scheme": "gusto-captain",
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "userInterfaceStyle": "dark",
     "backgroundColor": "#09090b",
     "icon": "./assets/images/icon.png",
-    "splash": {
-      "image": "./assets/images/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#09090b"
-    },
     "ios": {
       "bundleIdentifier": "com.gusto.captain",
       "infoPlist": {
@@ -25,7 +23,6 @@
     },
     "android": {
       "package": "com.gusto.captain",
-      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#09090b"
@@ -37,7 +34,30 @@
     "plugins": [
       "expo-router",
       "expo-font",
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#09090b"
+        }
+      ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "43fa6459-fc31-4a7e-9998-6895fc7a3009"
+      }
+    }
   }
 }

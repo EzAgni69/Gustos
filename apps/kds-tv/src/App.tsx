@@ -61,6 +61,8 @@ export function App() {
     holdStatusMap,
     hydrate,
     addKOT,
+    cancelKOT,
+    modifyKOT,
     completeKOT,
     recallKOT,
     updateStatus,
@@ -76,6 +78,22 @@ export function App() {
       playDing();
     },
     [addKOT, playDing]
+  );
+
+  const handleCancelKOT = useCallback(
+    (payload: { kotId: string }) => {
+      cancelKOT(payload.kotId);
+      playDing();
+    },
+    [cancelKOT, playDing]
+  );
+
+  const handleModifyKOT = useCallback(
+    (payload: { kotId: string; modifications: any[] }) => {
+      modifyKOT(payload.kotId, payload.modifications);
+      playDing();
+    },
+    [modifyKOT, playDing]
   );
 
   const handleStatusUpdate = useCallback(
@@ -103,6 +121,8 @@ export function App() {
     onNewKOT: handleNewKOT,
     onStatusUpdate: handleStatusUpdate,
     onHydrate: hydrate,
+    onCancelKOT: handleCancelKOT,
+    onModifyKOT: handleModifyKOT,
   });
 
   // ─── Timers ───

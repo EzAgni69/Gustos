@@ -10,6 +10,8 @@ import { SOCKET_EVENTS } from "../src/config/constants";
 import { getUsers } from "../src/services/api";
 import { colors } from "../src/config/theme";
 
+const GestureRoot = GestureHandlerRootView as React.ComponentType<{ style?: any; children?: React.ReactNode }>;
+
 function useProtectedRoute(isReady: boolean, fontsLoaded: boolean) {
   const { isConnected, user } = useAuthStore();
   const segments = useSegments();
@@ -82,7 +84,7 @@ export default function RootLayout() {
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
+    <GestureRoot style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar style="light" />
       <OfflineBanner />
       <Stack
@@ -108,6 +110,6 @@ export default function RootLayout() {
           }}
         />
       </Stack>
-    </GestureHandlerRootView>
+    </GestureRoot>
   );
 }

@@ -457,6 +457,23 @@ export async function removeOrderItem(
   return res.data;
 }
 
+export async function voidOrderItem(
+  orderId: string,
+  itemId: string,
+  reason: string,
+  approvedBy?: string,
+  voidQuantity?: number
+): Promise<OrderResponse> {
+  const res = await request<OrderResponse>(
+    API.ORDERS.VOID_ITEM(orderId, itemId),
+    {
+      method: "POST",
+      body: JSON.stringify({ reason, approvedBy, voidQuantity }),
+    }
+  );
+  return res.data;
+}
+
 export interface FireKOTResponse {
   kotId: string;
   kotNumber: string;

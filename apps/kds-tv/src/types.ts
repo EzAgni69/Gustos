@@ -183,6 +183,30 @@ export interface KotStatusUpdatePayload {
   orderNumber: string;
 }
 
+/** Payload from `kot:cancelled` socket event */
+export interface KotCancelledPayload {
+  kotId: string;
+  kotNumber: string;
+  orderId: string;
+  orderNumber: string;
+  reason: string;
+}
+
+/** Payload from `kot:modification` socket event */
+export interface KotModificationPayload {
+  kotId: string;
+  kotNumber: string;
+  orderId: string;
+  orderNumber: string;
+  tableName?: string;
+  modifications: Array<{
+    itemName: string;
+    changeType: "MODIFIER_CHANGE" | "QUANTITY_CHANGE" | "NOTE_CHANGE";
+    oldValue?: string;
+    newValue?: string;
+  }>;
+}
+
 /** Payload from REST `GET /api/kots` — enriched KOT from server */
 export interface KotListItem {
   id: string;

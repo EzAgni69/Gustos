@@ -429,7 +429,7 @@ export const BillPreviewModal: React.FC = () => {
       <div className="w-full max-w-lg flex items-center justify-center gap-2.5 mt-4 z-10 px-2">
         <button
           onClick={handleFlip}
-          className="flex-1 py-2 px-3 rounded-xl bg-surface-hover hover:bg-gray-700 text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all"
+          className="flex-1 py-2 px-3 rounded-xl bg-surface-hover hover:bg-gray-700 text-text-main hover:text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all"
         >
           <span>🔄</span>
           <span>{isFlipped ? "Front Bill" : "Backside"}</span>
@@ -438,7 +438,7 @@ export const BillPreviewModal: React.FC = () => {
         <button
           onClick={handlePrint}
           disabled={isPrinting}
-          className="flex-1 py-2 px-3 rounded-xl bg-surface-hover hover:bg-gray-700 text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all disabled:opacity-50"
+          className="flex-1 py-2 px-3 rounded-xl bg-surface-hover hover:bg-gray-700 text-text-main hover:text-white border border-border-hover text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all disabled:opacity-50"
         >
           {isPrinting ? (
             <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />

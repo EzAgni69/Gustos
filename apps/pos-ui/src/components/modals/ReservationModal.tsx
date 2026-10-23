@@ -4,6 +4,8 @@ import { apiClient } from "../../api/client";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 
+const DatePickerComponent = DatePicker as unknown as React.ComponentType<any>;
+
 interface ReservationModalProps {
   table: POSTable;
   onClose: () => void;
@@ -124,7 +126,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({ table, onClo
             <div className="space-y-1">
               <label className="text-xs text-text-muted">Date & Time</label>
               <div className="w-full">
-                <DatePicker
+                <DatePickerComponent
                   selected={selectedDateTime}
                   onChange={(date: Date | null) => setSelectedDateTime(date)}
                   showTimeSelect

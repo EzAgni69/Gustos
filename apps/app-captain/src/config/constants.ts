@@ -30,6 +30,8 @@ export const API = {
       `/api/orders/${orderId}/items/${itemId}`,
     DELETE_ITEM: (orderId: string, itemId: string) =>
       `/api/orders/${orderId}/items/${itemId}`,
+    VOID_ITEM: (orderId: string, itemId: string) =>
+      `/api/orders/${orderId}/items/${itemId}/void`,
     HOLD: (id: string) => `/api/orders/${id}/hold`,
     CANCEL: (id: string) => `/api/orders/${id}/cancel`,
     CHECKOUT: (id: string) => `/api/orders/${id}/checkout`,

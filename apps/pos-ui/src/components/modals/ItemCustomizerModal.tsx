@@ -378,7 +378,7 @@ export const ItemCustomizerModal: React.FC = () => {
               />
             </div>
             <div>
-              <h2 className="text-base font-black text-text-inverse flex items-center gap-2">
+              <h2 className="text-base font-black text-text-main flex items-center gap-2">
                 {item.name}
                 {comboType && (
                   <span className="text-[10px] bg-highlight/20 text-highlight px-1.5 py-0.5 rounded-md border border-highlight/40 font-mono">
