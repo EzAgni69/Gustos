@@ -164,10 +164,14 @@ export default function MenuPage() {
         if (catRes.data.length > 0 && catRes.data[0]) {
           form.setValue("categoryId", catRes.data[0].id);
         }
+      } else if (!catRes.success) {
+        setError(catRes.message || "Failed to load categories.");
       }
 
       if (itemsRes.success && itemsRes.data) {
         setMenuItems(itemsRes.data);
+      } else if (!itemsRes.success) {
+        setError(itemsRes.message || "Failed to load menu items.");
       }
     } else {
       setError(
