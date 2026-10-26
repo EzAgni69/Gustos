@@ -11,7 +11,7 @@
 
 import { Worker, Queue } from "bullmq";
 import { Redis } from "ioredis";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db } from "./db.js";
 import * as schema from "@gusto/db-schema/cloud";
 import { processInventoryDeduction } from "./handlers/inventory.handler.js";
@@ -43,11 +43,98 @@ const redisUrl = new URL(REDIS_URL);
 const connection = {
   host: redisUrl.hostname,
   port: Number(redisUrl.port) || 6379,
+  username: redisUrl.username ? decodeURIComponent(redisUrl.username) : undefined,
+  password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
+  tls: redisUrl.protocol === "rediss:" ? { rejectUnauthorized: false } : undefined,
   maxRetriesPerRequest: null,
 };
 
+// ─── PostgreSQL Error Code Helper ───
+export function extractPgErrorCode(err: unknown): string | null {
+  if (!err || typeof err !== "object") return null;
+  const anyErr = err as any;
+  if (typeof anyErr.code === "string") return anyErr.code;
+  if (typeof anyErr.cause?.code === "string") return anyErr.cause.code;
+  if (typeof anyErr.originalError?.code === "string") return anyErr.originalError.code;
+  return null;
+}
+
+// ─── Startup Schema Assertion Check ───
+/**
+ * Verifies that the cloud database has migration 0002 applied (specifically column `order_mode` on `orders`).
+ * If missing, aborts startup immediately before workers begin processing jobs,
+ * preventing silent queue draining and repeated failed retries.
+ */
+export async function assertSchemaReady(): Promise<void> {
+  console.log("[Startup] Checking database schema readiness (verifying Migration 0002 / order_mode)...");
+  try {
+    const result = await db.execute<{ column_name: string }>(sql`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'orders'
+        AND column_name = 'order_mode'
+      LIMIT 1;
+    `);
+
+    const rows = Array.isArray(result) ? result : (result as any)?.rows ?? [];
+    const hasOrderMode = rows.length > 0;
+
+    if (!hasOrderMode) {
+      const errorLog = {
+        level: "fatal",
+        service: "sync-worker",
+        event: "SCHEMA_ASSERTION_FAILED",
+        missingMigration: "0002_oval_shiver_man",
+        missingColumn: "orders.order_mode",
+        pgCode: "42703",
+        message:
+          "Database schema is missing column 'order_mode' on table 'orders'. Migration 0002 has not been applied.",
+        migrationHint:
+          "Run: DATABASE_URL=<cloud_url> pnpm --filter @gusto/db-schema db:migrate",
+        timestamp: new Date().toISOString(),
+      };
+
+      console.error(JSON.stringify(errorLog, null, 2));
+      console.error(`
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ 🛑 FATAL: Cloud Database Schema Incomplete — Startup Aborted                 ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Column "order_mode" does NOT exist on table "orders" (Migration 0002 missing)║
+║ Worker is exiting immediately to protect BullMQ queue from being drained!    ║
+║                                                                              ║
+║ 💡 Primary Fix:                                                              ║
+║ DATABASE_URL=<cloud_url> pnpm --filter @gusto/db-schema db:migrate          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+`);
+      process.exit(1);
+    }
+
+    console.log("[Startup] ✅ Database schema assertion passed: column orders.order_mode (0002) is ready.");
+  } catch (err) {
+    const pgCode = extractPgErrorCode(err);
+    const errorLog = {
+      level: "fatal",
+      service: "sync-worker",
+      event: "SCHEMA_ASSERTION_ERROR",
+      pgCode,
+      message: err instanceof Error ? err.message : String(err),
+      migrationHint:
+        "Run: DATABASE_URL=<cloud_url> pnpm --filter @gusto/db-schema db:migrate",
+      timestamp: new Date().toISOString(),
+    };
+    console.error(JSON.stringify(errorLog, null, 2));
+    console.error("[Startup] 🛑 FATAL: Failed to query schema verification on database:", err);
+    process.exit(1);
+  }
+}
+
+// Ensure database schema is ready before workers are initialized
+await assertSchemaReady();
+
 // ─── Redis Pub/Sub ───
 const pubClient = new Redis(REDIS_URL);
+pubClient.on("error", (err) => console.error("[Redis PubClient Error]", err));
 
 // ─── Queues ───
 
@@ -74,6 +161,7 @@ const syncWorker = new Worker(
       const {
         orderId,
         orderNumber,
+        orderMode,
         outletId,
         organizationId,
         invoiceNumber,
@@ -86,6 +174,9 @@ const syncWorker = new Worker(
         completedAt,
       } = payload;
 
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
+
       try {
         await db.transaction(async (tx) => {
           // 1. Upsert Order
@@ -93,9 +184,10 @@ const syncWorker = new Worker(
             .insert(schema.orders)
             .values({
               id: orderId,
-              outletId,
-              organizationId,
+              outletId: finalOutletId,
+              organizationId: finalOrgId,
               orderNumber,
+              orderMode: orderMode || "DINE_IN",
               status: "COMPLETED",
               subtotal: String(subtotal),
               discountAmount: String(discountAmount),
@@ -109,6 +201,7 @@ const syncWorker = new Worker(
               target: schema.orders.id,
               set: {
                 status: "COMPLETED",
+                orderMode: orderMode || "DINE_IN",
                 subtotal: String(subtotal),
                 discountAmount: String(discountAmount),
                 taxAmount: String(taxAmount),
@@ -140,7 +233,7 @@ const syncWorker = new Worker(
             .insert(schema.invoices)
             .values({
               orderId,
-              outletId,
+              outletId: finalOutletId,
               invoiceNumber,
               subtotal: String(subtotal),
               discountAmount: String(discountAmount),
@@ -157,8 +250,8 @@ const syncWorker = new Worker(
         // 3.5 Publish real-time sync event for Cloud ERP updates
         pubClient.publish("sync-events", JSON.stringify({
           eventType: "ORDER_COMPLETED",
-          organizationId,
-          outletId,
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
           payload: { orderId, orderNumber, status: "COMPLETED" },
         })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
 
@@ -167,8 +260,8 @@ const syncWorker = new Worker(
           await inventoryQueue.add("deduct-for-order", {
             orderId,
             orderNumber,
-            organizationId,
-            outletId,
+            organizationId: finalOrgId,
+            outletId: finalOutletId,
             items: items.map((i: any) => ({
               menuItemId: i.menuItemId,
               menuItemName: i.menuItemName,
@@ -179,7 +272,51 @@ const syncWorker = new Worker(
         }
       } catch (err) {
         Sentry.captureException(err);
-        console.error(`[Sync] ❌ Failed to sync order ${orderNumber}:`, err);
+        const pgCode = extractPgErrorCode(err);
+        const isSchemaMismatch = pgCode === "42703" || pgCode === "42P01";
+
+        const structuredError = {
+          level: "error",
+          worker: "pos-sync",
+          service: "sync-worker",
+          event: isSchemaMismatch ? "SYNC_SCHEMA_MISMATCH" : "SYNC_JOB_FAILED",
+          jobId: job.id,
+          jobName: job.name,
+          eventType,
+          orderNumber: orderNumber ?? null,
+          orderId: orderId ?? null,
+          outletId: outletId ?? null,
+          pgCode: pgCode ?? null,
+          pgErrorCode: pgCode ?? null,
+          pgErrorName:
+            pgCode === "42703"
+              ? "UNDEFINED_COLUMN"
+              : pgCode === "42P01"
+              ? "UNDEFINED_TABLE"
+              : null,
+          message: err instanceof Error ? err.message : String(err),
+          errorMessage: err instanceof Error ? err.message : String(err),
+          ...(isSchemaMismatch
+            ? {
+                hint: "Database schema mismatch — run: pnpm --filter @gusto/db-schema db:migrate",
+                migrationHint:
+                  "Database schema is missing columns or tables. Run: DATABASE_URL=<cloud_url> pnpm --filter @gusto/db-schema db:migrate",
+              }
+            : {}),
+          timestamp: new Date().toISOString(),
+        };
+
+        console.error(JSON.stringify(structuredError, null, 2));
+
+        if (isSchemaMismatch) {
+          console.error(
+            `[Sync] 🚨 MIGRATION HINT (PG Code ${pgCode}): Missing schema while syncing order ${orderNumber}!\n` +
+            `       Run: DATABASE_URL=<cloud_url> pnpm --filter @gusto/db-schema db:migrate`
+          );
+        } else {
+          console.error(`[Sync] ❌ Failed to sync order ${orderNumber}:`, err);
+        }
+
         throw err;
       }
     } else if (eventType === "ONLINE_ORDER_ACCEPTED") {
@@ -214,6 +351,101 @@ const syncWorker = new Worker(
         
         // Mock Zomato REST API Call
         console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/ready -> 200 OK`);
+      }
+    } else if (eventType === "ORDER_CREATED") {
+      const {
+        orderId,
+        orderNumber,
+        orderMode,
+        tableId,
+        outletId,
+        organizationId,
+      } = payload;
+
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
+
+      try {
+        let validTableId = null;
+        if (tableId) {
+          const tableExists = await db
+            .select({ id: schema.diningTables.id })
+            .from(schema.diningTables)
+            .where(eq(schema.diningTables.id, tableId))
+            .limit(1);
+          if (tableExists.length > 0) {
+            validTableId = tableId;
+          }
+        }
+
+        await db
+          .insert(schema.orders)
+          .values({
+            id: orderId,
+            outletId: finalOutletId,
+            organizationId: finalOrgId,
+            orderNumber,
+            tableId: validTableId,
+            orderMode: orderMode || "DINE_IN",
+            status: "PLACED",
+            subtotal: "0",
+            discountAmount: "0",
+            taxAmount: "0",
+            totalAmount: "0",
+            createdAt: localTimestamp ? new Date(localTimestamp) : new Date(),
+            updatedAt: localTimestamp ? new Date(localTimestamp) : new Date(),
+          })
+          .onConflictDoUpdate({
+            target: schema.orders.id,
+            set: {
+              tableId: validTableId,
+              orderMode: orderMode || "DINE_IN",
+              updatedAt: new Date(),
+            },
+          });
+
+        console.log(`[Sync] ✅ Successfully synced ORDER_CREATED: ${orderNumber}`);
+
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ORDER_CREATED",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
+          payload: { orderId, orderNumber, status: "PLACED" },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to sync ORDER_CREATED ${orderNumber}:`, err);
+        throw err;
+      }
+    } else if (eventType === "ORDER_CANCELLED") {
+      const { orderId, orderNumber } = payload;
+      try {
+        await db
+          .update(schema.orders)
+          .set({ status: "CANCELLED", updatedAt: new Date() })
+          .where(eq(schema.orders.id, orderId));
+
+        console.log(`[Sync] ✅ Successfully synced ORDER_CANCELLED: ${orderNumber}`);
+
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ORDER_CANCELLED",
+          payload: { orderId, orderNumber, status: "CANCELLED" },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to sync ORDER_CANCELLED ${orderNumber}:`, err);
+        throw err;
+      }
+    } else if (eventType === "TABLE_STATUS_CHANGED") {
+      const { tableId, status } = payload;
+      try {
+        if (tableId && status) {
+          await db
+            .update(schema.diningTables)
+            .set({ status: status as any })
+            .where(eq(schema.diningTables.id, tableId));
+          console.log(`[Sync] 🪑 Updated dining table ${tableId} status to ${status}`);
+        }
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to update table status:`, err);
       }
     }
 
@@ -344,7 +576,32 @@ syncWorker.on("completed", (job) => {
 });
 
 syncWorker.on("failed", (job, err) => {
-  console.error(`[Sync] Job ${job?.id} failed:`, err.message);
+  const pgCode = extractPgErrorCode(err);
+  const isSchemaError = pgCode === "42703" || pgCode === "42P01";
+
+  if (isSchemaError) {
+    console.error(
+      JSON.stringify(
+        {
+          level: "error",
+          service: "sync-worker",
+          event: "SYNC_JOB_FAILED_SCHEMA_ERROR",
+          jobId: job?.id,
+          attemptsMade: job?.attemptsMade,
+          pgCode,
+          pgErrorName: pgCode === "42703" ? "UNDEFINED_COLUMN" : "UNDEFINED_TABLE",
+          errorMessage: err.message,
+          migrationHint:
+            "Database schema is missing required columns/tables. Run: DATABASE_URL=<cloud_url> pnpm --filter @gusto/db-schema db:migrate",
+          timestamp: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.error(`[Sync] Job ${job?.id} failed:`, err.message);
+  }
 });
 
 inventoryWorker.on("completed", (job) => {

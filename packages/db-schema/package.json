@@ -30,7 +30,9 @@
     "db:generate": "drizzle-kit generate --config=drizzle.config.local.ts",
     "db:generate:local": "drizzle-kit generate --config=drizzle.config.local.ts",
     "db:generate:cloud": "drizzle-kit generate --config=drizzle.config.cloud.ts",
-    "db:migrate": "drizzle-kit migrate --config=drizzle.config.local.ts",
+    "db:migrate": "drizzle-kit migrate --config=drizzle.config.cloud.ts",
+    "db:migrate:cloud": "drizzle-kit migrate --config=drizzle.config.cloud.ts",
+    "db:migrate:local": "drizzle-kit migrate --config=drizzle.config.local.ts",
     "db:push": "drizzle-kit push --config=drizzle.config.local.ts",
     "db:push:local": "drizzle-kit push --config=drizzle.config.local.ts",
     "db:push:cloud": "drizzle-kit push --config=drizzle.config.cloud.ts"
