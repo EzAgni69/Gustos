@@ -1,6 +1,6 @@
 import { Server, Socket } from "socket.io";
 import { Redis } from "ioredis";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import * as cloudSchema from "@gusto/db-schema/cloud";
 
@@ -30,12 +30,32 @@ export function initCloudSocket(io: Server) {
     socket.on("sync:push_realtime", async (data: any) => {
       console.log(`[Cloud Socket] Received real-time sync payload from POS:`, data);
 
-      if (data?.eventType === "TABLE_STATUS_CHANGED" && data.payload?.tableId && data.payload?.status) {
+      if (data?.eventType === "TABLE_STATUS_CHANGED" && data.payload?.status) {
+        const { tableId, tableName, status } = data.payload;
         try {
-          await db.update(cloudSchema.diningTables)
-            .set({ status: data.payload.status })
-            .where(eq(cloudSchema.diningTables.id, data.payload.tableId));
-          console.log(`[Cloud Socket] ✅ Synced table ${data.payload.tableId} status to ${data.payload.status} in Cloud ERP`);
+          let targetTable = null;
+          if (tableId) {
+            targetTable = await db.query.diningTables.findFirst({
+              where: eq(cloudSchema.diningTables.id, tableId),
+            });
+          }
+          if (!targetTable && tableName && data.outletId) {
+            targetTable = await db.query.diningTables.findFirst({
+              where: and(
+                eq(cloudSchema.diningTables.outletId, data.outletId),
+                eq(cloudSchema.diningTables.name, tableName)
+              ),
+            });
+          }
+
+          if (targetTable) {
+            await db.update(cloudSchema.diningTables)
+              .set({ status })
+              .where(eq(cloudSchema.diningTables.id, targetTable.id));
+            console.log(`[Cloud Socket] ✅ Synced table ${targetTable.name} (${targetTable.id}) status to ${status} in Cloud ERP`);
+            data.payload.tableId = targetTable.id;
+            data.payload.tableName = targetTable.name;
+          }
         } catch (err) {
           console.error(`[Cloud Socket] Failed to update table status:`, err);
         }

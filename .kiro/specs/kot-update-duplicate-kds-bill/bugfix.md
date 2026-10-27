@@ -1,41 +1,109 @@
-# Bugfix Requirements Document
+# Bugfix: KOT Update — Duplicate KDS Items & Stale Bill
 
 ## Introduction
 
-When a KOT (Kitchen Order Ticket) item is removed from an in-progress order — for example due to an accidental punch — and the KOT is updated or refired, two distinct problems occur:
+When a KOT (Kitchen Order Ticket) item is removed due to an accidental punch and the order is updated or refired, two problems occur simultaneously:
 
-1. **KDS Duplication**: The KDS (Kitchen Display System) shows duplicate KOT cards for the same order. The original KOT (with the removed item still present) remains on the KDS display, and the updated/refired KOT appears as an additional new card alongside it, causing kitchen staff to prepare items twice.
+1. **KDS Duplication** — The updated KOT causes duplicated items on the Kitchen Display System; the kitchen sees the same order items more than once on separate KOT cards.
+2. **Stale Bill** — The bill/invoice still reflects the original order (before the item removal), so the customer is charged for items that were removed.
 
-2. **Bill Discrepancy**: The bill or invoice generated at checkout still references the original order state (before item removal), meaning the customer is billed for items that were already removed from the KOT.
+Both bugs share the same triggering scenario: a POS operator voids an item from a fired KOT and then either resets or updates the KOT. They are independent defects in two different service files.
 
-Both bugs share the same trigger: removing an item from an order after a KOT has already been fired to the kitchen.
+---
 
 ## Bug Analysis
 
 ### Current Behavior (Defect)
 
-1.1 WHEN an item is removed from an order whose KOT has already been fired to the kitchen AND a new KOT is generated for the updated order THEN the KDS continues to display the original KOT card (with the removed item) alongside the new KOT card, showing duplicate kitchen tickets for the same order
+**Bug 1 — KDS Duplication**
 
-1.2 WHEN an item is removed from an order whose KOT has already been fired AND the KDS reconnects or hydrates from the server THEN the original KOT (with the removed item) reappears on the KDS because it remains in PENDING or IN_PROGRESS status on the server without being updated to reflect the item removal
+`generateKOT` in `kot.service.ts` accepts an optional `itemIds` parameter. When the POS UI's "Update KOT" or refire action calls `generateKOT(orderId, allVisibleItemIds)`, it explicitly passes the IDs of all currently visible order items — including items that already have a `kotId` (already sent to kitchen). The current guard only excludes already-fired items in the no-`itemIds` path:
 
-1.3 WHEN an item is removed from an order after a KOT has been fired AND checkout is initiated THEN the bill is generated using all order items including VOIDED items, causing the customer to be charged for items that were removed
+```typescript
+// Current (buggy)
+const itemsToSend = itemIds
+  ? allItems.filter((item) => itemIds.includes(item.id))   // no kotId check
+  : allItems.filter((item) => !item.kotId);                // correctly excludes fired
+```
+
+This creates a brand-new KOT record with a new `kotId` containing the already-fired items, and emits a `kot:new` event to all KDS displays. Since the KDS `useKOTStore` deduplicates only by `kotId`, the new KOT card appears alongside the original one — the kitchen sees the same items twice.
+
+**Bug 2 — Stale Bill**
+
+`processCheckout` in `checkout.service.ts` correctly computes totals from `activeItems` (items where `status != "VOIDED"`). However, two downstream calls still reference the unfiltered `items` variable:
+
+- `queueSyncEvent("ORDER_COMPLETED", { items: items.map(...) })` — sends voided items to cloud sync.
+- `buildReceiptFromOrder({ ..., items })` — renders voided items on the printed receipt/bill.
+
+This means the customer's bill and the cloud record include items that were voided before checkout.
 
 ### Expected Behavior (Correct)
 
-2.1 WHEN an item is removed from an order whose KOT has already been fired AND a new KOT is generated for the updated order THEN the system SHALL emit a cancellation or update event for the original KOT to the KDS so the original KOT card is removed or updated and only the revised KOT is displayed
+**Fix 1 — KDS Duplication**
 
-2.2 WHEN an item is removed from an order whose KOT has already been fired AND the KDS reconnects or hydrates from the server THEN the system SHALL return only KOTs that reflect the current state of the order, ensuring voided items are not shown as active KOT items on the KDS
+When `generateKOT` is called with explicit `itemIds`, items that already have a `kotId` must be excluded, identical to the no-`itemIds` path:
 
-2.3 WHEN an item is removed from an order after a KOT has been fired AND checkout is initiated THEN the system SHALL generate the bill using only active (non-voided) order items, excluding any items with status VOIDED from the invoice totals and line items
+```typescript
+// Fixed
+const itemsToSend = itemIds
+  ? allItems.filter((item) => itemIds.includes(item.id) && !item.kotId)
+  : allItems.filter((item) => !item.kotId);
+```
+
+- If all specified items are already fired, the existing `"No items to send to kitchen"` error is thrown.
+- If a mix of fired and un-fired items is specified, only the un-fired ones are included in the new KOT.
+- The `voidItem` → `generateModificationKOT` → `emitKOTModification` flow already correctly notifies the kitchen of removed items; no additional kitchen notification is needed.
+
+**Fix 2 — Stale Bill**
+
+Replace `items` with `activeItems` in both the sync event and the receipt builder calls inside `processCheckout`:
+
+```typescript
+// Fixed
+queueSyncEvent("ORDER_COMPLETED", {
+  items: activeItems.map(...)   // was: items.map(...)
+})
+
+buildReceiptFromOrder({ ..., items: activeItems })   // was: items
+```
+
+The `activeItems` variable is already correctly defined in the function — only the two downstream usages need to be corrected.
 
 ### Unchanged Behavior (Regression Prevention)
 
-3.1 WHEN a new order item is added and a KOT is fired for the first time THEN the system SHALL CONTINUE TO display the new KOT correctly on the KDS with all ordered items
+The following behaviors must not change as a result of this fix:
 
-3.2 WHEN a KOT is refired for genuinely new items added to an existing order (no removals involved) THEN the system SHALL CONTINUE TO display both the original KOT and the new KOT on the KDS as separate cards
+1. **Normal KOT generation** — `generateKOT(orderId)` with no `itemIds` sends only un-fired items (`kotId IS NULL`). Already correct; must remain unchanged.
+2. **Explicit KOT with all-new items** — `generateKOT(orderId, itemIds)` where all `itemIds` have `kotId IS NULL` must include all specified items without false exclusions.
+3. **Reprint** — `reprintKOT(kotId)` re-emits the existing KOT with `isReprint: true`. KDS deduplication by `kotId` prevents duplicates. Unchanged.
+4. **Cancellation KOT** — `cancelKOT` marks items VOIDED and emits `kot:cancelled`. KDS removes the card. Unchanged.
+5. **Modification KOT** — `voidItem` → `generateModificationKOT` notifies the kitchen of per-item changes. Unchanged.
+6. **Checkout totals** — Totals are already computed from `activeItems`. The fix does not touch the calculation logic.
+7. **Invoice record** — The `schema.invoices` insert uses `totals` from `activeItems`. Unchanged.
+8. **`getInvoice` function** — Already filters voided items when returning invoice data. Unchanged.
 
-3.3 WHEN a KOT item has its quantity reduced via void but is not fully removed THEN the system SHALL CONTINUE TO send a modification KOT to the KDS reflecting the reduced quantity
+---
 
-3.4 WHEN checkout is processed for an order where no items were voided THEN the system SHALL CONTINUE TO calculate and generate the bill correctly using all order items
+## Acceptance Criteria
 
-3.5 WHEN a KOT is cancelled via the explicit cancel flow (with manager approval and reason) THEN the system SHALL CONTINUE TO emit the kot:cancelled event and remove the KOT from the KDS display
+### 1. KDS Duplication — Bug Condition
+
+- **1.1** When `generateKOT` is called with explicit `itemIds` that includes an item already having a `kotId`, those already-fired items are silently excluded from the new KOT.
+- **1.2** When all items in `itemIds` already have a `kotId`, `generateKOT` throws `"No items to send to kitchen"`.
+- **1.3** When `generateKOT` is called with explicit `itemIds` containing a mix of fired and un-fired items, only the un-fired items are included in the new KOT.
+
+### 2. KDS Duplication — Preservation
+
+- **2.1** When `generateKOT` is called with no `itemIds`, only items with `kotId IS NULL` are included (existing behavior preserved).
+- **2.2** When `generateKOT` is called with explicit `itemIds` where all items have `kotId IS NULL`, all specified items are included in the KOT.
+
+### 3. Stale Bill — Bug Condition
+
+- **3.1** After `processCheckout`, the `queueSyncEvent("ORDER_COMPLETED")` payload's `items` array must not contain any item with `status = "VOIDED"`.
+- **3.2** After `processCheckout`, the data passed to `buildReceiptFromOrder` must not contain any item with `status = "VOIDED"`.
+
+### 4. Stale Bill — Preservation
+
+- **4.1** Totals (`subtotal`, `taxAmount`, `grandTotal`) are still calculated from `activeItems` — no change to the calculation logic.
+- **4.2** The invoice record inserted into `schema.invoices` uses `totals` computed from `activeItems` — unchanged.
+- **4.3** The `getInvoice` function already filters voided items — this remains unchanged.

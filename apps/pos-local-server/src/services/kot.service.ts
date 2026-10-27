@@ -52,7 +52,7 @@ export function generateKOT(
 
   // Filter to only items without a kotId (not yet sent), or specific itemIds
   const itemsToSend = itemIds
-    ? allItems.filter((item) => itemIds.includes(item.id))
+    ? allItems.filter((item) => itemIds.includes(item.id) && !item.kotId)
     : allItems.filter((item) => !item.kotId);
 
   if (itemsToSend.length === 0) {

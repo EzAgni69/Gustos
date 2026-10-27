@@ -9,7 +9,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import {
   createDiningTableSchema,
   updateDiningTableSchema,
@@ -52,7 +52,24 @@ export async function tableRoutes(fastify: FastifyInstance) {
       orderBy: (t, { asc }) => [asc(t.sortOrder), asc(t.name)],
     });
 
-    return reply.send(success(tables));
+    // Check if any table currently has an active order in the cloud DB
+    const activeOrders = await db.query.orders.findMany({
+      where: and(
+        eq(cloudSchema.orders.outletId, query.outletId),
+        inArray(cloudSchema.orders.status, ["DRAFT", "PLACED", "IN_PROGRESS", "READY", "SERVED"])
+      ),
+    });
+
+    const occupiedTableIds = new Set(
+      activeOrders.map((o) => o.tableId).filter(Boolean) as string[]
+    );
+
+    const enrichedTables = tables.map((t) => ({
+      ...t,
+      status: occupiedTableIds.has(t.id) ? "OCCUPIED" : t.status,
+    }));
+
+    return reply.send(success(enrichedTables));
   });
 
   // ─── Create Table ───

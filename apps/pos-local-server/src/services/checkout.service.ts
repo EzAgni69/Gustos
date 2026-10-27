@@ -178,11 +178,15 @@ export function processCheckout(
     .run();
 
   // Release table if dine-in
+  let checkoutTableName: string | undefined = undefined;
   if (order.tableId) {
     db.update(schema.diningTables)
       .set({ status: "AVAILABLE", currentOrderId: null })
       .where(eq(schema.diningTables.id, order.tableId))
       .run();
+
+    const tableObj = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, order.tableId)).get();
+    checkoutTableName = tableObj?.name;
 
     // Cancel any stale, abandoned, or lingering orders on this table so table status doesn't revert to OCCUPIED
     db.update(schema.orders)
@@ -198,7 +202,16 @@ export function processCheckout(
 
     emitTableStatusChanged({
       tableId: order.tableId,
+      tableName: checkoutTableName,
       status: "AVAILABLE",
+    });
+
+    queueSyncEvent("TABLE_STATUS_CHANGED", {
+      tableId: order.tableId,
+      tableName: checkoutTableName,
+      status: "AVAILABLE",
+      outletId: order.outletId,
+      organizationId: order.organizationId,
     });
   }
 
@@ -228,6 +241,8 @@ export function processCheckout(
     orderId,
     orderNumber: order.orderNumber,
     orderMode: order.orderMode,
+    tableId: order.tableId,
+    tableName: checkoutTableName,
     outletId: order.outletId,
     organizationId: order.organizationId,
     invoiceNumber,
@@ -241,7 +256,7 @@ export function processCheckout(
     discountAmount: totals.discountAmount,
     taxAmount: totals.totalTax,
     totalAmount: totals.grandTotal,
-    items: items.map((i) => ({
+    items: activeItems.map((i) => ({
       menuItemId: i.menuItemId,
       menuItemName: i.menuItemName,
       quantity: i.quantity,
@@ -280,7 +295,7 @@ export function processCheckout(
 
   const receiptData = buildReceiptFromOrder({
     order,
-    items,
+    items: activeItems,
     invoice: {
       invoiceNumber,
       subtotal: totals.subtotal,

@@ -198,17 +198,32 @@ export function createOrder(input: CreateOrderInput, userId?: string) {
     .run();
 
   // Update table status if dine-in
+  let tableName: string | undefined = undefined;
   if (input.orderMode === "DINE_IN" && input.tableId) {
     db.update(schema.diningTables)
       .set({ status: "OCCUPIED", currentOrderId: id })
       .where(eq(schema.diningTables.id, input.tableId))
       .run();
 
+    const tableObj = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, input.tableId)).get();
+    tableName = tableObj?.name;
+
     emitTableStatusChanged({
       tableId: input.tableId,
+      tableName,
       status: "OCCUPIED",
       orderId: id,
       orderNumber,
+    });
+
+    queueSyncEvent("TABLE_STATUS_CHANGED", {
+      tableId: input.tableId,
+      tableName,
+      status: "OCCUPIED",
+      orderId: id,
+      orderNumber,
+      outletId: OUTLET_ID,
+      organizationId: ORGANIZATION_ID,
     });
   }
 
@@ -219,6 +234,7 @@ export function createOrder(input: CreateOrderInput, userId?: string) {
     orderNumber,
     orderMode: input.orderMode,
     tableId: input.tableId,
+    tableName,
     outletId: OUTLET_ID,
     organizationId: ORGANIZATION_ID,
   });
@@ -711,9 +727,20 @@ export function cancelOrder(orderId: string, userId?: string) {
       .where(eq(schema.diningTables.id, order.tableId))
       .run();
 
+    const tableObj = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, order.tableId)).get();
+
     emitTableStatusChanged({
       tableId: order.tableId,
+      tableName: tableObj?.name,
       status: "AVAILABLE",
+    });
+
+    queueSyncEvent("TABLE_STATUS_CHANGED", {
+      tableId: order.tableId,
+      tableName: tableObj?.name,
+      status: "AVAILABLE",
+      organizationId: order.organizationId,
+      outletId: order.outletId,
     });
   }
 

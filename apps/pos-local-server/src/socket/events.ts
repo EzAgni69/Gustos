@@ -97,7 +97,11 @@ export function emitTableStatusChanged(tableData: Record<string, unknown>): void
   io?.emit("table:status-changed", tableData);
   if (typeof tableData.tableId === "string" && typeof tableData.status === "string") {
     import("../services/realtime-uplink.service.js").then(({ notifyCloudTableStatus }) => {
-      notifyCloudTableStatus(tableData.tableId as string, tableData.status as string);
+      notifyCloudTableStatus(
+        tableData.tableId as string,
+        tableData.status as string,
+        typeof tableData.tableName === "string" ? tableData.tableName : undefined
+      );
     }).catch(() => {});
   }
 }

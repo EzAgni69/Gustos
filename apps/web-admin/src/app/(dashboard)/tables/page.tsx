@@ -212,10 +212,40 @@ export default function TablesPage() {
   }, []);
 
   useRealtimeEvent("TABLE_STATUS_CHANGED", (data) => {
-    const { tableId, status } = data.payload || {};
-    if (tableId && status) {
+    const { tableId, tableName, status } = data.payload || {};
+    if (status && (tableId || tableName)) {
       setTables((prev) =>
-        prev.map((t) => (t.id === tableId ? { ...t, status: status as TableStatus } : t))
+        prev.map((t) =>
+          (tableId && t.id === tableId) || (tableName && t.name === tableName)
+            ? { ...t, status: status as TableStatus }
+            : t
+        )
+      );
+    }
+  });
+
+  useRealtimeEvent("ORDER_CREATED", (data) => {
+    const { tableId, tableName } = data.payload || {};
+    if (tableId || tableName) {
+      setTables((prev) =>
+        prev.map((t) =>
+          (tableId && t.id === tableId) || (tableName && t.name === tableName)
+            ? { ...t, status: "OCCUPIED" as TableStatus }
+            : t
+        )
+      );
+    }
+  });
+
+  useRealtimeEvent(["ORDER_COMPLETED", "ORDER_CANCELLED"], (data) => {
+    const { tableId, tableName } = data.payload || {};
+    if (tableId || tableName) {
+      setTables((prev) =>
+        prev.map((t) =>
+          (tableId && t.id === tableId) || (tableName && t.name === tableName)
+            ? { ...t, status: "AVAILABLE" as TableStatus }
+            : t
+        )
       );
     }
   });

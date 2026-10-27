@@ -162,6 +162,8 @@ const syncWorker = new Worker(
         orderId,
         orderNumber,
         orderMode,
+        tableId,
+        tableName,
         outletId,
         organizationId,
         invoiceNumber,
@@ -254,6 +256,52 @@ const syncWorker = new Worker(
           outletId: finalOutletId,
           payload: { orderId, orderNumber, status: "COMPLETED" },
         })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+
+        // 3.6 Release dining table if dine-in
+        try {
+          let tableToRelease = null;
+          if (tableId) {
+            tableToRelease = await db.query.diningTables.findFirst({
+              where: eq(schema.diningTables.id, tableId),
+            });
+          }
+          if (!tableToRelease && tableName) {
+            tableToRelease = await db.query.diningTables.findFirst({
+              where: and(
+                eq(schema.diningTables.outletId, finalOutletId),
+                eq(schema.diningTables.name, tableName)
+              ),
+            });
+          }
+          if (!tableToRelease && orderId) {
+            const cloudOrder = await db.query.orders.findFirst({
+              where: eq(schema.orders.id, orderId),
+            });
+            if (cloudOrder?.tableId) {
+              tableToRelease = await db.query.diningTables.findFirst({
+                where: eq(schema.diningTables.id, cloudOrder.tableId),
+              });
+            }
+          }
+
+          if (tableToRelease) {
+            await db
+              .update(schema.diningTables)
+              .set({ status: "AVAILABLE" })
+              .where(eq(schema.diningTables.id, tableToRelease.id));
+
+            console.log(`[Sync] 🪑 Released dining table ${tableToRelease.name} (${tableToRelease.id}) to AVAILABLE in Cloud ERP`);
+
+            pubClient.publish("sync-events", JSON.stringify({
+              eventType: "TABLE_STATUS_CHANGED",
+              organizationId: finalOrgId,
+              outletId: finalOutletId,
+              payload: { tableId: tableToRelease.id, tableName: tableToRelease.name, status: "AVAILABLE" },
+            })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+          }
+        } catch (tableErr) {
+          console.warn("[Sync] Could not release table for completed order:", tableErr);
+        }
 
         // 4. Auto-enqueue inventory deduction job
         if (items && items.length > 0) {
@@ -358,6 +406,7 @@ const syncWorker = new Worker(
         orderNumber,
         orderMode,
         tableId,
+        tableName,
         outletId,
         organizationId,
       } = payload;
@@ -366,17 +415,22 @@ const syncWorker = new Worker(
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
 
       try {
-        let validTableId = null;
+        let validTable = null;
         if (tableId) {
-          const tableExists = await db
-            .select({ id: schema.diningTables.id })
-            .from(schema.diningTables)
-            .where(eq(schema.diningTables.id, tableId))
-            .limit(1);
-          if (tableExists.length > 0) {
-            validTableId = tableId;
-          }
+          validTable = await db.query.diningTables.findFirst({
+            where: eq(schema.diningTables.id, tableId),
+          });
         }
+        if (!validTable && tableName) {
+          validTable = await db.query.diningTables.findFirst({
+            where: and(
+              eq(schema.diningTables.outletId, finalOutletId),
+              eq(schema.diningTables.name, tableName)
+            ),
+          });
+        }
+
+        const validTableId = validTable?.id || null;
 
         await db
           .insert(schema.orders)
@@ -404,13 +458,30 @@ const syncWorker = new Worker(
             },
           });
 
-        console.log(`[Sync] ✅ Successfully synced ORDER_CREATED: ${orderNumber}`);
+        console.log(`[Sync] ✅ Successfully synced ORDER_CREATED: ${orderNumber} (table: ${validTable?.name || validTableId || "none"})`);
+
+        // If dine-in order with table, mark table as OCCUPIED in Cloud ERP
+        if (validTable && (orderMode === "DINE_IN" || !orderMode)) {
+          await db
+            .update(schema.diningTables)
+            .set({ status: "OCCUPIED" })
+            .where(eq(schema.diningTables.id, validTable.id));
+
+          console.log(`[Sync] 🪑 Marked dining table ${validTable.name} (${validTable.id}) as OCCUPIED in Cloud ERP`);
+
+          pubClient.publish("sync-events", JSON.stringify({
+            eventType: "TABLE_STATUS_CHANGED",
+            organizationId: finalOrgId,
+            outletId: finalOutletId,
+            payload: { tableId: validTable.id, tableName: validTable.name, status: "OCCUPIED" },
+          })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+        }
 
         pubClient.publish("sync-events", JSON.stringify({
           eventType: "ORDER_CREATED",
           organizationId: finalOrgId,
           outletId: finalOutletId,
-          payload: { orderId, orderNumber, status: "PLACED" },
+          payload: { orderId, orderNumber, tableId: validTableId, status: "PLACED" },
         })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
       } catch (err) {
         console.error(`[Sync] ❌ Failed to sync ORDER_CREATED ${orderNumber}:`, err);
@@ -421,12 +492,33 @@ const syncWorker = new Worker(
       const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
+        const cloudOrder = await db.query.orders.findFirst({
+          where: eq(schema.orders.id, orderId),
+        });
+
         await db
           .update(schema.orders)
           .set({ status: "CANCELLED", updatedAt: new Date() })
           .where(eq(schema.orders.id, orderId));
 
         console.log(`[Sync] ✅ Successfully synced ORDER_CANCELLED: ${orderNumber}`);
+
+        // Release table if order was attached to one
+        if (cloudOrder?.tableId) {
+          await db
+            .update(schema.diningTables)
+            .set({ status: "AVAILABLE" })
+            .where(eq(schema.diningTables.id, cloudOrder.tableId));
+
+          console.log(`[Sync] 🪑 Released dining table ${cloudOrder.tableId} to AVAILABLE on cancellation`);
+
+          pubClient.publish("sync-events", JSON.stringify({
+            eventType: "TABLE_STATUS_CHANGED",
+            organizationId: finalOrgId,
+            outletId: finalOutletId,
+            payload: { tableId: cloudOrder.tableId, status: "AVAILABLE" },
+          })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+        }
 
         pubClient.publish("sync-events", JSON.stringify({
           eventType: "ORDER_CANCELLED",
@@ -439,22 +531,37 @@ const syncWorker = new Worker(
         throw err;
       }
     } else if (eventType === "TABLE_STATUS_CHANGED") {
-      const { tableId, status, organizationId, outletId } = payload;
+      const { tableId, tableName, status, organizationId, outletId } = payload;
       const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
-        if (tableId && status) {
+        let targetTable = null;
+        if (tableId) {
+          targetTable = await db.query.diningTables.findFirst({
+            where: eq(schema.diningTables.id, tableId),
+          });
+        }
+        if (!targetTable && tableName) {
+          targetTable = await db.query.diningTables.findFirst({
+            where: and(
+              eq(schema.diningTables.outletId, finalOutletId),
+              eq(schema.diningTables.name, tableName)
+            ),
+          });
+        }
+
+        if (targetTable && status) {
           await db
             .update(schema.diningTables)
             .set({ status: status as any })
-            .where(eq(schema.diningTables.id, tableId));
-          console.log(`[Sync] 🪑 Updated dining table ${tableId} status to ${status}`);
+            .where(eq(schema.diningTables.id, targetTable.id));
+          console.log(`[Sync] 🪑 Updated dining table ${targetTable.name} (${targetTable.id}) status to ${status}`);
 
           pubClient.publish("sync-events", JSON.stringify({
             eventType: "TABLE_STATUS_CHANGED",
             organizationId: finalOrgId,
             outletId: finalOutletId,
-            payload: { tableId, status },
+            payload: { tableId: targetTable.id, tableName: targetTable.name, status },
           })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
         }
       } catch (err) {

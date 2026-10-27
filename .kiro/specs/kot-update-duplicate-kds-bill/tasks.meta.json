@@ -1,0 +1,123 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "Test 1 — Bug Condition 1.2 (all items already fired):\n  generateKOT(orderId, [alreadyFiredItemId]) did NOT throw.\n  Instead it created a new KOT \"KOT-0001\" containing the already-fired item\n  (\"1x Margherita Pizza\"), confirming the duplication bug.\n  Error: \"expected [Function] to throw an error\"\n\nTest 2 — Bug Condition 1.1 (mixed fired/unfired items):\n  The emitted kot:new payload contained 2 items instead of 1.\n  KOT print log shows \"1x Margherita Pizza / 1x Margherita Pizza\" (both fired + new items included).\n  Error: \"expected [ …(2) ] to have a length of 1 but got 2\"\n\nBaseline test 3 passed — the no-itemIds path already correctly excludes fired items.",
+      "lastRunTimestamp": 1793085922798
+    },
+    "2. Write preservation property tests (BEFORE implementing fix)": {
+      "status": "passed",
+      "lastRunTimestamp": 1793086459739
+    },
+    "3.3 Verify bug condition exploration test now passes": {
+      "status": "passed",
+      "lastRunTimestamp": 1793086627615
+    }
+  },
+  "executionHistory": {
+    "1. Write bug condition exploration test": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549356
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085561026
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085938959
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549391
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085944454
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086477365
+      }
+    ],
+    "3.1 Fix `generateKOT` to exclude already-fired items even when `itemIds` is explicit": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549429
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086491813
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086533384
+      }
+    ],
+    "3.2 Fix `processCheckout` to use `activeItems` for sync event and receipt builder": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549455
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086538961
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086589125
+      }
+    ],
+    "3.3 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549477
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086599419
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086640388
+      }
+    ],
+    "3.4 Verify preservation tests still pass": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549519
+      },
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793086646407
+      }
+    ],
+    "4. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "e5a8ddcb-8d96-47e3-879d-24091f26dd79",
+        "chatSessionId": "sess_d0975bd7-bf23-4559-a545-74b76a540cd2",
+        "timestamp": 1793085549543
+      }
+    ]
+  }
+}

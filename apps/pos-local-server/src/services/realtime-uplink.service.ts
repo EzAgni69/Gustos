@@ -124,13 +124,13 @@ export async function flushOutbox() {
 /**
  * Notify Cloud ERP of local table status changes (e.g. OCCUPIED, AVAILABLE)
  */
-export function notifyCloudTableStatus(tableId: string, status: string): void {
+export function notifyCloudTableStatus(tableId: string, status: string, tableName?: string): void {
   if (socket?.connected) {
     socket.emit("sync:push_realtime", {
       eventType: "TABLE_STATUS_CHANGED",
       organizationId: ORGANIZATION_ID,
       outletId: OUTLET_ID,
-      payload: { tableId, status },
+      payload: { tableId, tableName, status },
     });
   }
 }

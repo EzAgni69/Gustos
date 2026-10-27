@@ -289,14 +289,31 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
           .where(eq(schema.diningTables.outletId, OUTLET_ID))
           .all();
 
+        // Map matching cloud tables by name to handle migrating local dummy table IDs to authoritative cloud UUIDs
+        const cloudTablesByName = new Map<string, any>(data.diningTables.map((t: any) => [t.name, t]));
+
         // Prune local tables that no longer exist in cloud
         for (const locTable of localTables) {
           if (!cloudTableIds.has(locTable.id)) {
-            // Nullify any orders referencing this pruned table
-            tx.update(schema.orders)
-              .set({ tableId: null })
-              .where(eq(schema.orders.tableId, locTable.id))
-              .run();
+            const matchingCloudTable = cloudTablesByName.get(locTable.name);
+            if (matchingCloudTable) {
+              // Migrate existing local orders from old local table ID to new authoritative Cloud table ID
+              tx.update(schema.orders)
+                .set({ tableId: matchingCloudTable.id })
+                .where(eq(schema.orders.tableId, locTable.id))
+                .run();
+
+              // Preserve local table state for the cloud table
+              matchingCloudTable.preservedStatus = locTable.status;
+              matchingCloudTable.preservedCurrentOrderId = locTable.currentOrderId;
+              console.log(`[CloudSync] 🔄 Migrated local table "${locTable.name}" from ${locTable.id} -> ${matchingCloudTable.id}`);
+            } else {
+              // Nullify any orders referencing this pruned table
+              tx.update(schema.orders)
+                .set({ tableId: null })
+                .where(eq(schema.orders.tableId, locTable.id))
+                .run();
+            }
 
             tx.delete(schema.diningTables)
               .where(eq(schema.diningTables.id, locTable.id))
@@ -310,6 +327,9 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
         for (const table of data.diningTables) {
           const existing = tx.select().from(schema.diningTables)
             .where(eq(schema.diningTables.id, table.id)).get();
+
+          const initialStatus = table.preservedStatus || table.status || "AVAILABLE";
+          const initialOrderId = table.preservedCurrentOrderId || null;
 
           if (existing) {
             // Respect active local order if currently occupied locally
@@ -331,7 +351,8 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
                 outletId: table.outletId,
                 name: table.name,
                 capacity: table.capacity,
-                status: table.status || "AVAILABLE",
+                status: initialStatus,
+                currentOrderId: initialOrderId,
                 section: table.section,
                 sortOrder: table.sortOrder,
               })
