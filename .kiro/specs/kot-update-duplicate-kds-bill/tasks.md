@@ -38,7 +38,7 @@ Fix two independent bugs triggered when a KOT item is removed (voided) and the o
   - Mark task complete when tests are written, run, and passing on unfixed code
   - _Requirements: 2.1, 2.2, 4.1, 4.2_
 
-- [ ] 3. Fix KOT duplication and stale bill bugs
+- [x] 3. Fix KOT duplication and stale bill bugs
 
   - [x] 3.1 Fix `generateKOT` to exclude already-fired items even when `itemIds` is explicit
     - Open `apps/pos-local-server/src/services/kot.service.ts`
@@ -82,14 +82,14 @@ Fix two independent bugs triggered when a KOT item is removed (voided) and the o
     - **EXPECTED OUTCOME**: Test PASSES — confirms the KDS duplication bug is fixed
     - _Requirements: 1.1, 1.2, 1.3_
 
-  - [-] 3.4 Verify preservation tests still pass
+  - [x] 3.4 Verify preservation tests still pass
     - **Property 2: Preservation** - Normal KOT Generation With Unfired Items
     - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
     - Run preservation property tests from step 2
     - **EXPECTED OUTCOME**: Tests PASS — confirms no regressions in normal KOT generation
     - Confirm all tests still pass after fix (no regressions)
 
-- [~] 4. Checkpoint - Ensure all tests pass
+- [x] 4. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
