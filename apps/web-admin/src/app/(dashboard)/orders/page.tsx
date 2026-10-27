@@ -63,6 +63,7 @@ import {
 } from "lucide-react";
 import type { Order, OrderStatus, Outlet } from "@gusto/api-contracts";
 import { apiFetch, getApiBaseUrl } from "@/lib/api-client";
+import { useRealtimeEvent } from "@/lib/socket-context";
 
 // ─── Status Config ───
 
@@ -246,6 +247,23 @@ export default function OrdersPage() {
       loadOrders(currentOutletId);
     }
   }, [page, currentOutletId]);
+
+  useRealtimeEvent(
+    [
+      "ORDER_COMPLETED",
+      "ORDER_CREATED",
+      "ORDER_CANCELLED",
+      "ORDERS_MERGED",
+      "ORDER_MODE_CHANGED",
+      "ORDER_COMPLIMENTARY",
+      "ITEM_VOIDED",
+    ],
+    () => {
+      if (currentOutletId) {
+        loadOrders(currentOutletId);
+      }
+    }
+  );
 
   // ─── Filter Handlers ───
   const applyFilters = () => {

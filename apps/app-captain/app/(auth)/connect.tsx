@@ -7,7 +7,14 @@ import { useAuthStore } from "../../src/stores/auth.store";
 import { colors, fontSize, radius, spacing, fontWeight } from "../../src/config/theme";
 
 export default function ConnectScreen() {
-  const [ip, setIp] = useState(process.env.EXPO_PUBLIC_API_URL?.replace(/^https?:\/\//, '').replace(/\/api\/?$/, '') || "");
+  const [ip, setIp] = useState(() => {
+    const envUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/^https?:\/\//, '').replace(/\/api\/?$/, '') || "";
+    // On physical mobile devices, localhost is unreachable — prefer leaving blank for subnet suggestion
+    if (Platform.OS !== "web" && (envUrl === "localhost:8080" || envUrl === "localhost" || envUrl === "127.0.0.1:8080")) {
+      return "";
+    }
+    return envUrl;
+  });
   const [error, setError] = useState<string | null>(null);
   const [deviceIp, setDeviceIp] = useState<string | null>(null);
   const [recentIps, setRecentIps] = useState<string[]>([]);
@@ -22,7 +29,11 @@ export default function ConnectScreen() {
         
         const stored = await AsyncStorage.getItem('recent_server_ips');
         if (stored) {
-          setRecentIps(JSON.parse(stored));
+          const parsed = JSON.parse(stored);
+          setRecentIps(parsed);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setIp((prev: string) => (!prev || prev === "localhost:8080" || prev === "localhost" ? parsed[0] : prev));
+          }
         }
       } catch (err) {
         console.warn("Could not fetch device IP or recent IPs", err);

@@ -5,7 +5,7 @@
  * and periodically pushed to the cloud API gateway.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and, inArray, lt } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
@@ -40,7 +40,12 @@ export function getUnsyncedEvents(limit: number = 50) {
   return db
     .select()
     .from(schema.syncOutbox)
-    .where(eq(schema.syncOutbox.status, "PENDING"))
+    .where(
+      and(
+        inArray(schema.syncOutbox.status, ["PENDING", "FAILED"]),
+        lt(schema.syncOutbox.retryCount, 10)
+      )
+    )
     .orderBy(schema.syncOutbox.createdAt)
     .limit(limit)
     .all();
@@ -101,9 +106,24 @@ export async function pushToCloud(): Promise<number> {
 
   for (const event of events) {
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      const apiKey = process.env.POS_API_KEY;
+      if (apiKey) {
+        headers["X-POS-API-Key"] = apiKey;
+      }
+      if (process.env.ORGANIZATION_ID) {
+        headers["x-organization-id"] = process.env.ORGANIZATION_ID;
+      }
+      if (process.env.OUTLET_ID) {
+        headers["x-outlet-id"] = process.env.OUTLET_ID;
+      }
+
       const response = await fetch(`${apiUrl}/api/v1/sync/push`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           events: [
             {

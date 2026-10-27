@@ -29,6 +29,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { useRealtimeEvent } from "@/lib/socket-context";
 import type { Organization, Outlet, User, Order } from "@gusto/api-contracts";
 
 interface LowStockItem {
@@ -103,6 +104,20 @@ export default function DashboardOverviewPage() {
   useEffect(() => {
     loadDashboardData();
   }, []);
+
+  useRealtimeEvent(
+    [
+      "ORDER_COMPLETED",
+      "ORDER_CREATED",
+      "ORDER_CANCELLED",
+      "ORDERS_MERGED",
+      "ORDER_MODE_CHANGED",
+      "ORDER_COMPLIMENTARY",
+    ],
+    () => {
+      loadDashboardData();
+    }
+  );
 
   // ─── Revenue Chart Data (real data: last 7 days) ───
   const revenueData = useMemo(() => {

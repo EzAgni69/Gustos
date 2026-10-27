@@ -231,6 +231,19 @@ httpServer.listen(PORT as number, "0.0.0.0", () => {
 
   // Initialize real-time cloud ERP uplink
   initRealtimeUplink();
+
+  // Periodic sync outbox retry — ensures FAILED events are retried even if socket is down
+  setInterval(async () => {
+    try {
+      const { pushToCloud } = await import("./services/sync.service.js");
+      const synced = await pushToCloud();
+      if (synced > 0) {
+        console.log(`[Sync Cron] ✅ Retried and synced ${synced} pending outbox event(s) to cloud`);
+      }
+    } catch (err) {
+      // Silent — cloud may be unreachable
+    }
+  }, 120_000); // Every 2 minutes
 });
 
 export { app, io, httpServer };

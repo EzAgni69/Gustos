@@ -718,7 +718,12 @@ export function cancelOrder(orderId: string, userId?: string) {
   }
 
   logEvent(orderId, "ORDER_CANCELLED", {}, userId);
-  queueSyncEvent("ORDER_CANCELLED", { orderId, orderNumber: order.orderNumber });
+  queueSyncEvent("ORDER_CANCELLED", {
+    orderId,
+    orderNumber: order.orderNumber,
+    organizationId: order.organizationId,
+    outletId: order.outletId,
+  });
 
   return getOrderById(orderId);
 }
@@ -879,6 +884,10 @@ export function voidItem(
     itemId,
     reason,
     approvedBy,
+    voidQuantity: qtyToVoid,
+    remainingQuantity: remainingQty,
+    organizationId: order.organizationId,
+    outletId: order.outletId,
   });
 
   const updated = getOrderById(orderId);
@@ -970,6 +979,10 @@ export function mergeOrders(
   queueSyncEvent("ORDERS_MERGED", {
     sourceOrderId,
     targetOrderId,
+    sourceOrderNumber: sourceOrder.orderNumber,
+    targetOrderNumber: targetOrder.orderNumber,
+    organizationId: targetOrder.organizationId,
+    outletId: targetOrder.outletId,
   });
 
   const updated = getOrderById(targetOrderId);
@@ -1203,7 +1216,14 @@ export function changeOrderMode(
     tableId: assignedTableId,
   });
 
-  queueSyncEvent("ORDER_MODE_CHANGED", { orderId, oldMode, newMode });
+  queueSyncEvent("ORDER_MODE_CHANGED", {
+    orderId,
+    orderNumber: order.orderNumber,
+    oldMode,
+    newMode,
+    organizationId: order.organizationId,
+    outletId: order.outletId,
+  });
 
   return getOrderById(orderId);
 }
@@ -1338,6 +1358,8 @@ export function markAsComplimentary(
     orderNumber: order.orderNumber,
     reason,
     approvedBy,
+    organizationId: order.organizationId,
+    outletId: order.outletId,
   });
 
   const updated = getOrderById(orderId);

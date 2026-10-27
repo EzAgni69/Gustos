@@ -53,6 +53,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { useRealtimeEvent } from "@/lib/socket-context";
 
 // ─── Status Config ───
 
@@ -209,6 +210,15 @@ export default function TablesPage() {
 
     return () => clearInterval(interval);
   }, []);
+
+  useRealtimeEvent("TABLE_STATUS_CHANGED", (data) => {
+    const { tableId, status } = data.payload || {};
+    if (tableId && status) {
+      setTables((prev) =>
+        prev.map((t) => (t.id === tableId ? { ...t, status: status as TableStatus } : t))
+      );
+    }
+  });
 
   const openCreateTableModal = () => {
     setEditingTable(null);

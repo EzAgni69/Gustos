@@ -29,6 +29,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiFetch } from "@/lib/api-client";
 import { PageErrorBoundary } from "@/components/shared/PageErrorBoundary";
+import { SocketProvider } from "@/lib/socket-context";
+import { UplinkIndicator } from "@/components/shared/UplinkIndicator";
 
 const sidebarNavItems = [
   {
@@ -190,98 +192,102 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Desktop Sidebar */}
-      <aside className="w-64 bg-white border-r border-gray-200 hidden md:flex flex-col fixed inset-y-0 z-10">
-        <SidebarContent />
-      </aside>
+    <SocketProvider>
+      <div className="min-h-screen bg-gray-50 flex">
+        {/* Desktop Sidebar */}
+        <aside className="w-64 bg-white border-r border-gray-200 hidden md:flex flex-col fixed inset-y-0 z-10">
+          <SidebarContent />
+        </aside>
 
-      {/* Mobile Sidebar Overlay */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-in fade-in-0 duration-200"
-            onClick={() => setMobileMenuOpen(false)}
-          />
-          {/* Drawer */}
-          <aside className="absolute inset-y-0 left-0 w-72 bg-white flex flex-col shadow-2xl animate-in slide-in-from-left-5 duration-300">
-            <div className="absolute top-4 right-4">
+        {/* Mobile Sidebar Overlay */}
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 md:hidden">
+            {/* Backdrop */}
+            <div
+              className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-in fade-in-0 duration-200"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+            {/* Drawer */}
+            <aside className="absolute inset-y-0 left-0 w-72 bg-white flex flex-col shadow-2xl animate-in slide-in-from-left-5 duration-300">
+              <div className="absolute top-4 right-4">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+              <SidebarContent />
+            </aside>
+          </div>
+        )}
+
+        {/* Main Content */}
+        <main className="flex-1 md:pl-64 flex flex-col min-h-screen">
+          {/* Topbar */}
+          <header className="h-16 bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-20 flex items-center justify-between px-4 sm:px-6">
+            <div className="flex items-center gap-4">
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setMobileMenuOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="md:hidden"
+                onClick={() => setMobileMenuOpen(true)}
               >
-                <X className="w-5 h-5" />
+                <Menu className="w-5 h-5" />
               </Button>
-            </div>
-            <SidebarContent />
-          </aside>
-        </div>
-      )}
-
-      {/* Main Content */}
-      <main className="flex-1 md:pl-64 flex flex-col min-h-screen">
-        {/* Topbar */}
-        <header className="h-16 bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-20 flex items-center justify-between px-4 sm:px-6">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="md:hidden"
-              onClick={() => setMobileMenuOpen(true)}
-            >
-              <Menu className="w-5 h-5" />
-            </Button>
-            
-            <Link href="/" className="flex md:hidden items-center gap-2 font-bold text-base text-gray-900 tracking-tight">
-              <img src="/logo.png" alt="Gusto's" className="h-7 object-contain" />
-              <span>Gusto's ERP</span>
-            </Link>
-            
-            {/* Breadcrumb */}
-            <div className="hidden sm:flex items-center gap-1.5 text-sm">
-              <Link href="/" className="text-gray-400 hover:text-gray-600 transition-colors">
-                Dashboard
+              
+              <Link href="/" className="flex md:hidden items-center gap-2 font-bold text-base text-gray-900 tracking-tight">
+                <img src="/logo.png" alt="Gusto's" className="h-7 object-contain" />
+                <span>Gusto's ERP</span>
               </Link>
-              {currentPage && currentPage.href !== "/" && (
-                <>
-                  <ChevronRight className="w-3 h-3 text-gray-300" />
-                  <span className="font-medium text-gray-700">{currentPage.title}</span>
-                </>
-              )}
-            </div>
+              
+              {/* Breadcrumb */}
+              <div className="hidden sm:flex items-center gap-1.5 text-sm">
+                <Link href="/" className="text-gray-400 hover:text-gray-600 transition-colors">
+                  Dashboard
+                </Link>
+                {currentPage && currentPage.href !== "/" && (
+                  <>
+                    <ChevronRight className="w-3 h-3 text-gray-300" />
+                    <span className="font-medium text-gray-700">{currentPage.title}</span>
+                  </>
+                )}
+              </div>
 
-            <div className="relative hidden lg:block max-w-md w-full">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
-              <Input 
-                type="search" 
-                placeholder="Search anything..." 
-                className="pl-9 bg-gray-50 border-transparent focus-visible:bg-white transition-colors"
-              />
+              <div className="relative hidden lg:block max-w-md w-full">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                <Input 
+                  type="search" 
+                  placeholder="Search anything..." 
+                  className="pl-9 bg-gray-50 border-transparent focus-visible:bg-white transition-colors"
+                />
+              </div>
             </div>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" size="icon" className="text-gray-500 relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-            </Button>
             
-            <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm overflow-hidden border-2 border-white flex items-center justify-center text-white text-xs font-bold">
-              {userName ? userName.charAt(0).toUpperCase() : ""}
-            </div>
-          </div>
-        </header>
+            <div className="flex items-center gap-3">
+              <UplinkIndicator />
 
-        {/* Page Content */}
-        <div className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">
-          <PageErrorBoundary>
-            {children}
-          </PageErrorBoundary>
-        </div>
-      </main>
-    </div>
+              <Button variant="ghost" size="icon" className="text-gray-500 relative">
+                <Bell className="w-5 h-5" />
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
+              </Button>
+              
+              <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm overflow-hidden border-2 border-white flex items-center justify-center text-white text-xs font-bold">
+                {userName ? userName.charAt(0).toUpperCase() : ""}
+              </div>
+            </div>
+          </header>
+
+          {/* Page Content */}
+          <div className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">
+            <PageErrorBoundary>
+              {children}
+            </PageErrorBoundary>
+          </div>
+        </main>
+      </div>
+    </SocketProvider>
   );
 }

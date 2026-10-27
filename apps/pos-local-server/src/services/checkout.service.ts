@@ -227,6 +227,7 @@ export function processCheckout(
   queueSyncEvent("ORDER_COMPLETED", {
     orderId,
     orderNumber: order.orderNumber,
+    orderMode: order.orderMode,
     outletId: order.outletId,
     organizationId: order.organizationId,
     invoiceNumber,

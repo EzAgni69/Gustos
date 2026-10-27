@@ -123,6 +123,7 @@ await fastify.register(cors, {
     "Authorization",
     "x-organization-id",
     "x-outlet-id",
+    "X-POS-API-Key",
   ],
 });
 await fastify.register(authPlugin);

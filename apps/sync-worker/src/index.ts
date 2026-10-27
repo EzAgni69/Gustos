@@ -417,7 +417,9 @@ const syncWorker = new Worker(
         throw err;
       }
     } else if (eventType === "ORDER_CANCELLED") {
-      const { orderId, orderNumber } = payload;
+      const { orderId, orderNumber, organizationId, outletId } = payload;
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
         await db
           .update(schema.orders)
@@ -428,6 +430,8 @@ const syncWorker = new Worker(
 
         pubClient.publish("sync-events", JSON.stringify({
           eventType: "ORDER_CANCELLED",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
           payload: { orderId, orderNumber, status: "CANCELLED" },
         })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
       } catch (err) {
@@ -435,7 +439,9 @@ const syncWorker = new Worker(
         throw err;
       }
     } else if (eventType === "TABLE_STATUS_CHANGED") {
-      const { tableId, status } = payload;
+      const { tableId, status, organizationId, outletId } = payload;
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
         if (tableId && status) {
           await db
@@ -443,9 +449,120 @@ const syncWorker = new Worker(
             .set({ status: status as any })
             .where(eq(schema.diningTables.id, tableId));
           console.log(`[Sync] 🪑 Updated dining table ${tableId} status to ${status}`);
+
+          pubClient.publish("sync-events", JSON.stringify({
+            eventType: "TABLE_STATUS_CHANGED",
+            organizationId: finalOrgId,
+            outletId: finalOutletId,
+            payload: { tableId, status },
+          })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
         }
       } catch (err) {
         console.error(`[Sync] ❌ Failed to update table status:`, err);
+      }
+    } else if (eventType === "ITEM_VOIDED") {
+      const { orderId, itemId, reason, approvedBy, voidQuantity, remainingQuantity, organizationId, outletId } = payload;
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
+      try {
+        if (voidQuantity !== undefined && remainingQuantity !== undefined && remainingQuantity > 0) {
+          await db
+            .update(schema.orderItems)
+            .set({ quantity: remainingQuantity })
+            .where(and(eq(schema.orderItems.orderId, orderId), eq(schema.orderItems.id, itemId)));
+        } else {
+          await db
+            .update(schema.orderItems)
+            .set({ status: "CANCELLED" })
+            .where(and(eq(schema.orderItems.orderId, orderId), eq(schema.orderItems.id, itemId)));
+        }
+        console.log(`[Sync] ❌ Item ${itemId} voided for order ${orderId}`);
+
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ITEM_VOIDED",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
+          payload: { orderId, itemId, reason, approvedBy, voidQuantity, remainingQuantity },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to sync ITEM_VOIDED:`, err);
+      }
+    } else if (eventType === "ORDERS_MERGED") {
+      const { sourceOrderId, targetOrderId, sourceOrderNumber, targetOrderNumber, organizationId, outletId } = payload;
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
+      try {
+        await db
+          .update(schema.orderItems)
+          .set({ orderId: targetOrderId })
+          .where(eq(schema.orderItems.orderId, sourceOrderId));
+
+        await db
+          .update(schema.orders)
+          .set({
+            status: "CANCELLED",
+            notes: `Merged into ${targetOrderNumber || targetOrderId}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.orders.id, sourceOrderId));
+
+        console.log(`[Sync] 🔀 Orders merged: ${sourceOrderNumber || sourceOrderId} -> ${targetOrderNumber || targetOrderId}`);
+
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ORDERS_MERGED",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
+          payload: { sourceOrderId, targetOrderId, sourceOrderNumber, targetOrderNumber },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to sync ORDERS_MERGED:`, err);
+      }
+    } else if (eventType === "ORDER_MODE_CHANGED") {
+      const { orderId, orderNumber, oldMode, newMode, organizationId, outletId } = payload;
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
+      try {
+        await db
+          .update(schema.orders)
+          .set({ orderMode: newMode, updatedAt: new Date() })
+          .where(eq(schema.orders.id, orderId));
+
+        console.log(`[Sync] 🔄 Order ${orderNumber || orderId} mode changed: ${oldMode} -> ${newMode}`);
+
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ORDER_MODE_CHANGED",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
+          payload: { orderId, orderNumber, oldMode, newMode },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to sync ORDER_MODE_CHANGED:`, err);
+      }
+    } else if (eventType === "ORDER_COMPLIMENTARY") {
+      const { orderId, orderNumber, reason, approvedBy, organizationId, outletId } = payload;
+      const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
+      const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
+      try {
+        await db
+          .update(schema.orders)
+          .set({
+            discountLabel: `COMPLIMENTARY: ${reason || "Approved"}`,
+            totalAmount: "0",
+            notes: `Complimentary by ${approvedBy || "Manager"}. Reason: ${reason || ""}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.orders.id, orderId));
+
+        console.log(`[Sync] 🎁 Order ${orderNumber || orderId} marked COMPLIMENTARY`);
+
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "ORDER_COMPLIMENTARY",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
+          payload: { orderId, orderNumber, reason, approvedBy },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+      } catch (err) {
+        console.error(`[Sync] ❌ Failed to sync ORDER_COMPLIMENTARY:`, err);
       }
     }
 

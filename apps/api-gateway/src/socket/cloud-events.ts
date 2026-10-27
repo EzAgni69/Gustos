@@ -12,13 +12,18 @@ export function initCloudSocket(io: Server) {
   io.on("connection", (socket: Socket) => {
     console.log(`[Cloud Socket] Client connected: ${socket.id}`);
 
-    // Allow POS clients to join their organization/outlet room.
-    socket.on("join:store", (data: { organizationId: string; outletId: string }) => {
-      const room = `store:${data.organizationId}:${data.outletId}`;
-      socket.join(room);
-      console.log(`[Cloud Socket] Client ${socket.id} joined room: ${room}`);
+    // Allow POS and Web Admin clients to join their organization/outlet room.
+    socket.on("join:store", (data: { organizationId: string; outletId?: string }) => {
+      if (data?.organizationId) {
+        socket.join(`org:${data.organizationId}`);
+      }
+      if (data?.organizationId && data?.outletId) {
+        const room = `store:${data.organizationId}:${data.outletId}`;
+        socket.join(room);
+        console.log(`[Cloud Socket] Client ${socket.id} joined room: ${room}`);
+      }
       
-      socket.emit("store:joined", { room, success: true });
+      socket.emit("store:joined", { success: true, ...data });
     });
 
     // Handle incoming real-time sync events from the local POS
@@ -36,9 +41,12 @@ export function initCloudSocket(io: Server) {
         }
       }
       
-      // We can also broadcast this back to any web-admin clients connected to this room
+      // Broadcast to any web-admin clients connected to this store or organization
       if (data?.organizationId && data?.outletId) {
         socket.to(`store:${data.organizationId}:${data.outletId}`).emit("cloud:sync_update", data);
+      }
+      if (data?.organizationId) {
+        socket.to(`org:${data.organizationId}`).emit("cloud:sync_update", data);
       }
     });
 
@@ -60,9 +68,14 @@ export function initCloudSocket(io: Server) {
     if (channel === "sync-events") {
       try {
         const data = JSON.parse(message);
-        console.log(`[Cloud Socket] Relaying Redis event to room store:${data.organizationId}:${data.outletId}`, data.eventType);
+        console.log(`[Cloud Socket] Relaying Redis event: ${data.eventType} (org: ${data.organizationId}, outlet: ${data.outletId})`);
         // Relay the real-time update to the connected outlet clients and web-admin users
-        io.to(`store:${data.organizationId}:${data.outletId}`).emit("cloud:sync_update", data);
+        if (data.organizationId && data.outletId) {
+          io.to(`store:${data.organizationId}:${data.outletId}`).emit("cloud:sync_update", data);
+        }
+        if (data.organizationId) {
+          io.to(`org:${data.organizationId}`).emit("cloud:sync_update", data);
+        }
       } catch (err) {
         console.error("[Cloud Socket] Error parsing Redis message", err);
       }
