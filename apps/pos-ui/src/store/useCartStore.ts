@@ -50,6 +50,8 @@ export interface CartStoreState {
   items: POSCartItem[];
   discount: DiscountConfig | undefined;
   isProcessingPayment: boolean;
+  isFiringKOT: boolean;
+  isSyncingOrder: boolean;
   
   // Modals use this
   heldBills: HeldBill[];
@@ -126,6 +128,8 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   items: [],
   discount: undefined,
   isProcessingPayment: false,
+  isFiringKOT: false,
+  isSyncingOrder: false,
   heldBills: [],
 
   switchOrderMode: (newMode: OrderMode) => {
@@ -388,113 +392,137 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   },
 
   syncOrderToBackend: async (reason = "Customer parked") => {
-    const { activeOrderId, orderMode, tableId, paxCount, assignedWaiter, customer, items, discount } = get();
-    
-    let orderId = activeOrderId;
-
-    // 1. Bind to active table order if exists, otherwise create new order
-    if (!orderId) {
-      if (orderMode === "DINE_IN" && tableId) {
-        try {
-          const tableOrderRes = await apiClient<{ success: boolean; data: any }>(`/tables/${tableId}/order`);
-          if (tableOrderRes.success && tableOrderRes.data?.id) {
-            orderId = tableOrderRes.data.id;
-            set({ activeOrderId: orderId, orderNumber: tableOrderRes.data.orderNumber });
-          }
-        } catch (checkErr) {
-          console.warn("Could not check active order for table before create:", checkErr);
-        }
-      }
+    if (get().isSyncingOrder) {
+      return get().activeOrderId;
     }
+    set({ isSyncingOrder: true });
 
-    if (!orderId) {
-      const payload = {
-        orderMode,
-        tableId,
-        waiterName: assignedWaiter,
-        paxCount,
-        customerName: customer?.name,
-        customerPhone: customer?.phone,
-        notes: reason,
-      };
+    try {
+      const { activeOrderId, orderMode, tableId, paxCount, assignedWaiter, customer, items, discount } = get();
       
-      try {
-        const createRes = await apiClient<{ success: boolean; data: any }>("/orders", {
-          method: "POST",
-          body: JSON.stringify(payload)
-        });
-        if (createRes.success) {
-          orderId = createRes.data.id;
-          set({ activeOrderId: orderId, orderNumber: createRes.data.orderNumber });
-        } else {
-          return null;
-        }
-      } catch (err) {
-        console.error("Failed to create order, queuing offline", err);
-        orderId = `local-order-${Date.now()}`;
-        set({ activeOrderId: orderId, orderNumber: `OFFLINE-${orderId.slice(-4)}` });
-        await db.syncQueue.add({
-          action: "CREATE_ORDER",
-          payload: { ...payload, localId: orderId },
-          status: "PENDING",
-          createdAt: new Date().toISOString(),
-          retryCount: 0,
-        });
-      }
-    }
+      let orderId = activeOrderId;
 
-    // 2. Sync unsaved items
-    if (orderId) {
-      const unsavedItems = items.filter(i => !i.isSaved);
-      if (unsavedItems.length > 0) {
-        const payload = unsavedItems.map(i => ({
-          menuItemId: i.menuItemId,
-          menuItemName: i.menuItemName,
-          variantName: i.variantName,
-          quantity: i.quantity,
-          unitPrice: i.unitPrice,
-          gstRate: i.gstRate,
-          modifiers: i.modifiers,
-          addOns: i.addOns,
-          notes: i.notes,
-        }));
+      // 1. Bind to active table order if exists, otherwise create new order
+      if (!orderId) {
+        if (orderMode === "DINE_IN" && tableId) {
+          try {
+            const tableOrderRes = await apiClient<{ success: boolean; data: any }>(`/tables/${tableId}/order`);
+            if (tableOrderRes.success && tableOrderRes.data?.id) {
+              orderId = tableOrderRes.data.id;
+              set({ activeOrderId: orderId, orderNumber: tableOrderRes.data.orderNumber });
+            }
+          } catch (checkErr) {
+            console.warn("Could not check active order for table before create:", checkErr);
+          }
+        }
+      }
+
+      if (!orderId) {
+        const payload = {
+          orderMode,
+          tableId,
+          waiterName: assignedWaiter,
+          paxCount,
+          customerName: customer?.name,
+          customerPhone: customer?.phone,
+          notes: reason,
+        };
         
         try {
-          await apiClient(`/orders/${orderId}/items`, {
+          const createRes = await apiClient<{ success: boolean; data: any }>("/orders", {
             method: "POST",
-            body: JSON.stringify({ items: payload })
+            body: JSON.stringify(payload)
           });
-          set({ items: get().items.map(i => ({ ...i, isSaved: true })) });
+          if (createRes.success) {
+            orderId = createRes.data.id;
+            set({ activeOrderId: orderId, orderNumber: createRes.data.orderNumber });
+          } else {
+            return null;
+          }
         } catch (err) {
-          console.error("Failed to add items to order, queuing offline", err);
+          console.error("Failed to create order, queuing offline", err);
+          orderId = `local-order-${Date.now()}`;
+          set({ activeOrderId: orderId, orderNumber: `OFFLINE-${orderId.slice(-4)}` });
           await db.syncQueue.add({
-            action: "UPDATE_ITEMS",
-            orderId: orderId,
-            payload: { items: payload },
+            action: "CREATE_ORDER",
+            payload: { ...payload, localId: orderId },
             status: "PENDING",
             createdAt: new Date().toISOString(),
             retryCount: 0,
           });
-          set({ items: get().items.map(i => ({ ...i, isSaved: true })) });
         }
       }
 
-      // 3. Sync discount if needed
-      if (discount) {
-        try {
-          await apiClient(`/orders/${orderId}/discount`, {
-            method: "PATCH",
-            body: JSON.stringify({ discount })
+      // 2. Sync unsaved items (snapshot captured at start + any added since)
+      if (orderId) {
+        const currentUnsaved = get().items.filter(i => !i.isSaved);
+        const unsavedMap = new Map<string, POSCartItem>();
+        for (const item of items.filter(i => !i.isSaved)) {
+          unsavedMap.set(item.cartItemId, item);
+        }
+        for (const item of currentUnsaved) {
+          unsavedMap.set(item.cartItemId, item);
+        }
+        const unsavedItems = Array.from(unsavedMap.values());
+
+        if (unsavedItems.length > 0) {
+          const unsavedCartIds = new Set(unsavedItems.map(i => i.cartItemId));
+          const payload = unsavedItems.map(i => ({
+            menuItemId: i.menuItemId,
+            menuItemName: i.menuItemName,
+            variantName: i.variantName,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            gstRate: i.gstRate,
+            modifiers: i.modifiers,
+            addOns: i.addOns,
+            notes: i.notes,
+          }));
+
+          // Optimistically mark items as saved before network call to prevent duplicate syncs
+          set({
+            items: get().items.map(i =>
+              unsavedCartIds.has(i.cartItemId) ? { ...i, isSaved: true } : i
+            ),
           });
-        } catch (e) {
-          console.error("Discount sync failed", e);
+          
+          try {
+            await apiClient(`/orders/${orderId}/items`, {
+              method: "POST",
+              body: JSON.stringify({ items: payload })
+            });
+          } catch (err) {
+            console.error("Failed to add items to order, queuing offline", err);
+            await db.syncQueue.add({
+              action: "UPDATE_ITEMS",
+              orderId: orderId,
+              payload: { items: payload },
+              status: "PENDING",
+              createdAt: new Date().toISOString(),
+              retryCount: 0,
+            });
+          }
         }
-      }
 
-      return orderId;
+        // 3. Sync discount if needed
+        if (discount) {
+          try {
+            await apiClient(`/orders/${orderId}/discount`, {
+              method: "PATCH",
+              body: JSON.stringify({ discount })
+            });
+          } catch (e) {
+            console.error("Discount sync failed", e);
+          }
+        }
+
+        return orderId;
+      }
+      
+      return null;
+    } finally {
+      set({ isSyncingOrder: false });
     }
-    
-    return null;
   },
 
   holdCurrentBill: async (reason = "Customer parked") => {
@@ -554,20 +582,22 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         paxCount: order.paxCount || 1,
         assignedWaiter: order.waiterName || "Counter",
         customer: order.customerName ? { name: order.customerName, phone: order.customerPhone || "" } : null,
-        items: (order.items || []).map((i: any) => ({
-          cartItemId: i.id,
-          menuItemId: i.menuItemId,
-          menuItemName: i.menuItemName,
-          variantName: i.variantName,
-          quantity: i.quantity,
-          unitPrice: i.unitPrice,
-          gstRate: i.gstRate,
-          modifiers: safeParseJson<string[]>(i.modifiers, []),
-          addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
-          notes: i.notes || "",
-          isSaved: true,
-          kotId: i.kotId || null,
-        })),
+        items: (order.items || [])
+          .filter((i: any) => i.status !== "VOIDED")
+          .map((i: any) => ({
+            cartItemId: i.id,
+            menuItemId: i.menuItemId,
+            menuItemName: i.menuItemName,
+            variantName: i.variantName,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            gstRate: i.gstRate,
+            modifiers: safeParseJson<string[]>(i.modifiers, []),
+            addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
+            notes: i.notes || "",
+            isSaved: true,
+            kotId: i.kotId || null,
+          })),
         discount: order.discountType ? { type: order.discountType, value: order.discountValue } : undefined,
         heldAt: new Date(order.createdAt),
         reason: order.notes,
@@ -588,25 +618,32 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
       const res = await apiClient<{ success: boolean; data: any }>(`/orders/${heldBillId}`);
       if (res.success) {
         const order = res.data;
-        const mappedItems: POSCartItem[] = (order.items || []).map((i: any) => ({
-          cartItemId: i.id, // Use backend order_item.id
-          menuItemId: i.menuItemId,
-          menuItemName: i.menuItemName,
-          variantName: i.variantName,
-          quantity: i.quantity,
-          unitPrice: i.unitPrice,
-          gstRate: i.gstRate,
-          modifiers: safeParseJson<string[]>(i.modifiers, []),
-          addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
-          notes: i.notes || "",
-          isSaved: true,
-          kotId: i.kotId || null,
-        }));
+        const mappedItems: POSCartItem[] = (order.items || [])
+          .filter((i: any) => i.status !== "VOIDED")
+          .map((i: any) => ({
+            cartItemId: i.id, // Use backend order_item.id
+            menuItemId: i.menuItemId,
+            menuItemName: i.menuItemName,
+            variantName: i.variantName,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            gstRate: i.gstRate,
+            modifiers: safeParseJson<string[]>(i.modifiers, []),
+            addOns: safeParseJson<CartItemAddOn[] | undefined>(i.addOns, undefined),
+            notes: i.notes || "",
+            isSaved: true,
+            kotId: i.kotId || null,
+          }));
 
         const { useTableStore } = await import("./useTableStore");
         const tables = useTableStore.getState().tables;
         const foundTable = tables.find(t => t.id === order.tableId);
         const resolvedTableNumber = foundTable?.tableNumber || order.tableNumber || (order.tableId ? `Table ${order.tableId}` : null);
+
+        // Preserve any local unsaved items that haven't been synced to backend yet
+        const localUnsavedItems = get().activeOrderId === order.id || !get().activeOrderId
+          ? get().items.filter((i) => !i.isSaved)
+          : [];
 
         set({
           activeOrderId: order.id,
@@ -617,7 +654,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           paxCount: order.paxCount || 1,
           assignedWaiter: order.waiterName || "Counter",
           customer: order.customerName ? { name: order.customerName, phone: order.customerPhone || "" } : null,
-          items: mappedItems,
+          items: [...mappedItems, ...localUnsavedItems],
           discount: order.discountType ? { type: order.discountType, value: order.discountValue } : undefined,
         });
       }
@@ -713,22 +750,35 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   },
 
   fireKOT: async () => {
-    const orderId = await get().syncOrderToBackend("Fire KOT");
-    if (orderId) {
-      try {
-        await apiClient(`/orders/${orderId}/kot`, { method: "POST", body: JSON.stringify({}) });
-        await get().retrieveHeldBill(orderId);
-      } catch (e) {
-        console.error("Failed to fire KOT, queuing offline", e);
-        await db.syncQueue.add({
-          action: "FIRE_KOT",
-          orderId: orderId,
-          payload: {},
-          status: "PENDING",
-          createdAt: new Date().toISOString(),
-          retryCount: 0,
-        });
+    if (get().isFiringKOT) return;
+    set({ isFiringKOT: true });
+
+    try {
+      const orderId = await get().syncOrderToBackend("Fire KOT");
+      if (orderId) {
+        try {
+          await apiClient(`/orders/${orderId}/kot`, { method: "POST", body: JSON.stringify({}) });
+          await get().retrieveHeldBill(orderId);
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          // Only queue offline if it is a network failure, not a 400 validation error like "No items to send to kitchen"
+          if (!errMsg.includes("No items to send") && !errMsg.includes("HTTP Error:")) {
+            console.error("Failed to fire KOT, queuing offline", e);
+            await db.syncQueue.add({
+              action: "FIRE_KOT",
+              orderId: orderId,
+              payload: {},
+              status: "PENDING",
+              createdAt: new Date().toISOString(),
+              retryCount: 0,
+            });
+          } else {
+            await get().retrieveHeldBill(orderId);
+          }
+        }
       }
+    } finally {
+      set({ isFiringKOT: false });
     }
   },
 

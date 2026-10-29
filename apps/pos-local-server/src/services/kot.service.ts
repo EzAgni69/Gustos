@@ -50,10 +50,11 @@ export function generateKOT(
     .where(eq(schema.orderItems.orderId, orderId))
     .all();
 
-  // Filter to only items without a kotId (not yet sent), or specific itemIds
+  // Filter to only active (non-voided) items without a kotId (not yet sent), or specific itemIds
+  const activeItems = allItems.filter((item) => item.status !== "VOIDED");
   const itemsToSend = itemIds
-    ? allItems.filter((item) => itemIds.includes(item.id) && !item.kotId)
-    : allItems.filter((item) => !item.kotId);
+    ? activeItems.filter((item) => itemIds.includes(item.id) && !item.kotId)
+    : activeItems.filter((item) => !item.kotId);
 
   if (itemsToSend.length === 0) {
     throw new Error("No items to send to kitchen");
@@ -194,7 +195,7 @@ export function generateKOT(
  * List KOTs with optional status filter (for KDS display).
  */
 export function listKOTs(status?: string) {
-  const kots = status
+  const rawKots = status
     ? db
         .select()
         .from(schema.kitchenOrderTickets)
@@ -202,70 +203,75 @@ export function listKOTs(status?: string) {
         .all()
     : db.select().from(schema.kitchenOrderTickets).all();
 
+  // Exclude standalone MODIFICATION audit slips so KDS only shows the original updated KOT card
+  const kots = rawKots.filter((k) => k.kotType !== "MODIFICATION");
+
   // Enrich with items and order info
-  return kots.map((kot) => {
-    const items = db
-      .select()
-      .from(schema.kotItems)
-      .where(eq(schema.kotItems.kotId, kot.id))
-      .all();
-
-    const order = db
-      .select()
-      .from(schema.orders)
-      .where(eq(schema.orders.id, kot.orderId))
-      .get();
-
-    let tableName: string | undefined;
-    if (order?.tableId) {
-      const table = db
+  return kots
+    .map((kot) => {
+      const items = db
         .select()
-        .from(schema.diningTables)
-        .where(eq(schema.diningTables.id, order.tableId))
+        .from(schema.kotItems)
+        .where(eq(schema.kotItems.kotId, kot.id))
+        .all();
+
+      const order = db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, kot.orderId))
         .get();
-      tableName = table?.name;
-    }
 
-    const validItems = items
-      .map((item) => {
-        const orderItem = item.orderItemId
-          ? db
-              .select()
-              .from(schema.orderItems)
-              .where(eq(schema.orderItems.id, item.orderItemId))
-              .get()
-          : null;
+      let tableName: string | undefined;
+      if (order?.tableId) {
+        const table = db
+          .select()
+          .from(schema.diningTables)
+          .where(eq(schema.diningTables.id, order.tableId))
+          .get();
+        tableName = table?.name;
+      }
 
-        // If the linked order item is voided, exclude from kitchen display
-        if (orderItem && orderItem.status === "VOIDED") {
-          return null;
-        }
+      const validItems = items
+        .map((item) => {
+          const orderItem = item.orderItemId
+            ? db
+                .select()
+                .from(schema.orderItems)
+                .where(eq(schema.orderItems.id, item.orderItemId))
+                .get()
+            : null;
 
-        const menuItem = orderItem?.menuItemId
-          ? db
-              .select()
-              .from(schema.menuItems)
-              .where(eq(schema.menuItems.id, orderItem.menuItemId))
-              .get()
-          : null;
+          // If the linked order item is voided, exclude from kitchen display
+          if (orderItem && orderItem.status === "VOIDED") {
+            return null;
+          }
 
-        return {
-          ...item,
-          quantity: orderItem ? orderItem.quantity : item.quantity,
-          variantName: orderItem?.variantName ?? null,
-          categoryId: menuItem?.categoryId ?? null,
-          modifiers: item.modifiers ? JSON.parse(item.modifiers) : [],
-        };
-      })
-      .filter((i): i is NonNullable<typeof i> => i !== null);
+          const menuItem = orderItem?.menuItemId
+            ? db
+                .select()
+                .from(schema.menuItems)
+                .where(eq(schema.menuItems.id, orderItem.menuItemId))
+                .get()
+            : null;
 
-    return {
-      ...kot,
-      orderNumber: order?.orderNumber,
-      tableName,
-      items: validItems,
-    };
-  });
+          return {
+            ...item,
+            quantity: orderItem ? orderItem.quantity : item.quantity,
+            variantName: orderItem?.variantName ?? null,
+            categoryId: menuItem?.categoryId ?? null,
+            modifiers: item.modifiers ? JSON.parse(item.modifiers) : [],
+          };
+        })
+        .filter((i): i is NonNullable<typeof i> => i !== null);
+
+      return {
+        ...kot,
+        orderNumber: order?.orderNumber,
+        tableName,
+        items: validItems,
+      };
+    })
+    .filter((kot) => kot.items.length > 0);
 }
 
 /**
@@ -357,6 +363,7 @@ export function reprintKOT(kotId: string) {
     .get();
 
   if (!kot) throw new Error("KOT not found");
+  if (kot.status === "CANCELLED") throw new Error("Cannot reprint a cancelled KOT");
 
   const order = db
     .select()
@@ -369,6 +376,41 @@ export function reprintKOT(kotId: string) {
     .from(schema.kotItems)
     .where(eq(schema.kotItems.kotId, kotId))
     .all();
+
+  const activeReprintItems = kotItemsList
+    .map((item) => {
+      const orderItem = item.orderItemId
+        ? db
+            .select()
+            .from(schema.orderItems)
+            .where(eq(schema.orderItems.id, item.orderItemId))
+            .get()
+        : null;
+
+      if (orderItem && orderItem.status === "VOIDED") {
+        return null;
+      }
+
+      const menuItem = orderItem?.menuItemId
+        ? db
+            .select()
+            .from(schema.menuItems)
+            .where(eq(schema.menuItems.id, orderItem.menuItemId))
+            .get()
+        : null;
+
+      return {
+        ...item,
+        quantity: orderItem ? orderItem.quantity : item.quantity,
+        variantName: orderItem?.variantName ?? null,
+        categoryId: menuItem?.categoryId ?? null,
+      };
+    })
+    .filter((i): i is NonNullable<typeof i> => i !== null);
+
+  if (activeReprintItems.length === 0) {
+    throw new Error("No active items remaining on this KOT to reprint");
+  }
 
   let tableName: string | undefined;
   if (order?.tableId) {
@@ -387,7 +429,7 @@ export function reprintKOT(kotId: string) {
     tableName,
     waiterName: order?.waiterName ?? undefined,
     station: kot.station ?? undefined,
-    items: kotItemsList.map((item) => ({
+    items: activeReprintItems.map((item) => ({
       name: item.menuItemName,
       quantity: item.quantity,
       modifiers: item.modifiers ? JSON.parse(item.modifiers) : undefined,
@@ -416,8 +458,10 @@ export function reprintKOT(kotId: string) {
     waiterName: order?.waiterName,
     station: kot.station,
     isReprint: true,
-    items: kotItemsList.map((item) => ({
+    items: activeReprintItems.map((item) => ({
       name: item.menuItemName,
+      variantName: item.variantName,
+      categoryId: item.categoryId,
       quantity: item.quantity,
       modifiers: item.modifiers ? JSON.parse(item.modifiers) : [],
       notes: item.notes,
@@ -572,21 +616,22 @@ export function generateModificationKOT(
   const kotNumber = getNextKOTNumber();
   const now = new Date().toISOString();
 
-  // Create modification KOT record
+  // Create modification KOT record (marked SERVED so it doesn't appear as a duplicate active card on KDS)
   db.insert(schema.kitchenOrderTickets)
     .values({
       id: kotId,
       orderId,
       kotNumber,
       station: station ?? null,
-      status: "PENDING",
+      status: "SERVED",
       kotType: "MODIFICATION",
       createdAt: now,
     })
     .run();
 
-  // Build modification items with change details
-  const modItems: Array<{ itemName: string; changeType: string; oldValue?: string; newValue?: string }> = [];
+  // Build modification items with change details and update original KOT notes
+  const modItems: Array<{ itemName: string; changeType: string; oldValue?: string; newValue?: string; originalKotId?: string | null }> = [];
+  const targetKotIds = new Set<string>();
 
   for (const mod of modifications) {
     const orderItem = db
@@ -597,6 +642,29 @@ export function generateModificationKOT(
 
     if (!orderItem) continue;
 
+    const modNote = `[${mod.changeType}] ${mod.oldValue ?? ""} → ${mod.newValue ?? ""}`;
+
+    // Also update the original KOT item's note in DB so KDS hydration shows the modification note on the original card
+    if (orderItem.kotId) {
+      targetKotIds.add(orderItem.kotId);
+      const origKotItems = db
+        .select()
+        .from(schema.kotItems)
+        .where(eq(schema.kotItems.kotId, orderItem.kotId))
+        .all()
+        .filter((ki) => ki.orderItemId === mod.orderItemId);
+
+      for (const origKi of origKotItems) {
+        db.update(schema.kotItems)
+          .set({
+            quantity: orderItem.quantity,
+            notes: origKi.notes ? `${origKi.notes} | ${modNote}` : modNote,
+          })
+          .where(eq(schema.kotItems.id, origKi.id))
+          .run();
+      }
+    }
+
     db.insert(schema.kotItems)
       .values({
         id: uuid(),
@@ -605,7 +673,7 @@ export function generateModificationKOT(
         menuItemName: orderItem.menuItemName,
         quantity: orderItem.quantity,
         modifiers: orderItem.modifiers,
-        notes: `[${mod.changeType}] ${mod.oldValue ?? ""} → ${mod.newValue ?? ""}`,
+        notes: modNote,
       })
       .run();
 
@@ -614,6 +682,7 @@ export function generateModificationKOT(
       changeType: mod.changeType,
       oldValue: mod.oldValue,
       newValue: mod.newValue,
+      originalKotId: orderItem.kotId,
     });
   }
 
@@ -627,9 +696,10 @@ export function generateModificationKOT(
     tableName = table?.name;
   }
 
-  // Emit to KDS
+  // Emit to KDS using the original KOT ID so KDS updates the existing card in-place
+  const primaryTargetKotId = Array.from(targetKotIds)[0] ?? kotId;
   emitKOTModification({
-    kotId,
+    kotId: primaryTargetKotId,
     kotNumber,
     orderId,
     orderNumber: order.orderNumber,

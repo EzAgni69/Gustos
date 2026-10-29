@@ -4,7 +4,7 @@ import { useUIStore, type POSModal } from "../../store/useUIStore";
 import { CashIcon, SplitIcon } from "../common/PaymentIcons";
 
 export const BottomToolbar: React.FC = () => {
-  const { items, holdCurrentBill, fireKOT, tableId, tableNumber, activeOrderId, loadTableOrder, retrieveHeldBill } = useCartStore();
+  const { items, holdCurrentBill, fireKOT, isFiringKOT, tableId, tableNumber, activeOrderId, loadTableOrder, retrieveHeldBill } = useCartStore();
   const { activeView, setActiveView, openModal, showNotification } = useUIStore();
 
   const buttons: {
@@ -18,10 +18,11 @@ export const BottomToolbar: React.FC = () => {
     {
       key: "F1",
       alt: "Alt+K",
-      label: "Save & Print KOT",
+      label: isFiringKOT ? "Firing KOT..." : "Save & Print KOT",
       icon: "🖨️",
       color: "bg-emerald-700 hover:bg-emerald-600 border-emerald-600 text-text-inverse font-bold",
       action: async () => {
+        if (useCartStore.getState().isFiringKOT) return;
         const unfiredItems = items.filter(i => !i.kotId);
         if (items.length === 0) {
           showNotification("⚠️ Cart is empty. Add items before firing KOT.");

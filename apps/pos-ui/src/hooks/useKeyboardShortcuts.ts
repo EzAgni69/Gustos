@@ -39,7 +39,9 @@ export function useKeyboardShortcuts() {
       // ─── F1 / Alt+K : Fire KOT ───
       if (e.key === "F1" || (e.altKey && e.key.toLowerCase() === "k")) {
         e.preventDefault();
+        if (e.repeat) return;
         const currentCart = useCartStore.getState();
+        if (currentCart.isFiringKOT) return;
         const currentItems = currentCart.items;
         const unfiredItems = currentItems.filter(i => !i.kotId);
         if (currentItems.length === 0) {

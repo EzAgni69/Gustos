@@ -59,6 +59,41 @@ export function extractPgErrorCode(err: unknown): string | null {
   return null;
 }
 
+// ─── ID Resolution Helpers ───
+// Local POS IDs are not guaranteed to exist in the cloud (legacy seed IDs like
+// "item-201" / "table-ac-1", or menu rows re-created in the ERP). Querying a uuid
+// column with a non-UUID string throws 22P02 and a missing FK target throws 23503,
+// either of which would fail the entire job — so resolve defensively.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
+
+async function resolveDiningTable(outletId: string, tableId?: string | null, tableName?: string | null) {
+  let table = null;
+  if (isUuid(tableId)) {
+    table = await db.query.diningTables.findFirst({ where: eq(schema.diningTables.id, tableId) });
+  }
+  if (!table && tableName) {
+    table = await db.query.diningTables.findFirst({
+      where: and(eq(schema.diningTables.outletId, outletId), eq(schema.diningTables.name, tableName)),
+    });
+  }
+  return table ?? null;
+}
+
+async function resolveMenuItemId(outletId: string, menuItemId?: string | null, menuItemName?: string | null): Promise<string | null> {
+  if (isUuid(menuItemId)) {
+    const byId = await db.query.menuItems.findFirst({ where: eq(schema.menuItems.id, menuItemId) });
+    if (byId) return byId.id;
+  }
+  if (menuItemName) {
+    const byName = await db.query.menuItems.findFirst({
+      where: and(eq(schema.menuItems.outletId, outletId), eq(schema.menuItems.name, menuItemName)),
+    });
+    if (byName) return byName.id;
+  }
+  return null;
+}
+
 // ─── Startup Schema Assertion Check ───
 /**
  * Verifies that the cloud database has migration 0002 applied (specifically column `order_mode` on `orders`).
@@ -180,6 +215,28 @@ const syncWorker = new Worker(
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
 
       try {
+        // Resolve local IDs to cloud IDs before writing (see ID Resolution Helpers)
+        const resolvedTable = await resolveDiningTable(finalOutletId, tableId, tableName);
+        const resolvedItems: any[] = [];
+        const unresolvedItems: string[] = [];
+        for (const i of (items ?? []) as any[]) {
+          const cloudMenuItemId = await resolveMenuItemId(finalOutletId, i.menuItemId, i.menuItemName);
+          if (cloudMenuItemId) {
+            resolvedItems.push({ ...i, menuItemId: cloudMenuItemId });
+          } else {
+            unresolvedItems.push(`${i.quantity}x ${i.menuItemName ?? i.menuItemId}`);
+          }
+        }
+        if (unresolvedItems.length > 0) {
+          console.warn(
+            `[Sync] ⚠️ Order ${orderNumber}: ${unresolvedItems.length} item(s) not found in cloud menu, ` +
+            `recorded in order notes instead: ${unresolvedItems.join(", ")}`
+          );
+        }
+        const unresolvedNote = unresolvedItems.length > 0
+          ? `Unmapped POS items: ${unresolvedItems.join(", ")}`
+          : undefined;
+
         await db.transaction(async (tx) => {
           // 1. Upsert Order
           await tx
@@ -189,6 +246,7 @@ const syncWorker = new Worker(
               outletId: finalOutletId,
               organizationId: finalOrgId,
               orderNumber,
+              tableId: resolvedTable?.id ?? null,
               orderMode: orderMode || "DINE_IN",
               status: "COMPLETED",
               subtotal: String(subtotal),
@@ -196,6 +254,7 @@ const syncWorker = new Worker(
               taxAmount: String(taxAmount),
               totalAmount: String(totalAmount),
               paymentMode,
+              notes: unresolvedNote,
               createdAt: new Date(completedAt),
               updatedAt: new Date(completedAt),
             })
@@ -209,6 +268,7 @@ const syncWorker = new Worker(
                 taxAmount: String(taxAmount),
                 totalAmount: String(totalAmount),
                 paymentMode,
+                ...(unresolvedNote ? { notes: unresolvedNote } : {}),
                 updatedAt: new Date(completedAt),
               },
             });
@@ -216,16 +276,16 @@ const syncWorker = new Worker(
           // 2. Insert Order Items (clear existing if any, then insert)
           await tx.delete(schema.orderItems).where(eq(schema.orderItems.orderId, orderId));
 
-          if (items && items.length > 0) {
+          if (resolvedItems.length > 0) {
             await tx.insert(schema.orderItems).values(
-              items.map((i: any) => ({
+              resolvedItems.map((i: any) => ({
                 orderId,
                 menuItemId: i.menuItemId,
                 menuItemName: i.menuItemName,
                 quantity: i.quantity,
                 unitPrice: String(i.unitPrice),
                 gstRate: i.gstRate,
-                status: "COMPLETED",
+                status: "COMPLETED" as const,
               }))
             );
           }
@@ -259,28 +319,15 @@ const syncWorker = new Worker(
 
         // 3.6 Release dining table if dine-in
         try {
-          let tableToRelease = null;
-          if (tableId) {
-            tableToRelease = await db.query.diningTables.findFirst({
-              where: eq(schema.diningTables.id, tableId),
-            });
-          }
-          if (!tableToRelease && tableName) {
-            tableToRelease = await db.query.diningTables.findFirst({
-              where: and(
-                eq(schema.diningTables.outletId, finalOutletId),
-                eq(schema.diningTables.name, tableName)
-              ),
-            });
-          }
+          let tableToRelease = resolvedTable;
           if (!tableToRelease && orderId) {
             const cloudOrder = await db.query.orders.findFirst({
               where: eq(schema.orders.id, orderId),
             });
             if (cloudOrder?.tableId) {
-              tableToRelease = await db.query.diningTables.findFirst({
+              tableToRelease = (await db.query.diningTables.findFirst({
                 where: eq(schema.diningTables.id, cloudOrder.tableId),
-              });
+              })) ?? null;
             }
           }
 
@@ -304,13 +351,13 @@ const syncWorker = new Worker(
         }
 
         // 4. Auto-enqueue inventory deduction job
-        if (items && items.length > 0) {
+        if (resolvedItems.length > 0) {
           await inventoryQueue.add("deduct-for-order", {
             orderId,
             orderNumber,
             organizationId: finalOrgId,
             outletId: finalOutletId,
-            items: items.map((i: any) => ({
+            items: resolvedItems.map((i: any) => ({
               menuItemId: i.menuItemId,
               menuItemName: i.menuItemName,
               quantity: i.quantity,
@@ -415,20 +462,7 @@ const syncWorker = new Worker(
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
 
       try {
-        let validTable = null;
-        if (tableId) {
-          validTable = await db.query.diningTables.findFirst({
-            where: eq(schema.diningTables.id, tableId),
-          });
-        }
-        if (!validTable && tableName) {
-          validTable = await db.query.diningTables.findFirst({
-            where: and(
-              eq(schema.diningTables.outletId, finalOutletId),
-              eq(schema.diningTables.name, tableName)
-            ),
-          });
-        }
+        const validTable = await resolveDiningTable(finalOutletId, tableId, tableName);
 
         const validTableId = validTable?.id || null;
 
@@ -535,20 +569,7 @@ const syncWorker = new Worker(
       const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
-        let targetTable = null;
-        if (tableId) {
-          targetTable = await db.query.diningTables.findFirst({
-            where: eq(schema.diningTables.id, tableId),
-          });
-        }
-        if (!targetTable && tableName) {
-          targetTable = await db.query.diningTables.findFirst({
-            where: and(
-              eq(schema.diningTables.outletId, finalOutletId),
-              eq(schema.diningTables.name, tableName)
-            ),
-          });
-        }
+        const targetTable = await resolveDiningTable(finalOutletId, tableId, tableName);
 
         if (targetTable && status) {
           await db

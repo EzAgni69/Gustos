@@ -68,7 +68,8 @@ export function recalculateOrderTotals(orderId: string): void {
     .select()
     .from(schema.orderItems)
     .where(eq(schema.orderItems.orderId, orderId))
-    .all();
+    .all()
+    .filter((item) => item.status !== "VOIDED");
 
   const order = db
     .select()
@@ -258,7 +259,8 @@ export function getOrderById(orderId: string) {
     .select()
     .from(schema.orderItems)
     .where(eq(schema.orderItems.orderId, orderId))
-    .all();
+    .all()
+    .filter((item) => item.status !== "VOIDED");
 
   const kots = db
     .select()
@@ -453,7 +455,8 @@ export function listOrders(filters?: {
       .select()
       .from(schema.orderItems)
       .where(eq(schema.orderItems.orderId, order.id))
-      .all();
+      .all()
+      .filter((item) => item.status !== "VOIDED");
 
     return {
       ...order,

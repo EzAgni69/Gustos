@@ -34,7 +34,7 @@ export function initCloudSocket(io: Server) {
         const { tableId, tableName, status } = data.payload;
         try {
           let targetTable = null;
-          if (tableId) {
+          if (tableId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tableId)) {
             targetTable = await db.query.diningTables.findFirst({
               where: eq(cloudSchema.diningTables.id, tableId),
             });

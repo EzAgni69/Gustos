@@ -111,7 +111,7 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
   isSyncing = true;
 
   try {
-    const since = fullSync ? null : getLastSyncTimestamp();
+    let since = fullSync ? null : getLastSyncTimestamp();
     const queryParams = new URLSearchParams({ outletId: OUTLET_ID });
     if (since) queryParams.set("since", since);
 
@@ -122,23 +122,47 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
       headers["X-POS-API-Key"] = POS_API_KEY;
     }
 
-    const response = await fetch(
-      `${API_GATEWAY_URL}/api/v1/sync/pull?${queryParams}`,
-      { headers, signal: AbortSignal.timeout(10_000) }
-    );
+    const fetchPull = async (params: URLSearchParams) => {
+      const response = await fetch(
+        `${API_GATEWAY_URL}/api/v1/sync/pull?${params}`,
+        { headers, signal: AbortSignal.timeout(10_000) }
+      );
 
-    if (!response.ok) {
-      console.warn(`[CloudSync] Pull failed with status ${response.status}`);
-      return null;
+      if (!response.ok) {
+        console.warn(`[CloudSync] Pull failed with status ${response.status}`);
+        return null;
+      }
+
+      const result = (await response.json()) as { success: boolean; data: any };
+      if (!result.success || !result.data) {
+        console.warn("[CloudSync] Pull returned unsuccessful response");
+        return null;
+      }
+      return result.data;
+    };
+
+    let data = await fetchPull(queryParams);
+    if (!data) return null;
+
+    // An incremental pull only returns menu items modified since `since`, but the
+    // category list is always complete. If the category set changed (categories
+    // added or removed in the ERP), pruning would delete local items and new
+    // categories would arrive empty — so fall back to a full pull.
+    if (since && Array.isArray(data.menuCategories)) {
+      const cloudCatIds = new Set<string>(data.menuCategories.map((c: any) => c.id));
+      const localCatIds = new Set<string>(
+        db.select({ id: schema.menuCategories.id }).from(schema.menuCategories).all().map((c) => c.id)
+      );
+      const categorySetChanged =
+        cloudCatIds.size !== localCatIds.size ||
+        [...cloudCatIds].some((id) => !localCatIds.has(id));
+      if (categorySetChanged) {
+        console.log("[CloudSync] Menu category set changed — performing full pull");
+        since = null;
+        data = await fetchPull(new URLSearchParams({ outletId: OUTLET_ID }));
+        if (!data) return null;
+      }
     }
-
-    const result = (await response.json()) as { success: boolean; data: any };
-    if (!result.success || !result.data) {
-      console.warn("[CloudSync] Pull returned unsuccessful response");
-      return null;
-    }
-
-    const data = result.data;
     const summary: SyncChangeSummary = {
       menuCategoriesUpdated: 0,
       menuCategoriesPruned: 0,
@@ -292,38 +316,22 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
         // Map matching cloud tables by name to handle migrating local dummy table IDs to authoritative cloud UUIDs
         const cloudTablesByName = new Map<string, any>(data.diningTables.map((t: any) => [t.name, t]));
 
-        // Prune local tables that no longer exist in cloud
-        for (const locTable of localTables) {
-          if (!cloudTableIds.has(locTable.id)) {
-            const matchingCloudTable = cloudTablesByName.get(locTable.name);
-            if (matchingCloudTable) {
-              // Migrate existing local orders from old local table ID to new authoritative Cloud table ID
-              tx.update(schema.orders)
-                .set({ tableId: matchingCloudTable.id })
-                .where(eq(schema.orders.tableId, locTable.id))
-                .run();
+        // Local tables that no longer exist in cloud (by ID)
+        const staleLocalTables = localTables.filter((t) => !cloudTableIds.has(t.id));
 
-              // Preserve local table state for the cloud table
-              matchingCloudTable.preservedStatus = locTable.status;
-              matchingCloudTable.preservedCurrentOrderId = locTable.currentOrderId;
-              console.log(`[CloudSync] 🔄 Migrated local table "${locTable.name}" from ${locTable.id} -> ${matchingCloudTable.id}`);
-            } else {
-              // Nullify any orders referencing this pruned table
-              tx.update(schema.orders)
-                .set({ tableId: null })
-                .where(eq(schema.orders.tableId, locTable.id))
-                .run();
-            }
-
-            tx.delete(schema.diningTables)
-              .where(eq(schema.diningTables.id, locTable.id))
-              .run();
-            summary.diningTablesPruned++;
-            console.log(`[CloudSync] 🗑️ Pruned obsolete dining table: "${locTable.name}" (${locTable.id})`);
+        // Carry over live local state (OCCUPIED / current order) to the matching cloud table
+        // BEFORE the cloud rows are inserted, so the insert below picks it up.
+        for (const locTable of staleLocalTables) {
+          const matchingCloudTable = cloudTablesByName.get(locTable.name);
+          if (matchingCloudTable) {
+            matchingCloudTable.preservedStatus = locTable.status;
+            matchingCloudTable.preservedCurrentOrderId = locTable.currentOrderId;
           }
         }
 
-        // Upsert cloud tables
+        // Upsert cloud tables FIRST. Rows referencing stale local tables (orders,
+        // reservations) are re-pointed below, and SQLite enforces foreign keys
+        // immediately (foreign_keys = ON), so the target rows must already exist.
         for (const table of data.diningTables) {
           const existing = tx.select().from(schema.diningTables)
             .where(eq(schema.diningTables.id, table.id)).get();
@@ -359,6 +367,42 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
               .run();
           }
           summary.diningTablesUpdated++;
+        }
+
+        // Now prune local tables that no longer exist in cloud, re-pointing any
+        // dependent rows first so the delete does not violate foreign keys.
+        for (const locTable of staleLocalTables) {
+          const matchingCloudTable = cloudTablesByName.get(locTable.name);
+          if (matchingCloudTable) {
+            // Migrate local orders + reservations from the old local table ID to the authoritative cloud table ID
+            tx.update(schema.orders)
+              .set({ tableId: matchingCloudTable.id })
+              .where(eq(schema.orders.tableId, locTable.id))
+              .run();
+            tx.update(schema.tableReservations)
+              .set({ tableId: matchingCloudTable.id })
+              .where(eq(schema.tableReservations.tableId, locTable.id))
+              .run();
+            console.log(`[CloudSync] 🔄 Migrated local table "${locTable.name}" from ${locTable.id} -> ${matchingCloudTable.id}`);
+          } else {
+            // Table was removed in the ERP: detach orders, drop its reservations (table_id is NOT NULL)
+            tx.update(schema.orders)
+              .set({ tableId: null })
+              .where(eq(schema.orders.tableId, locTable.id))
+              .run();
+            const droppedReservations = tx.delete(schema.tableReservations)
+              .where(eq(schema.tableReservations.tableId, locTable.id))
+              .run();
+            if (droppedReservations.changes > 0) {
+              console.warn(`[CloudSync] ⚠️ Dropped ${droppedReservations.changes} reservation(s) on removed table "${locTable.name}"`);
+            }
+          }
+
+          tx.delete(schema.diningTables)
+            .where(eq(schema.diningTables.id, locTable.id))
+            .run();
+          summary.diningTablesPruned++;
+          console.log(`[CloudSync] 🗑️ Pruned obsolete dining table: "${locTable.name}" (${locTable.id})`);
         }
       }
 

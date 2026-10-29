@@ -86,10 +86,11 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
                   }
                   const parsed = parseInt(mod.newValue || "", 10);
                   const newQty = !isNaN(parsed) && parsed > 0 ? parsed : item.quantity;
+                  const modNote = `[QUANTITY_CHANGE] ${mod.oldValue ?? item.quantity} → ${mod.newValue ?? newQty}`;
                   return {
                     ...item,
                     quantity: newQty,
-                    notes: mod.newValue ? `[QTY: ${mod.newValue}] ${item.notes || ""}`.trim() : item.notes,
+                    notes: mod.newValue ? modNote : item.notes,
                   };
                 }
 

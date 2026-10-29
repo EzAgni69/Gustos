@@ -37,7 +37,13 @@ export const useSocket = (): Socket => {
       if (currentCart.orderMode === "DINE_IN" && currentCart.tableId === data.tableId) {
         if (normalizedStatus === "VACANT") {
           currentCart.clearCart();
-        } else if (data.orderId && data.orderId !== currentCart.activeOrderId) {
+        } else if (
+          data.orderId &&
+          data.orderId !== currentCart.activeOrderId &&
+          !currentCart.isSyncingOrder &&
+          !currentCart.isFiringKOT &&
+          !currentCart.items.some((i) => !i.isSaved)
+        ) {
           currentCart.retrieveHeldBill(data.orderId);
         }
       }
@@ -50,7 +56,12 @@ export const useSocket = (): Socket => {
     socket.on("order:updated", (data: any) => {
       const updatedOrderId = data?.orderId || data?.order?.id;
       const currentCart = useCartStore.getState();
-      if (updatedOrderId && currentCart.activeOrderId === updatedOrderId) {
+      if (
+        updatedOrderId &&
+        currentCart.activeOrderId === updatedOrderId &&
+        !currentCart.isSyncingOrder &&
+        !currentCart.isFiringKOT
+      ) {
         currentCart.retrieveHeldBill(updatedOrderId);
       }
       fetchTables();
@@ -59,7 +70,12 @@ export const useSocket = (): Socket => {
     socket.on("kot:status-update", (data: { kotId: string; status: string; orderId: string }) => {
       const currentCart = useCartStore.getState();
       const targetOrderId = data?.orderId;
-      if (targetOrderId && currentCart.activeOrderId === targetOrderId) {
+      if (
+        targetOrderId &&
+        currentCart.activeOrderId === targetOrderId &&
+        !currentCart.isSyncingOrder &&
+        !currentCart.isFiringKOT
+      ) {
         currentCart.retrieveHeldBill(targetOrderId);
       }
       fetchTables();

@@ -41,6 +41,15 @@ router.get("/", (_req, res) => {
 
         if (order && (order.status === "COMPLETED" || order.status === "CANCELLED" || order.status === "MERGED")) {
           order = null;
+        } else if (order && order.status === "DRAFT") {
+          const hasItems = db
+            .select()
+            .from(schema.orderItems)
+            .where(eq(schema.orderItems.orderId, order.id))
+            .get();
+          if (!hasItems) {
+            order = null;
+          }
         }
       }
 
@@ -130,11 +139,20 @@ router.get("/:id/order", (req, res) => {
         .get();
       if (!existing || existing.status === "COMPLETED" || existing.status === "CANCELLED" || existing.status === "MERGED") {
         orderId = null;
+      } else if (existing.status === "DRAFT") {
+        const hasItems = db
+          .select()
+          .from(schema.orderItems)
+          .where(eq(schema.orderItems.orderId, existing.id))
+          .get();
+        if (!hasItems) {
+          orderId = null;
+        }
       }
     }
 
     if (!orderId) {
-      const active = db
+      const candidates = db
         .select()
         .from(schema.orders)
         .where(
@@ -144,7 +162,19 @@ router.get("/:id/order", (req, res) => {
           )
         )
         .orderBy(desc(schema.orders.createdAt))
-        .get();
+        .all();
+
+      const active = candidates.find((candidate) => {
+        if (candidate.status === "DRAFT") {
+          const hasItems = db
+            .select()
+            .from(schema.orderItems)
+            .where(eq(schema.orderItems.orderId, candidate.id))
+            .get();
+          return !!hasItems;
+        }
+        return true;
+      });
 
       if (active) {
         orderId = active.id;

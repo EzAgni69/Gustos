@@ -23,6 +23,7 @@ export const OrderCart: React.FC = () => {
     getTotals,
     holdCurrentBill,
     fireKOT,
+    isFiringKOT,
     loadTableOrder,
     retrieveHeldBill,
   } = useCartStore();
@@ -343,7 +344,9 @@ export const OrderCart: React.FC = () => {
         </button>
 
         <button
+          disabled={isFiringKOT}
           onClick={async () => {
+            if (isFiringKOT) return;
             const unfiredItems = items.filter(i => !i.kotId);
             if (items.length === 0) {
               showNotification("⚠️ Cart is empty. Cannot fire KOT.");
@@ -354,7 +357,7 @@ export const OrderCart: React.FC = () => {
               showNotification("✅ All items already sent to kitchen. Add new items to fire another KOT.");
             }
           }}
-          className={`border py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all ${
+          className={`border py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all disabled:opacity-60 ${
             items.some(i => !i.kotId) 
               ? "bg-highlight hover:bg-highlight-hover text-text-inverse border-highlight/50 shadow-md shadow-amber-600/20" 
               : items.length > 0 && items.every(i => !!i.kotId)
@@ -362,7 +365,9 @@ export const OrderCart: React.FC = () => {
                 : "bg-surface-hover border-border-hover text-text-muted cursor-not-allowed"
           }`}
         >
-          {items.some(i => !i.kotId) ? (
+          {isFiringKOT ? (
+            <span>⏳ Firing...</span>
+          ) : items.some(i => !i.kotId) ? (
             <>
               <span>🔥 Fire KOT</span>
               <span className="text-[10px] bg-amber-800/50 px-1 rounded font-mono">
