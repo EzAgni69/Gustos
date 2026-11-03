@@ -547,13 +547,17 @@ cd "$DIST_DIR"
 zip -r "gusto-pos-desktop.zip" "gusto-pos-desktop" -q
 zip -r "gusto-kds.zip" "gusto-kds" -q
 zip -r "gusto-captain.zip" "gusto-captain" -q
+if [ -f "CLIENT_HANDOVER_AND_RUN_GUIDE.md" ]; then
+  zip -r "gusto-client-release.zip" "gusto-pos-desktop.zip" "gusto-kds.zip" "gusto-captain.zip" "CLIENT_HANDOVER_AND_RUN_GUIDE.md" -q
+fi
 
 echo ""
 echo "=========================================="
 echo "✅ All Client Packages Created Successfully!"
 echo "=========================================="
 echo "Outputs:"
-echo "1. POS Desktop:  $DIST_DIR/gusto-pos-desktop.zip"
-echo "2. KDS TV:       $DIST_DIR/gusto-kds.zip"
-echo "3. Captain App:  $DIST_DIR/gusto-captain.zip"
+echo "1. POS Desktop:     $DIST_DIR/gusto-pos-desktop.zip"
+echo "2. KDS TV:          $DIST_DIR/gusto-kds.zip"
+echo "3. Captain App:     $DIST_DIR/gusto-captain.zip"
+echo "4. All-in-one Pack: $DIST_DIR/gusto-client-release.zip"
 echo "=========================================="
