@@ -7,8 +7,18 @@
  */
 
 // @ts-nocheck — pdfmake types are for client-side; server-side API differs slightly
-import pdfmake from "pdfmake/build/pdfmake.js";
+import { createRequire } from "node:module";
 import type { TDocumentDefinitions, Content } from "pdfmake/interfaces.js";
+
+// Use pdfmake's Node entry (js/index.js), NOT the browser build — the browser
+// build has an empty virtual file system, so font loading fails at runtime.
+const require = createRequire(import.meta.url);
+const pdfmake = require("pdfmake");
+const robotoFonts = require("pdfmake/fonts/Roboto.js");
+pdfmake.addFonts(robotoFonts);
+// Only allow pdfmake to read local files we explicitly expect (bundled fonts).
+pdfmake.setLocalAccessPolicy?.((path: string) => path.includes("pdfmake") && path.endsWith(".ttf"));
+pdfmake.setUrlAccessPolicy?.(() => false); // invoices never load remote resources
 
 export interface InvoicePdfData {
   // Organization
@@ -416,14 +426,7 @@ export async function generateInvoicePdf(
   };
 
   // ─── Generate Buffer ───
-  return new Promise<Buffer>((resolve, reject) => {
-    try {
-      const pdfDoc = pdfmake.createPdf(docDefinition);
-      pdfDoc.getBuffer((buffer: any) => {
-        resolve(Buffer.from(buffer));
-      });
-    } catch (err) {
-      reject(err);
-    }
-  });
+  // pdfmake 0.3+: getBuffer() returns a Promise (callbacks are ignored).
+  const buffer = await pdfmake.createPdf(docDefinition).getBuffer();
+  return Buffer.from(buffer);
 }

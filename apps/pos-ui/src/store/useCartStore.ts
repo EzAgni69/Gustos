@@ -101,7 +101,31 @@ export interface CartStoreState {
   getTotals: () => CartTotals;
 }
 
-let cartIdCounter = 1;
+/**
+ * Each new cart line gets a permanent UUID. It is sent with the item and becomes
+ * the order_items.id on the POS server, so a repeated save of the same line
+ * (concurrent saves, offline-queue replays) is ignored instead of duplicated.
+ * crypto.randomUUID needs a secure context, which LAN (http://<ip>) clients lack.
+ */
+function newCartItemId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      // fall through
+    }
+  }
+  const b = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(b);
+  } else {
+    for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  }
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
 
 function safeParseJson<T>(val: any, fallback: T): T {
   if (val === null || val === undefined) return fallback;
@@ -207,7 +231,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
     } else {
       // New item — always unsaved, even if other items are already fired
       const newItem: POSCartItem = {
-        cartItemId: `local-${cartIdCounter++}`,
+        cartItemId: newCartItemId(),
         menuItemId: menuItem.id,
         menuItemName: menuItem.name,
         quantity: 1,
@@ -225,7 +249,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   addItemWithCustomization: ({ menuItem, variantName, variantPrice, quantity, modifiers, addOns, notes }) => {
     const { items } = get();
     const newItem: POSCartItem = {
-      cartItemId: `local-${cartIdCounter++}`,
+      cartItemId: newCartItemId(),
       menuItemId: menuItem.id,
       menuItemName: variantName ? `${menuItem.name} (${variantName})` : menuItem.name,
       variantName,
@@ -262,7 +286,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
           set({ items: updated });
         } else {
           const newItem: POSCartItem = {
-            cartItemId: `local-${cartIdCounter++}`,
+            cartItemId: newCartItemId(),
             menuItemId: item.menuItemId,
             menuItemName: item.menuItemName,
             variantName: item.variantName,
@@ -468,6 +492,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
         if (unsavedItems.length > 0) {
           const unsavedCartIds = new Set(unsavedItems.map(i => i.cartItemId));
           const payload = unsavedItems.map(i => ({
+            clientItemId: i.cartItemId,
             menuItemId: i.menuItemId,
             menuItemName: i.menuItemName,
             variantName: i.variantName,

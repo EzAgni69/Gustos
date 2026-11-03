@@ -326,6 +326,8 @@ export interface AddItemAddOn {
 }
 
 export interface AddItemInput {
+  /** Client-generated UUID for the line; makes repeated saves idempotent on the POS */
+  clientItemId?: string;
   menuItemId: string;
   menuItemName: string;
   variantName?: string;

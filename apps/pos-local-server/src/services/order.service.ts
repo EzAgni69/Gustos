@@ -55,7 +55,14 @@ export interface AddItemInput {
   modifiers?: string[];
   addOns?: { name: string; quantity: number; unitPrice: number; amount: number }[];
   notes?: string;
+  /**
+   * Client-generated UUID for this line. Used as the order item id so a repeated
+   * save of the same line (concurrent saves, offline replays) is ignored.
+   */
+  clientItemId?: string;
 }
+
+const CLIENT_ITEM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ─── Config (should come from outlet settings) ───
 
@@ -486,11 +493,34 @@ export function addItemsToOrder(
     .get();
 
   if (!order) throw new Error("Order not found");
+  if (["COMPLETED", "CANCELLED", "MERGED"].includes(order.status)) {
+    throw new Error(`Cannot add items to a ${order.status.toLowerCase()} order`);
+  }
 
-  for (const item of items) {
+  // Drop lines this order already has (same client id) — a repeated save must not duplicate them
+  const toInsert = items.filter((item) => {
+    if (!item.clientItemId || !CLIENT_ITEM_ID_RE.test(item.clientItemId)) return true;
+    const existing = db
+      .select({ id: schema.orderItems.id, orderId: schema.orderItems.orderId })
+      .from(schema.orderItems)
+      .where(eq(schema.orderItems.id, item.clientItemId))
+      .get();
+    if (existing && existing.orderId !== orderId) {
+      // Same id on another order (e.g. items moved) — insert under a fresh id
+      item.clientItemId = undefined;
+      return true;
+    }
+    return !existing;
+  });
+
+  if (toInsert.length === 0) {
+    return getOrderById(orderId);
+  }
+
+  for (const item of toInsert) {
     db.insert(schema.orderItems)
       .values({
-        id: uuid(),
+        id: item.clientItemId && CLIENT_ITEM_ID_RE.test(item.clientItemId) ? item.clientItemId : uuid(),
         orderId,
         menuItemId: item.menuItemId,
         menuItemName: item.menuItemName,
@@ -519,7 +549,7 @@ export function addItemsToOrder(
   logEvent(
     orderId,
     "ITEMS_ADDED",
-    { items: items.map((i) => ({ name: i.menuItemName, qty: i.quantity })) },
+    { items: toInsert.map((i) => ({ name: i.menuItemName, qty: i.quantity })) },
     userId
   );
 
@@ -699,10 +729,16 @@ export function attachCustomer(
  * Put an order on hold.
  */
 export function holdOrder(orderId: string, userId?: string) {
-  db.update(schema.orders)
-    .set({ status: "DRAFT", updatedAt: new Date().toISOString() })
-    .where(eq(schema.orders.id, orderId))
-    .run();
+  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
+  if (!order) throw new Error("Order not found");
+
+  // Parking only applies to orders the kitchen hasn't started; a fired order keeps its status
+  if (order.status === "PLACED") {
+    db.update(schema.orders)
+      .set({ status: "DRAFT", updatedAt: new Date().toISOString() })
+      .where(eq(schema.orders.id, orderId))
+      .run();
+  }
 
   logEvent(orderId, "ORDER_HELD", {}, userId);
 

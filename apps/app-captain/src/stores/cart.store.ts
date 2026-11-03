@@ -33,6 +33,21 @@ export interface CartItem {
   modifiers: string[];
   addOns: CartItemAddOn[];
   notes: string;
+  /**
+   * Permanent id for this line, sent as clientItemId. The POS uses it as the order
+   * item id, so retrying "Place order" after a partial failure can't duplicate items.
+   */
+  lineId?: string;
+}
+
+/** RFC 4122 v4 UUID (Hermes has no crypto.randomUUID). */
+function newLineId(): string {
+  const b: number[] = [];
+  for (let i = 0; i < 16; i++) b.push(Math.floor(Math.random() * 256));
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = b.map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 /** Build a composite key for cart deduplication */
@@ -118,6 +133,7 @@ export const useCartStore = create<CartState>()(
               ...items,
               {
                 cartKey,
+                lineId: newLineId(),
                 menuItemId: menuItem.id,
                 menuItemName: menuItem.name,
                 variantName: "",
@@ -162,6 +178,7 @@ export const useCartStore = create<CartState>()(
               ...items,
               {
                 cartKey,
+                lineId: newLineId(),
                 menuItemId: menuItem.id,
                 menuItemName: menuItem.name,
                 variantName: variantName || "",
@@ -254,6 +271,7 @@ export const useCartStore = create<CartState>()(
               : undefined;
 
           return {
+            clientItemId: item.lineId,
             menuItemId: item.menuItemId,
             menuItemName: item.menuItemName,
             variantName: item.variantName || undefined,
