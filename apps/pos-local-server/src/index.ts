@@ -245,6 +245,22 @@ httpServer.listen(PORT as number, "0.0.0.0", () => {
       // Silent — cloud may be unreachable
     }
   }, 120_000); // Every 2 minutes
+
+  // Order snapshot reconciliation — keeps Cloud ERP orders (items, totals, status)
+  // identical to local orders and backfills any history that never synced.
+  const reconcileOrders = async () => {
+    try {
+      const { reconcileOrderSnapshots } = await import("./services/order-sync.service.js");
+      if (reconcileOrderSnapshots() > 0) {
+        const { pushToCloud } = await import("./services/sync.service.js");
+        await pushToCloud();
+      }
+    } catch (err) {
+      console.warn("[OrderSync] Reconcile error:", err instanceof Error ? err.message : err);
+    }
+  };
+  setTimeout(reconcileOrders, 10_000);
+  setInterval(reconcileOrders, 300_000); // Every 5 minutes
 });
 
 export { app, io, httpServer };

@@ -88,6 +88,22 @@ export function emitKOTStatusUpdate(
  */
 export function emitOrderUpdated(orderData: Record<string, unknown>): void {
   io?.emit("order:updated", orderData);
+
+  // Every local order change (POS or Captain app) is mirrored to the Cloud ERP.
+  // Updates relayed *from* the cloud carry no local change, so the snapshot hash
+  // check inside syncOrderToCloud makes those a no-op.
+  const order = orderData.order as { id?: unknown } | null | undefined;
+  const orderId =
+    typeof orderData.orderId === "string"
+      ? orderData.orderId
+      : typeof order?.id === "string"
+        ? order.id
+        : undefined;
+  if (orderId) {
+    import("../services/order-sync.service.js")
+      .then(({ syncOrderToCloud }) => syncOrderToCloud(orderId))
+      .catch(() => {});
+  }
 }
 
 /**

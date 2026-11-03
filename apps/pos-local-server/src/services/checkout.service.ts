@@ -21,6 +21,7 @@ import {
 import { buildBillReceipt, renderToConsole } from "@gusto/printer";
 import { getNextInvoiceNumber } from "./sequence.service.js";
 import { queueSyncEvent } from "./sync.service.js";
+import { syncOrderToCloud } from "./order-sync.service.js";
 import { getActiveShift } from "./shift.service.js";
 import { emitOrderUpdated, emitTableStatusChanged } from "../socket/events.js";
 import { generateKOT } from "./kot.service.js";
@@ -189,6 +190,18 @@ export function processCheckout(
     checkoutTableName = tableObj?.name;
 
     // Cancel any stale, abandoned, or lingering orders on this table so table status doesn't revert to OCCUPIED
+    const staleOrderIds = db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.tableId, order.tableId),
+          notInArray(schema.orders.status, ["COMPLETED", "CANCELLED", "MERGED"]),
+          ne(schema.orders.id, orderId)
+        )
+      )
+      .all()
+      .map((o) => o.id);
     db.update(schema.orders)
       .set({ status: "CANCELLED", updatedAt: now })
       .where(
@@ -199,6 +212,8 @@ export function processCheckout(
         )
       )
       .run();
+    // Mirror the implicit cancellations to the Cloud ERP
+    staleOrderIds.forEach((id) => syncOrderToCloud(id));
 
     emitTableStatusChanged({
       tableId: order.tableId,
@@ -257,6 +272,7 @@ export function processCheckout(
     taxAmount: totals.totalTax,
     totalAmount: totals.grandTotal,
     items: activeItems.map((i) => ({
+      id: i.id,
       menuItemId: i.menuItemId,
       menuItemName: i.menuItemName,
       quantity: i.quantity,

@@ -11,10 +11,12 @@
 
 import { Worker, Queue } from "bullmq";
 import { Redis } from "ioredis";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, or, inArray, sql } from "drizzle-orm";
 import { db } from "./db.js";
 import * as schema from "@gusto/db-schema/cloud";
 import { processInventoryDeduction } from "./handlers/inventory.handler.js";
+import { processOrderSnapshot } from "./handlers/order-snapshot.handler.js";
+import { isUuid, resolveDiningTable, resolveMenuItemId } from "./handlers/resolve.js";
 import dotenv from "dotenv";
 import * as Sentry from "@sentry/node";
 import { nodeProfilingIntegration } from "@sentry/profiling-node";
@@ -56,41 +58,6 @@ export function extractPgErrorCode(err: unknown): string | null {
   if (typeof anyErr.code === "string") return anyErr.code;
   if (typeof anyErr.cause?.code === "string") return anyErr.cause.code;
   if (typeof anyErr.originalError?.code === "string") return anyErr.originalError.code;
-  return null;
-}
-
-// ─── ID Resolution Helpers ───
-// Local POS IDs are not guaranteed to exist in the cloud (legacy seed IDs like
-// "item-201" / "table-ac-1", or menu rows re-created in the ERP). Querying a uuid
-// column with a non-UUID string throws 22P02 and a missing FK target throws 23503,
-// either of which would fail the entire job — so resolve defensively.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
-
-async function resolveDiningTable(outletId: string, tableId?: string | null, tableName?: string | null) {
-  let table = null;
-  if (isUuid(tableId)) {
-    table = await db.query.diningTables.findFirst({ where: eq(schema.diningTables.id, tableId) });
-  }
-  if (!table && tableName) {
-    table = await db.query.diningTables.findFirst({
-      where: and(eq(schema.diningTables.outletId, outletId), eq(schema.diningTables.name, tableName)),
-    });
-  }
-  return table ?? null;
-}
-
-async function resolveMenuItemId(outletId: string, menuItemId?: string | null, menuItemName?: string | null): Promise<string | null> {
-  if (isUuid(menuItemId)) {
-    const byId = await db.query.menuItems.findFirst({ where: eq(schema.menuItems.id, menuItemId) });
-    if (byId) return byId.id;
-  }
-  if (menuItemName) {
-    const byName = await db.query.menuItems.findFirst({
-      where: and(eq(schema.menuItems.outletId, outletId), eq(schema.menuItems.name, menuItemName)),
-    });
-    if (byName) return byName.id;
-  }
   return null;
 }
 
@@ -191,6 +158,11 @@ const syncWorker = new Worker(
   async (job) => {
     console.log(`[Sync] Processing job ${job.id}: ${job.name}`);
     const { eventType, payload, localTimestamp } = job.data as any;
+    // Timestamps written to the cloud come from the POS clock so ORDER_SNAPSHOT
+    // staleness checks compare like with like.
+    const eventTime = localTimestamp && !Number.isNaN(new Date(localTimestamp).getTime())
+      ? new Date(localTimestamp)
+      : new Date();
 
     if (eventType === "ORDER_COMPLETED") {
       const {
@@ -273,12 +245,19 @@ const syncWorker = new Worker(
               },
             });
 
-          // 2. Insert Order Items (clear existing if any, then insert)
-          await tx.delete(schema.orderItems).where(eq(schema.orderItems.orderId, orderId));
+          // 2. Insert Order Items (clear existing if any, then insert).
+          //    Local item IDs are kept so ITEM_VOIDED / ORDER_SNAPSHOT address the same rows.
+          const itemIds = resolvedItems.map((i: any) => i.id).filter(isUuid);
+          await tx.delete(schema.orderItems).where(
+            itemIds.length > 0
+              ? or(eq(schema.orderItems.orderId, orderId), inArray(schema.orderItems.id, itemIds))
+              : eq(schema.orderItems.orderId, orderId)
+          );
 
           if (resolvedItems.length > 0) {
             await tx.insert(schema.orderItems).values(
               resolvedItems.map((i: any) => ({
+                ...(isUuid(i.id) ? { id: i.id } : {}),
                 orderId,
                 menuItemId: i.menuItemId,
                 menuItemName: i.menuItemName,
@@ -290,10 +269,13 @@ const syncWorker = new Worker(
             );
           }
 
-          // 3. Upsert Invoice
-          await tx
-            .insert(schema.invoices)
-            .values({
+          // 3. Upsert Invoice (invoices has no unique key, so check explicitly —
+          //    otherwise every job retry adds a duplicate invoice)
+          const existingInvoice = await tx.query.invoices.findFirst({
+            where: eq(schema.invoices.orderId, orderId),
+          });
+          if (!existingInvoice) {
+            await tx.insert(schema.invoices).values({
               orderId,
               outletId: finalOutletId,
               invoiceNumber,
@@ -303,8 +285,8 @@ const syncWorker = new Worker(
               paymentMode,
               isPaid: true,
               createdAt: new Date(completedAt),
-            })
-            .onConflictDoNothing();
+            });
+          }
         });
 
         console.log(`[Sync] ✅ Successfully synced ORDER_COMPLETED: ${orderNumber}`);
@@ -414,6 +396,31 @@ const syncWorker = new Worker(
 
         throw err;
       }
+    } else if (eventType === "ORDER_SNAPSHOT") {
+      try {
+        const result = await processOrderSnapshot(payload, localTimestamp);
+        if (!result.applied) {
+          console.log(`[Sync] ⏭️ Skipped ORDER_SNAPSHOT ${result.orderNumber}: ${result.reason}`);
+        } else {
+          if (result.unresolvedItems.length > 0) {
+            console.warn(
+              `[Sync] ⚠️ Order ${result.orderNumber}: ${result.unresolvedItems.length} item(s) not found in cloud menu: ` +
+              result.unresolvedItems.join(", ")
+            );
+          }
+          console.log(`[Sync] ✅ Synced ORDER_SNAPSHOT: ${result.orderNumber} (${result.status})`);
+          pubClient.publish("sync-events", JSON.stringify({
+            eventType: "ORDER_UPDATED",
+            organizationId: result.organizationId,
+            outletId: result.outletId,
+            payload: { orderId: result.orderId, orderNumber: result.orderNumber, status: result.status, tableId: result.tableId },
+          })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+        }
+      } catch (err) {
+        Sentry.captureException(err);
+        console.error(`[Sync] ❌ Failed to sync ORDER_SNAPSHOT ${payload?.orderNumber}:`, err);
+        throw err;
+      }
     } else if (eventType === "ONLINE_ORDER_ACCEPTED") {
       const { onlineOrderId } = payload;
       if (onlineOrderId) {
@@ -488,7 +495,6 @@ const syncWorker = new Worker(
             set: {
               tableId: validTableId,
               orderMode: orderMode || "DINE_IN",
-              updatedAt: new Date(),
             },
           });
 
@@ -532,7 +538,7 @@ const syncWorker = new Worker(
 
         await db
           .update(schema.orders)
-          .set({ status: "CANCELLED", updatedAt: new Date() })
+          .set({ status: "CANCELLED", updatedAt: eventTime })
           .where(eq(schema.orders.id, orderId));
 
         console.log(`[Sync] ✅ Successfully synced ORDER_CANCELLED: ${orderNumber}`);
@@ -630,7 +636,7 @@ const syncWorker = new Worker(
           .set({
             status: "CANCELLED",
             notes: `Merged into ${targetOrderNumber || targetOrderId}`,
-            updatedAt: new Date(),
+            updatedAt: eventTime,
           })
           .where(eq(schema.orders.id, sourceOrderId));
 
@@ -652,7 +658,7 @@ const syncWorker = new Worker(
       try {
         await db
           .update(schema.orders)
-          .set({ orderMode: newMode, updatedAt: new Date() })
+          .set({ orderMode: newMode, updatedAt: eventTime })
           .where(eq(schema.orders.id, orderId));
 
         console.log(`[Sync] 🔄 Order ${orderNumber || orderId} mode changed: ${oldMode} -> ${newMode}`);
@@ -677,7 +683,7 @@ const syncWorker = new Worker(
             discountLabel: `COMPLIMENTARY: ${reason || "Approved"}`,
             totalAmount: "0",
             notes: `Complimentary by ${approvedBy || "Manager"}. Reason: ${reason || ""}`,
-            updatedAt: new Date(),
+            updatedAt: eventTime,
           })
           .where(eq(schema.orders.id, orderId));
 

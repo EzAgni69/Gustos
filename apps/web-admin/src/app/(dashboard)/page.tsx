@@ -302,6 +302,7 @@ export default function DashboardOverviewPage() {
     [
       "ORDER_COMPLETED",
       "ORDER_CREATED",
+      "ORDER_UPDATED",
       "ORDER_CANCELLED",
       "ORDERS_MERGED",
       "ORDER_MODE_CHANGED",

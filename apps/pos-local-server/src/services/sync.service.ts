@@ -10,6 +10,7 @@ import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
 import { flushOutbox } from "./realtime-uplink.service.js";
+import { ORDER_SNAPSHOT_EVENT, markOrderSnapshotPushed } from "./order-sync.service.js";
 
 /**
  * Queue a sync event in the outbox for later cloud push.
@@ -137,6 +138,9 @@ export async function pushToCloud(): Promise<number> {
 
       if (response.ok) {
         markEventSynced(event.id);
+        if (event.eventType === ORDER_SNAPSHOT_EVENT) {
+          markOrderSnapshotPushed(event.payload);
+        }
         syncedCount++;
       } else {
         const text = await response.text();

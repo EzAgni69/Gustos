@@ -18,6 +18,7 @@ import {
 } from "@gusto/core-logic";
 import { getNextOrderNumber } from "./sequence.service.js";
 import { queueSyncEvent } from "./sync.service.js";
+import { syncOrderToCloud } from "./order-sync.service.js";
 import {
   emitOrderUpdated,
   emitTableStatusChanged,
@@ -754,6 +755,7 @@ export function cancelOrder(orderId: string, userId?: string) {
     organizationId: order.organizationId,
     outletId: order.outletId,
   });
+  syncOrderToCloud(orderId);
 
   return getOrderById(orderId);
 }
@@ -1015,6 +1017,7 @@ export function mergeOrders(
     outletId: targetOrder.outletId,
   });
 
+  syncOrderToCloud(sourceOrderId);
   const updated = getOrderById(targetOrderId);
   emitOrderUpdated({ type: "ORDERS_MERGED", order: updated });
   return updated;
