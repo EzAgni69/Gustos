@@ -13,10 +13,13 @@
  *   GET    /api/v1/menu/items/:id — Get item
  *   PUT    /api/v1/menu/items/:id — Update item
  *   DELETE /api/v1/menu/items/:id — Delete item
+ *
+ * Standard menu:
+ *   POST   /api/v1/menu/load-standard — Load / refresh the menu.md catalogue
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, count, ilike } from "drizzle-orm";
+import { eq, and, count, ilike, inArray } from "drizzle-orm";
 import {
   createMenuCategorySchema,
   updateMenuCategorySchema,
@@ -30,6 +33,7 @@ import { db } from "../db/index.js";
 import { requireMinRole, getOrganizationId } from "../middleware/auth.js";
 import { success, paginated, error } from "../utils/response.js";
 import { publishSyncUpdate } from "../utils/sync-publisher.js";
+import { STANDARD_MENU_CATEGORIES, STANDARD_MENU_ITEMS } from "../data/standard-menu.js";
 
 export async function menuRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -396,6 +400,155 @@ export async function menuRoutes(fastify: FastifyInstance) {
       await publishSyncUpdate(orgId, item.outletId, "MENU_UPDATED");
 
       return reply.send(success(null, "Menu item deleted"));
+    }
+  );
+
+  // ═══════════ Standard Menu ═══════════
+
+  // ─── Load Standard Menu (menu.md) ───
+  // Idempotent: categories and items are matched by name and updated in place,
+  // missing ones are created. With replace=true, items not on the standard menu
+  // are removed — or, if they appear in past orders, marked unavailable so order
+  // history stays intact.
+  fastify.post(
+    "/api/v1/menu/load-standard",
+    { preHandler: [requireMinRole("MANAGER")] },
+    async (request, reply) => {
+      const { outletId, replace } = (request.body ?? {}) as { outletId?: string; replace?: boolean };
+      const orgId = getOrganizationId(request);
+
+      if (!outletId) {
+        return reply.status(400).send(error("outletId is required"));
+      }
+
+      const outlet = await db.query.outlets.findFirst({
+        where: and(eq(cloudSchema.outlets.id, outletId), eq(cloudSchema.outlets.organizationId, orgId)),
+      });
+      if (!outlet) {
+        return reply.status(404).send(error("Outlet not found"));
+      }
+
+      const result = await db.transaction(async (tx) => {
+        // 1. Categories
+        const existingCats = await tx
+          .select()
+          .from(cloudSchema.menuCategories)
+          .where(eq(cloudSchema.menuCategories.outletId, outletId));
+        const catByName = new Map(existingCats.map((c) => [c.name.trim().toLowerCase(), c]));
+        const catIdByName = new Map<string, string>();
+
+        for (const cat of STANDARD_MENU_CATEGORIES) {
+          const existing = catByName.get(cat.name.toLowerCase());
+          if (existing) {
+            await tx
+              .update(cloudSchema.menuCategories)
+              .set({ sortOrder: cat.sortOrder, isActive: true })
+              .where(eq(cloudSchema.menuCategories.id, existing.id));
+            catIdByName.set(cat.name, existing.id);
+          } else {
+            const [created] = await tx
+              .insert(cloudSchema.menuCategories)
+              .values({ outletId, name: cat.name, sortOrder: cat.sortOrder })
+              .returning();
+            catIdByName.set(cat.name, created!.id);
+          }
+        }
+
+        // 2. Items
+        const existingItems = await tx
+          .select()
+          .from(cloudSchema.menuItems)
+          .where(eq(cloudSchema.menuItems.outletId, outletId));
+        const itemByName = new Map(existingItems.map((i) => [i.name.trim().toLowerCase(), i]));
+        const standardNames = new Set<string>();
+        const now = new Date();
+        let itemsInserted = 0;
+        let itemsUpdated = 0;
+
+        for (const [idx, item] of STANDARD_MENU_ITEMS.entries()) {
+          const categoryId = catIdByName.get(item.categoryName);
+          if (!categoryId) continue;
+          const key = item.name.toLowerCase();
+          standardNames.add(key);
+          const values = {
+            categoryId,
+            name: item.name,
+            description: item.description,
+            variants: item.variants,
+            price: item.price,
+            gstRate: item.gstRate,
+            isVeg: item.isVeg,
+            sortOrder: idx + 1,
+            updatedAt: now,
+          };
+          const existing = itemByName.get(key);
+          if (existing) {
+            await tx.update(cloudSchema.menuItems).set(values).where(eq(cloudSchema.menuItems.id, existing.id));
+            itemsUpdated++;
+          } else {
+            await tx.insert(cloudSchema.menuItems).values({ ...values, outletId, isAvailable: true });
+            itemsInserted++;
+          }
+        }
+
+        // 3. Replace: drop items/categories that are not on the standard menu
+        let itemsRemoved = 0;
+        let itemsDeactivated = 0;
+        if (replace) {
+          const extras = existingItems.filter((i) => !standardNames.has(i.name.trim().toLowerCase()));
+          if (extras.length > 0) {
+            const ordered = await tx
+              .selectDistinct({ menuItemId: cloudSchema.orderItems.menuItemId })
+              .from(cloudSchema.orderItems)
+              .where(inArray(cloudSchema.orderItems.menuItemId, extras.map((i) => i.id)));
+            const orderedIds = new Set(ordered.map((o) => o.menuItemId));
+            const deletable = extras.filter((i) => !orderedIds.has(i.id)).map((i) => i.id);
+            const keep = extras.filter((i) => orderedIds.has(i.id)).map((i) => i.id);
+            if (deletable.length > 0) {
+              await tx.delete(cloudSchema.menuItems).where(inArray(cloudSchema.menuItems.id, deletable));
+              itemsRemoved = deletable.length;
+            }
+            if (keep.length > 0) {
+              await tx
+                .update(cloudSchema.menuItems)
+                .set({ isAvailable: false, updatedAt: now })
+                .where(inArray(cloudSchema.menuItems.id, keep));
+              itemsDeactivated = keep.length;
+            }
+          }
+
+          // Remove non-standard categories that are now empty; deactivate the rest
+          const standardCatIds = new Set(catIdByName.values());
+          for (const cat of existingCats) {
+            if (standardCatIds.has(cat.id)) continue;
+            const [remaining] = await tx
+              .select({ value: count() })
+              .from(cloudSchema.menuItems)
+              .where(eq(cloudSchema.menuItems.categoryId, cat.id));
+            if (Number(remaining?.value ?? 0) === 0) {
+              await tx.delete(cloudSchema.menuCategories).where(eq(cloudSchema.menuCategories.id, cat.id));
+            } else {
+              await tx
+                .update(cloudSchema.menuCategories)
+                .set({ isActive: false })
+                .where(eq(cloudSchema.menuCategories.id, cat.id));
+            }
+          }
+        }
+
+        return {
+          categoriesCount: STANDARD_MENU_CATEGORIES.length,
+          itemsInserted,
+          itemsUpdated,
+          itemsRemoved,
+          itemsDeactivated,
+          totalItems: STANDARD_MENU_ITEMS.length,
+        };
+      });
+
+      await publishSyncUpdate(orgId, outletId, "MENU_UPDATED");
+
+      return reply.send(success(result, "Standard menu loaded"));
     }
   );
 }

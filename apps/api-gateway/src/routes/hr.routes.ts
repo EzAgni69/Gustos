@@ -43,6 +43,7 @@ import * as schema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { getOrganizationId, requireMinRole } from "../middleware/auth.js";
 import { success, paginated, error } from "../utils/response.js";
+import { getOrgTimeZone, localToday } from "../utils/business-time.js";
 
 export async function hrRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -293,7 +294,8 @@ export async function hrRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const orgId = getOrganizationId(request);
       const body = clockInSchema.parse(request.body);
-      const today = new Date().toISOString().split("T")[0]!;
+      // Attendance day in the restaurant's time zone (a 1am IST clock-in is "today", not yesterday)
+      const today = localToday(await getOrgTimeZone(orgId));
 
       // Check if already clocked in today
       const existing = await db.query.attendances.findFirst({

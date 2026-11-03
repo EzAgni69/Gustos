@@ -232,8 +232,12 @@ export function useRealtimeEvent(
   const callbackRef = useRef(callback);
   callbackRef.current = callback;
 
+  // Callers pass inline array literals; key on the contents so we don't
+  // unsubscribe/resubscribe on every render.
+  const eventsKey = Array.isArray(events) ? events.join("|") : events;
+
   useEffect(() => {
-    const eventList = Array.isArray(events) ? events : [events];
+    const eventList = eventsKey.split("|");
     const unsubscribes = eventList.map((ev) =>
       subscribe(ev, (data) => {
         callbackRef.current(data);
@@ -243,5 +247,5 @@ export function useRealtimeEvent(
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [events, subscribe]);
+  }, [eventsKey, subscribe]);
 }

@@ -62,6 +62,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { useRealtimeEvent } from "@/lib/socket-context";
 import { getPersistedOutletId, setPersistedOutletId } from "@/lib/outlet-context";
 import { OutletSwitcher } from "@/components/shared/OutletSwitcher";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -254,6 +255,15 @@ export default function MenuPage() {
       return true;
     });
   }, [menuItems, selectedCategoryId, vegFilter, searchQuery, categoryMap]);
+
+  // Items 86'd / restored on the POS show up here live
+  useRealtimeEvent("MENU_ITEM_AVAILABILITY", (data) => {
+    const { menuItemId, isAvailable } = data.payload || {};
+    if (!menuItemId) return;
+    setMenuItems((prev) =>
+      prev.map((item) => (item.id === menuItemId ? { ...item, isAvailable: Boolean(isAvailable) } : item))
+    );
+  });
 
   // ─── Load Standard Menu from menu.md ───
   const handleLoadStandardMenu = async () => {

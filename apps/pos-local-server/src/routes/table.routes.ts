@@ -12,6 +12,7 @@ import {
   emitTableStatusChanged,
   emitTableSwapped,
   emitTableMerged,
+  emitOrderUpdated,
 } from "../socket/events.js";
 import { mergeOrders, getOrderById } from "../services/order.service.js";
 
@@ -233,7 +234,8 @@ router.patch("/:id/status", (req, res) => {
     .where(eq(schema.diningTables.id, id!))
     .run();
 
-  emitTableStatusChanged({ tableId: id, status });
+  const updatedTable = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, id!)).get();
+  emitTableStatusChanged({ tableId: id, tableName: updatedTable?.name, status });
 
   res.json({
     success: true,
@@ -296,8 +298,9 @@ router.post("/transfer", (req, res) => {
     .where(eq(schema.diningTables.id, toTableId))
     .run();
 
-  emitTableStatusChanged({ tableId: fromTableId, status: "AVAILABLE" });
-  emitTableStatusChanged({ tableId: toTableId, status: "OCCUPIED" });
+  emitTableStatusChanged({ tableId: fromTableId, tableName: fromTable.name, status: "AVAILABLE" });
+  emitTableStatusChanged({ tableId: toTableId, tableName: toTable.name, status: "OCCUPIED", orderId: fromTable.currentOrderId });
+  emitOrderUpdated({ type: "TABLE_TRANSFERRED", orderId: fromTable.currentOrderId });
 
   res.json({
     success: true,
@@ -360,6 +363,8 @@ router.post("/swap", (req, res) => {
       tableAName: tableA.name,
       tableBId,
       tableBName: tableB.name,
+      orderAId,
+      orderBId,
     });
 
     res.json({

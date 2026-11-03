@@ -4,6 +4,7 @@ import { emitOrderUpdated } from "../socket/events.js";
 import { createOnlineOrderFromWebhook, acceptOnlineOrder } from "./order.service.js";
 import { pullFromCloud } from "./cloud-sync.service.js";
 import { generateKOT } from "./kot.service.js";
+import { pullCloudCommands } from "./cloud-commands.service.js";
 
 let socket: Socket | null = null;
 const API_URL =
@@ -48,8 +49,9 @@ export function initRealtimeUplink() {
       outletId: OUTLET_ID,
     });
     
-    // Flush outbox on connect
+    // Flush outbox on connect, and pick up ERP edits made while we were offline
     flushOutbox();
+    pullCloudCommands().catch(() => {});
   });
 
   // Suppress noisy reconnection errors — log once then go silent
@@ -71,6 +73,10 @@ export function initRealtimeUplink() {
     if (downlinkEvents.includes(data.eventType)) {
       console.log(`[Realtime Uplink] Downlink config changed (${data.eventType}). Pulling immediately...`);
       pullFromCloud(true).catch(err => console.error("[Realtime Uplink] Pull error:", err));
+    }
+    else if (data.eventType === "ORDER_COMMAND") {
+      // An ERP user edited/deleted one of our orders
+      pullCloudCommands().catch(err => console.error("[Realtime Uplink] Command pull error:", err));
     }
     else if (data.eventType === "ORDER_COMPLETED" && data.payload) {
       // Broadcast this back down to the local LAN so Captains / KDS see the update

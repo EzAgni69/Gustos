@@ -14,7 +14,7 @@
  * never deducted twice.
  */
 
-import { eq, or, inArray } from "drizzle-orm";
+import { eq, ne, and, or, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import * as schema from "@gusto/db-schema/cloud";
 import {
@@ -60,6 +60,14 @@ function toDate(value: unknown, fallback: Date): Date {
   return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
+/** Keep the last 10 digits (Indian mobile) so "+91 98765-43210" and "9876543210" match. */
+function normalizePhone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 7) return null;
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
 function nullableString(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -75,7 +83,12 @@ export interface OrderSnapshotResult {
   status: OrderStatus;
   tableId: string | null;
   unresolvedItems: string[];
+  /** Dining tables whose status this snapshot changed (for real-time fan-out). */
+  tableChanges: { tableId: string; tableName: string; status: "AVAILABLE" | "OCCUPIED" }[];
 }
+
+const ACTIVE_STATUSES: OrderStatus[] = ["DRAFT", "PLACED", "IN_PROGRESS", "READY", "SERVED"];
+const isActive = (s: string | null | undefined) => !!s && (ACTIVE_STATUSES as string[]).includes(s);
 
 export async function processOrderSnapshot(payload: any, localTimestamp?: string): Promise<OrderSnapshotResult> {
   const orderId: string = payload.orderId;
@@ -160,6 +173,7 @@ export async function processOrderSnapshot(payload: any, localTimestamp?: string
     status,
     tableId: table?.id ?? null,
     unresolvedItems,
+    tableChanges: [] as OrderSnapshotResult["tableChanges"],
   };
 
   return db.transaction(async (tx) => {
@@ -167,7 +181,12 @@ export async function processOrderSnapshot(payload: any, localTimestamp?: string
     // (Read via drizzle, not raw SQL, so the timestamp-without-timezone column is
     // mapped exactly the way drizzle wrote it — raw postgres-js parses it as local time.)
     const [locked] = await tx
-      .select({ updatedAt: schema.orders.updatedAt })
+      .select({
+        updatedAt: schema.orders.updatedAt,
+        tableId: schema.orders.tableId,
+        status: schema.orders.status,
+        customerId: schema.orders.customerId,
+      })
       .from(schema.orders)
       .where(eq(schema.orders.id, orderId))
       .for("update");
@@ -228,6 +247,84 @@ export async function processOrderSnapshot(payload: any, localTimestamp?: string
       }
     }
 
-    return { ...base, applied: true };
+    // 4. Derive dining-table occupancy from the order, so the ERP floor view is
+    //    correct even when the POS's live table updates were missed (offline).
+    //    Only transitions are acted on, so a backfill of old orders cannot flip
+    //    tables that are in use by newer orders.
+    const tableChanges: OrderSnapshotResult["tableChanges"] = [];
+    const prevTableId = locked?.tableId ?? null;
+    const newTableId = table?.id ?? null;
+    const wasActive = isActive(locked?.status);
+    const nowActive = isActive(status);
+
+    const releaseIfFree = async (tableId: string) => {
+      const [other] = await tx
+        .select({ id: schema.orders.id })
+        .from(schema.orders)
+        .where(
+          and(
+            eq(schema.orders.tableId, tableId),
+            ne(schema.orders.id, orderId),
+            inArray(schema.orders.status, ACTIVE_STATUSES)
+          )
+        )
+        .limit(1);
+      if (other) return;
+      const [released] = await tx
+        .update(schema.diningTables)
+        .set({ status: "AVAILABLE" })
+        .where(and(eq(schema.diningTables.id, tableId), eq(schema.diningTables.status, "OCCUPIED")))
+        .returning({ id: schema.diningTables.id, name: schema.diningTables.name });
+      if (released) tableChanges.push({ tableId: released.id, tableName: released.name, status: "AVAILABLE" });
+    };
+
+    // Order left its previous table (transfer/swap) or closed on it
+    if (prevTableId && wasActive && (prevTableId !== newTableId || !nowActive)) {
+      await releaseIfFree(prevTableId);
+    }
+    // Order newly seated on a table (new order, or moved here)
+    if (newTableId && nowActive && orderValues.orderMode === "DINE_IN" && (!locked || prevTableId !== newTableId || !wasActive)) {
+      const [occupied] = await tx
+        .update(schema.diningTables)
+        .set({ status: "OCCUPIED" })
+        .where(and(eq(schema.diningTables.id, newTableId), ne(schema.diningTables.status, "OCCUPIED")))
+        .returning({ id: schema.diningTables.id, name: schema.diningTables.name });
+      if (occupied) tableChanges.push({ tableId: occupied.id, tableName: occupied.name, status: "OCCUPIED" });
+    }
+
+    // 5. CRM: link a completed order to its customer (by phone) and roll up
+    //    visits/spend. customerId doubles as the "already counted" marker, so
+    //    re-sent snapshots never double count.
+    const phone = normalizePhone(payload.customerPhone);
+    if (status === "COMPLETED" && phone && !locked?.customerId) {
+      let [customer] = await tx
+        .select()
+        .from(schema.customers)
+        .where(and(eq(schema.customers.organizationId, organizationId), eq(schema.customers.phone, phone)))
+        .limit(1);
+      if (!customer) {
+        [customer] = await tx
+          .insert(schema.customers)
+          .values({
+            organizationId,
+            phone,
+            name: (typeof payload.customerName === "string" && payload.customerName.trim()) || "Guest",
+          })
+          .returning();
+      }
+      if (customer) {
+        await tx
+          .update(schema.customers)
+          .set({
+            totalVisits: sql`${schema.customers.totalVisits} + 1`,
+            totalSpend: sql`${schema.customers.totalSpend} + ${orderValues.totalAmount}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.customers.id, customer.id));
+        await tx.update(schema.orders).set({ customerId: customer.id }).where(eq(schema.orders.id, orderId));
+      }
+    }
+
+    return { ...base, applied: true, tableChanges };
   });
 }

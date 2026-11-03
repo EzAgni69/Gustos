@@ -557,9 +557,12 @@ export function startCloudSyncPoller(
     pullFromCloud().catch(() => {});
   }, 5_000);
 
-  // Periodic sync
+  // Periodic sync (config from the ERP + ERP edits to our orders)
   syncIntervalHandle = setInterval(() => {
     pullFromCloud().catch(() => {});
+    import("./cloud-commands.service.js")
+      .then(({ pullCloudCommands }) => pullCloudCommands())
+      .catch(() => {});
   }, SYNC_INTERVAL_MS);
 }
 

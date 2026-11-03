@@ -8,6 +8,8 @@ import { Router } from "express";
 import { eq } from "drizzle-orm";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { queueSyncEvent } from "../services/sync.service.js";
+import { emitMenuUpdated } from "../socket/events.js";
 
 const router = Router();
 
@@ -109,9 +111,23 @@ router.patch("/items/:id/availability", (req, res) => {
     .where(eq(schema.menuItems.id, id!))
     .run();
 
+  const nextAvailable = isAvailable ?? !item.isAvailable;
+
+  // Captain apps refresh their menu on this event
+  emitMenuUpdated({ menuItemId: item.id, isAvailable: nextAvailable });
+
+  // Mirror to the Cloud ERP; otherwise the next full menu pull would revert it
+  queueSyncEvent("MENU_ITEM_AVAILABILITY", {
+    menuItemId: item.id,
+    menuItemName: item.name,
+    isAvailable: nextAvailable,
+    outletId: item.outletId,
+    organizationId: process.env.ORGANIZATION_ID,
+  });
+
   res.json({
     success: true,
-    data: { id: item.id, isAvailable: isAvailable ?? !item.isAvailable },
+    data: { id: item.id, isAvailable: nextAvailable },
     message: `Item ${isAvailable ?? !item.isAvailable ? "available" : "86'd (unavailable)"}`,
   });
 });

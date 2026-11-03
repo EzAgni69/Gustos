@@ -107,6 +107,13 @@ export function emitOrderUpdated(orderData: Record<string, unknown>): void {
 }
 
 /**
+ * Tell LAN devices (Captain, POS UI) the menu changed locally, e.g. an item was 86'd.
+ */
+export function emitMenuUpdated(data: Record<string, unknown>): void {
+  io?.emit("sync:menu-updated", { ...data, timestamp: new Date().toISOString() });
+}
+
+/**
  * Emit a table status change to all devices and notify Cloud ERP.
  */
 export function emitTableStatusChanged(tableData: Record<string, unknown>): void {
@@ -177,8 +184,16 @@ export function emitTableSwapped(data: {
   tableAName: string;
   tableBId: string;
   tableBName: string;
+  orderAId?: string | null;
+  orderBId?: string | null;
 }): void {
   io?.emit("table:swapped", data);
+  // Clients (Captain, POS UI) and the Cloud ERP only react to the generic events,
+  // so re-announce both tables and both orders.
+  emitTableStatusChanged({ tableId: data.tableAId, tableName: data.tableAName, status: "OCCUPIED", orderId: data.orderBId ?? undefined });
+  emitTableStatusChanged({ tableId: data.tableBId, tableName: data.tableBName, status: "OCCUPIED", orderId: data.orderAId ?? undefined });
+  if (data.orderAId) emitOrderUpdated({ type: "TABLE_SWAPPED", orderId: data.orderAId });
+  if (data.orderBId) emitOrderUpdated({ type: "TABLE_SWAPPED", orderId: data.orderBId });
 }
 
 /**
@@ -206,6 +221,7 @@ export function emitOrderModeChanged(data: {
 }): void {
   io?.to("captains").emit("order:mode-changed", data);
   io?.to("pos").emit("order:mode-changed", data);
+  emitOrderUpdated({ type: "ORDER_MODE_CHANGED", orderId: data.orderId, orderNumber: data.orderNumber });
 }
 
 /**
@@ -220,6 +236,8 @@ export function emitOrderItemsMoved(data: {
 }): void {
   io?.to("captains").emit("order:items-moved", data);
   io?.to("pos").emit("order:items-moved", data);
+  emitOrderUpdated({ type: "ITEMS_MOVED", orderId: data.sourceOrderId });
+  emitOrderUpdated({ type: "ITEMS_MOVED", orderId: data.targetOrderId });
 }
 
 /**

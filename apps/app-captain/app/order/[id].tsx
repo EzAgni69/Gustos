@@ -47,15 +47,21 @@ export default function OrderDetailScreen() {
     fetchOrder();
 
     // Listen for real-time updates to this order
+    // The POS sends either the full order or just its id (KOT fired, ready, paid,
+    // table transfer/swap, edits from the POS or ERP…) — refetch in the latter case.
     const unsubOrder = onSocketEvent(SOCKET_EVENTS.ORDER_UPDATED, (data: any) => {
       if (data?.order?.id === id) {
         setOrder(data.order);
+      } else if (data?.orderId === id) {
+        fetchOrder();
       }
     });
 
-    const unsubKOT = onSocketEvent(SOCKET_EVENTS.KOT_STATUS_UPDATE, () => {
+    const unsubKOT = onSocketEvent(SOCKET_EVENTS.KOT_STATUS_UPDATE, (data: any) => {
       // Re-fetch order to get updated KOT and Item statuses
-      fetchOrder();
+      if (!data?.orderId || data.orderId === id) {
+        fetchOrder();
+      }
     });
 
     return () => {

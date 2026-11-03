@@ -16,7 +16,7 @@ import { db } from "./db.js";
 import * as schema from "@gusto/db-schema/cloud";
 import { processInventoryDeduction } from "./handlers/inventory.handler.js";
 import { processOrderSnapshot } from "./handlers/order-snapshot.handler.js";
-import { isUuid, resolveDiningTable, resolveMenuItemId } from "./handlers/resolve.js";
+import { isUuid, resolveDiningTable, resolveMenuItemId, DEFAULT_OUTLET_ID, DEFAULT_ORG_ID } from "./handlers/resolve.js";
 import dotenv from "dotenv";
 import * as Sentry from "@sentry/node";
 import { nodeProfilingIntegration } from "@sentry/profiling-node";
@@ -415,11 +415,41 @@ const syncWorker = new Worker(
             outletId: result.outletId,
             payload: { orderId: result.orderId, orderNumber: result.orderNumber, status: result.status, tableId: result.tableId },
           })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+          for (const change of result.tableChanges) {
+            console.log(`[Sync] 🪑 Table ${change.tableName} -> ${change.status} (from ORDER_SNAPSHOT ${result.orderNumber})`);
+            pubClient.publish("sync-events", JSON.stringify({
+              eventType: "TABLE_STATUS_CHANGED",
+              organizationId: result.organizationId,
+              outletId: result.outletId,
+              payload: change,
+            })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
+          }
         }
       } catch (err) {
         Sentry.captureException(err);
         console.error(`[Sync] ❌ Failed to sync ORDER_SNAPSHOT ${payload?.orderNumber}:`, err);
         throw err;
+      }
+    } else if (eventType === "MENU_ITEM_AVAILABILITY") {
+      const { menuItemId, menuItemName, isAvailable, organizationId, outletId } = payload;
+      const finalOutletId = isUuid(outletId) ? outletId : DEFAULT_OUTLET_ID;
+      const finalOrgId = isUuid(organizationId) ? organizationId : DEFAULT_ORG_ID;
+      const cloudItemId = await resolveMenuItemId(finalOutletId, menuItemId, menuItemName);
+      if (!cloudItemId) {
+        console.warn(`[Sync] ⚠️ MENU_ITEM_AVAILABILITY: item "${menuItemName ?? menuItemId}" not found in cloud menu`);
+      } else {
+        await db
+          .update(schema.menuItems)
+          .set({ isAvailable: Boolean(isAvailable), updatedAt: eventTime })
+          .where(eq(schema.menuItems.id, cloudItemId));
+        console.log(`[Sync] 🍕 ${menuItemName ?? cloudItemId} is now ${isAvailable ? "available" : "86'd"} in Cloud ERP`);
+        // Not MENU_UPDATED: that would make every POS re-pull the whole menu.
+        pubClient.publish("sync-events", JSON.stringify({
+          eventType: "MENU_ITEM_AVAILABILITY",
+          organizationId: finalOrgId,
+          outletId: finalOutletId,
+          payload: { menuItemId: cloudItemId, menuItemName, isAvailable: Boolean(isAvailable) },
+        })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
       }
     } else if (eventType === "ONLINE_ORDER_ACCEPTED") {
       const { onlineOrderId } = payload;

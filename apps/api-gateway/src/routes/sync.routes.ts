@@ -5,10 +5,12 @@
  *
  * POST /api/v1/sync/push — Receive batch events from local POS
  * GET  /api/v1/sync/pull — Pull updates for a specific outlet (menu, tables, users, config)
+ * GET  /api/v1/sync/commands — Pending ERP → POS order commands for an outlet
+ * POST /api/v1/sync/commands/ack — POS reports which commands it applied
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, gte, or, isNull } from "drizzle-orm";
+import { eq, and, gte, or, isNull, asc } from "drizzle-orm";
 import { success, error } from "../utils/response.js";
 import { posSyncQueue } from "../config/queue.js";
 import { db } from "../db/index.js";
@@ -26,6 +28,25 @@ function validatePosApiKey(apiKey: string | undefined): boolean {
     return true;
   }
   return apiKey === expectedKey;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function isMissingTable(err: unknown): boolean {
+  let cur: any = err;
+  for (let i = 0; cur && i < 4; i++) {
+    if (cur.code === "42P01") return true;
+    cur = cur.cause;
+  }
+  return false;
 }
 
 export async function syncRoutes(fastify: FastifyInstance) {
@@ -67,6 +88,81 @@ export async function syncRoutes(fastify: FastifyInstance) {
         "Batch sync queued successfully"
       )
     );
+  });
+
+  // ─── Commands (ERP → POS) ───
+  // Pending ERP edits to POS-owned orders (see utils/order-commands.ts).
+  fastify.get("/api/v1/sync/commands", async (request, reply) => {
+    const apiKey = request.headers["x-pos-api-key"] as string | undefined;
+    if (!validatePosApiKey(apiKey)) {
+      return reply.status(401).send(error("Invalid POS API key"));
+    }
+    const { outletId } = request.query as { outletId?: string };
+    if (!outletId || !UUID_RE.test(outletId)) {
+      return reply.status(400).send(error("A valid outletId query parameter is required"));
+    }
+
+    try {
+      const rows = await db
+        .select()
+        .from(schema.syncQueue)
+        .where(and(eq(schema.syncQueue.outletId, outletId), eq(schema.syncQueue.status, "PENDING")))
+        .orderBy(asc(schema.syncQueue.createdAt))
+        .limit(100);
+
+      return reply.send(
+        success(
+          rows.map((r) => ({
+            id: r.id,
+            eventType: r.eventType,
+            payload: safeJson(r.payload),
+            createdAt: r.createdAt?.toISOString(),
+          }))
+        )
+      );
+    } catch (err) {
+      if (isMissingTable(err)) return reply.send(success([]));
+      throw err;
+    }
+  });
+
+  fastify.post("/api/v1/sync/commands/ack", async (request, reply) => {
+    const apiKey = request.headers["x-pos-api-key"] as string | undefined;
+    if (!validatePosApiKey(apiKey)) {
+      return reply.status(401).send(error("Invalid POS API key"));
+    }
+    const { outletId, results } = (request.body ?? {}) as {
+      outletId?: string;
+      results?: { id: string; ok: boolean; message?: string }[];
+    };
+    if (!outletId || !UUID_RE.test(outletId) || !Array.isArray(results)) {
+      return reply.status(400).send(error("outletId and results[] are required"));
+    }
+
+    const now = new Date();
+    for (const r of results) {
+      if (!r?.id || !UUID_RE.test(r.id)) continue;
+      const current = await db.query.syncQueue.findFirst({
+        where: and(eq(schema.syncQueue.id, r.id), eq(schema.syncQueue.outletId, outletId)),
+      });
+      if (!current) continue;
+      if (r.ok) {
+        await db
+          .update(schema.syncQueue)
+          .set({ status: "DONE", syncedAt: now })
+          .where(eq(schema.syncQueue.id, r.id));
+      } else {
+        // Retry a few times, then park it as FAILED
+        const retryCount = current.retryCount + 1;
+        await db
+          .update(schema.syncQueue)
+          .set({ retryCount, status: retryCount >= 5 ? "FAILED" : "PENDING" })
+          .where(eq(schema.syncQueue.id, r.id));
+        console.warn(`[Sync] POS could not apply command ${r.id} (attempt ${retryCount}): ${r.message ?? "unknown error"}`);
+      }
+    }
+
+    return reply.send(success({ acknowledged: results.length }));
   });
 
   // ─── Pull (Cloud → POS) ───

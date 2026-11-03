@@ -162,7 +162,7 @@ export function markOrderSnapshotPushed(payloadJson: string): void {
  * Queue (or refresh) an ORDER_SNAPSHOT outbox event for this order.
  * Returns true if something was queued/refreshed.
  */
-export function queueOrderSnapshot(orderId: string): boolean {
+export function queueOrderSnapshot(orderId: string, force = false): boolean {
   const snapshot = buildOrderSnapshot(orderId);
   if (!snapshot) return false;
 
@@ -188,7 +188,7 @@ export function queueOrderSnapshot(orderId: string): boolean {
 
   if (pending) {
     const pendingHash = parseJson<{ snapshotHash?: string }>(pending.payload)?.snapshotHash;
-    if (pendingHash === snapshotHash) return false;
+    if (pendingHash === snapshotHash && !force) return false;
     db.update(schema.syncOutbox)
       .set({ payload, status: "PENDING", retryCount: 0, lastError: null })
       .where(eq(schema.syncOutbox.id, pending.id))
@@ -196,7 +196,7 @@ export function queueOrderSnapshot(orderId: string): boolean {
     return true;
   }
 
-  if (getPushedHash(orderId) === snapshotHash) return false;
+  if (getPushedHash(orderId) === snapshotHash && !force) return false;
 
   db.insert(schema.syncOutbox)
     .values({
@@ -246,4 +246,25 @@ export function reconcileOrderSnapshots(): number {
     console.log(`[OrderSync] Queued ${queued} order snapshot(s) for cloud sync`);
   }
   return queued;
+}
+
+/**
+ * Stop syncing an order to the cloud (it was deleted in the ERP): drop any
+ * unsent snapshot and record the current state as already pushed, so the
+ * reconciler doesn't recreate it. A later local change would sync it again.
+ */
+export function suppressOrderSnapshot(orderId: string): void {
+  db.delete(schema.syncOutbox)
+    .where(
+      and(
+        eq(schema.syncOutbox.eventType, ORDER_SNAPSHOT_EVENT),
+        inArray(schema.syncOutbox.status, ["PENDING", "FAILED"]),
+        like(schema.syncOutbox.payload, `{"orderId":"${orderId}"%`)
+      )
+    )
+    .run();
+
+  const snapshot = buildOrderSnapshot(orderId);
+  if (!snapshot) return;
+  markOrderSnapshotPushed(JSON.stringify({ orderId, snapshotHash: hashSnapshot(snapshot) }));
 }

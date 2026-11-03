@@ -10,7 +10,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, between, sql, lt } from "drizzle-orm";
+import { eq, and, sql, lt, gte } from "drizzle-orm";
+import { getOrgTimeZone, localDayRange, localDateKey, localToday, localWeekStartKey } from "../utils/business-time.js";
 import {
   salesReportQuerySchema,
   inventoryReportQuerySchema,
@@ -32,14 +33,16 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       const orgId = getOrganizationId(request);
       const query = salesReportQuerySchema.parse(request.query);
 
-      const startTs = new Date(`${query.startDate}T00:00:00`);
-      const endTs = new Date(`${query.endDate}T23:59:59`);
+      // Business-local calendar days (not the server's time zone)
+      const tz = await getOrgTimeZone(orgId);
+      const { start: startTs, endExclusive: endTs } = localDayRange(query.startDate, query.endDate, tz);
 
       // Get all completed orders in the date range
       const conditions = [
         eq(schema.orders.organizationId, orgId),
         eq(schema.orders.status, "COMPLETED"),
-        between(schema.orders.createdAt, startTs, endTs),
+        gte(schema.orders.createdAt, startTs),
+        lt(schema.orders.createdAt, endTs),
       ];
 
       if (query.outletId && query.outletId !== "all") {
@@ -69,16 +72,12 @@ export async function reportingRoutes(fastify: FastifyInstance) {
         let periodKey: string;
 
         if (query.groupBy === "day") {
-          periodKey = order.createdAt.toISOString().split("T")[0]!;
+          periodKey = localDateKey(order.createdAt, tz);
         } else if (query.groupBy === "week") {
-          const d = new Date(order.createdAt);
-          const dayOfWeek = d.getDay();
-          const weekStart = new Date(d);
-          weekStart.setDate(d.getDate() - dayOfWeek);
-          periodKey = `W-${weekStart.toISOString().split("T")[0]!}`;
+          periodKey = `W-${localWeekStartKey(order.createdAt, tz)}`;
         } else {
           // month
-          periodKey = order.createdAt.toISOString().slice(0, 7);
+          periodKey = localDateKey(order.createdAt, tz).slice(0, 7);
         }
 
         const existing = grouped.get(periodKey) || {
@@ -222,14 +221,16 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       const orgId = getOrganizationId(request);
       const query = profitabilityReportQuerySchema.parse(request.query);
 
-      const startTs = new Date(`${query.startDate}T00:00:00`);
-      const endTs = new Date(`${query.endDate}T23:59:59`);
+      // Business-local calendar days (not the server's time zone)
+      const tz = await getOrgTimeZone(orgId);
+      const { start: startTs, endExclusive: endTs } = localDayRange(query.startDate, query.endDate, tz);
 
       // Revenue from completed orders
       const orderConditions = [
         eq(schema.orders.organizationId, orgId),
         eq(schema.orders.status, "COMPLETED"),
-        between(schema.orders.createdAt, startTs, endTs),
+        gte(schema.orders.createdAt, startTs),
+        lt(schema.orders.createdAt, endTs),
       ];
 
       if (query.outletId && query.outletId !== "all") {
@@ -307,7 +308,8 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       // Online order commissions
       const onlineConditions = [
         eq(schema.onlineOrders.organizationId, orgId),
-        between(schema.onlineOrders.createdAt, startTs, endTs),
+        gte(schema.onlineOrders.createdAt, startTs),
+        lt(schema.onlineOrders.createdAt, endTs),
       ];
 
       if (query.outletId && query.outletId !== "all") {
@@ -372,25 +374,15 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       const orgId = getOrganizationId(request);
       const { outletId } = request.query as { outletId?: string };
 
-      const today = new Date();
-      const todayStart = new Date(
-        today.getFullYear(),
-        today.getMonth(),
-        today.getDate()
-      );
-      const todayEnd = new Date(
-        today.getFullYear(),
-        today.getMonth(),
-        today.getDate(),
-        23,
-        59,
-        59
-      );
+      // "Today" in the restaurant's time zone
+      const tz = await getOrgTimeZone(orgId);
+      const { start: todayStart, endExclusive: todayEnd } = localDayRange(localToday(tz), localToday(tz), tz);
 
       // Today's orders
       const orderConditions = [
         eq(schema.orders.organizationId, orgId),
-        between(schema.orders.createdAt, todayStart, todayEnd),
+        gte(schema.orders.createdAt, todayStart),
+        lt(schema.orders.createdAt, todayEnd),
       ];
 
       if (outletId && outletId !== "all") {
@@ -420,7 +412,7 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       });
 
       // Today's attendance
-      const todayDate = today.toISOString().split("T")[0]!;
+      const todayDate = localToday(tz);
       const attendanceConditions = [
         eq(schema.attendances.organizationId, orgId),
         eq(schema.attendances.date, todayDate),

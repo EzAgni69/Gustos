@@ -6,7 +6,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, count, ilike, sql } from "drizzle-orm";
+import { eq, and, count, ilike, sql, gte, lt } from "drizzle-orm";
 import {
   createOrderSchema,
   updateOrderSchema,
@@ -18,6 +18,8 @@ import { db } from "../db/index.js";
 import { getOrganizationId, requireMinRole } from "../middleware/auth.js";
 import { success, paginated, error } from "../utils/response.js";
 import { generateInvoicePdf, type InvoicePdfData } from "../services/pdf-generator.js";
+import { isPosOrder, queueOrderCommand } from "../utils/order-commands.js";
+import { getOrgTimeZone, localDayRange, startOfLocalDay } from "../utils/business-time.js";
 
 
 
@@ -209,7 +211,34 @@ export async function orderRoutes(fastify: FastifyInstance) {
     const orgId = getOrganizationId(request);
     const body = updateOrderSchema.parse(request.body);
 
-    const updateData: any = { updatedAt: new Date() };
+    const existing = await db.query.orders.findFirst({
+      where: and(eq(cloudSchema.orders.id, id), eq(cloudSchema.orders.organizationId, orgId)),
+    });
+    if (!existing) {
+      return reply.status(404).send(error("Order not found"));
+    }
+
+    // Orders from the POS / Captain app are owned by the outlet's POS. Only the
+    // changes the POS can apply are allowed; they are sent to it as a command
+    // so the POS's next sync doesn't overwrite them.
+    const fromPos = isPosOrder(existing);
+    if (fromPos) {
+      if (body.items !== undefined || body.tableId !== undefined || body.paymentMode !== undefined || body.customerId !== undefined || body.waiterId !== undefined) {
+        return reply
+          .status(400)
+          .send(error("Items, table, payment, customer and waiter of a POS order can only be changed on the POS."));
+      }
+      if (body.status === "COMPLETED" && existing.status !== "COMPLETED") {
+        return reply.status(400).send(error("Take payment on the POS to complete this order."));
+      }
+      if ((existing.status === "COMPLETED" || existing.status === "CANCELLED") && body.status !== undefined && body.status !== existing.status) {
+        return reply.status(400).send(error(`This order is already ${existing.status.toLowerCase()} on the POS.`));
+      }
+    }
+
+    // POS orders keep the POS-clock updatedAt so the POS's follow-up snapshot
+    // isn't mistaken for an older one.
+    const updateData: any = fromPos ? {} : { updatedAt: new Date() };
     if (body.status !== undefined) updateData.status = body.status;
     if (body.tableId !== undefined) updateData.tableId = body.tableId;
     if (body.paymentMode !== undefined) updateData.paymentMode = body.paymentMode;
@@ -217,20 +246,32 @@ export async function orderRoutes(fastify: FastifyInstance) {
     if (body.waiterId !== undefined) updateData.waiterId = body.waiterId;
     if (body.notes !== undefined) updateData.notes = body.notes;
 
-    const results = await db
-      .update(cloudSchema.orders)
-      .set(updateData)
-      .where(
-        and(
-          eq(cloudSchema.orders.id, id),
-          eq(cloudSchema.orders.organizationId, orgId)
-        )
-      )
-      .returning();
+    const results = Object.keys(updateData).length === 0
+      ? [existing]
+      : await db
+          .update(cloudSchema.orders)
+          .set(updateData)
+          .where(
+            and(
+              eq(cloudSchema.orders.id, id),
+              eq(cloudSchema.orders.organizationId, orgId)
+            )
+          )
+          .returning();
 
     const updated = results[0];
     if (!updated) {
       return reply.status(404).send(error("Order not found"));
+    }
+
+    if (fromPos && (body.status !== undefined || body.notes !== undefined)) {
+      await queueOrderCommand(orgId, existing.outletId, {
+        action: "UPDATE",
+        orderId: id,
+        orderNumber: existing.orderNumber,
+        ...(body.status !== undefined && body.status !== existing.status ? { status: body.status } : {}),
+        ...(body.notes !== undefined ? { notes: body.notes } : {}),
+      });
     }
     
     // Simplistic items update logic for demo (usually involves careful diffing)
@@ -281,8 +322,18 @@ export async function orderRoutes(fastify: FastifyInstance) {
       )
       .returning();
 
-    if (results.length === 0) {
+    const deleted = results[0];
+    if (!deleted) {
       return reply.status(404).send(error("Order not found"));
+    }
+
+    // Tell the POS: it cancels the order if still open and stops re-sending it.
+    if (isPosOrder(deleted)) {
+      await queueOrderCommand(orgId, deleted.outletId, {
+        action: "DELETE",
+        orderId: id,
+        orderNumber: deleted.orderNumber,
+      });
     }
 
     return reply.send(success(null, "Order deleted"));
@@ -301,15 +352,15 @@ export async function orderRoutes(fastify: FastifyInstance) {
     }
 
     // Date range filter
-    if (query.startDate) {
-      conditions.push(
-        sql`${cloudSchema.orders.createdAt} >= ${new Date(`${query.startDate}T00:00:00`)}`
-      );
-    }
-    if (query.endDate) {
-      conditions.push(
-        sql`${cloudSchema.orders.createdAt} <= ${new Date(`${query.endDate}T23:59:59`)}`
-      );
+    if (query.startDate || query.endDate) {
+      // Business-local calendar days (not the server's time zone)
+      const tz = await getOrgTimeZone(orgId);
+      if (query.startDate) {
+        conditions.push(gte(cloudSchema.orders.createdAt, startOfLocalDay(query.startDate, tz)));
+      }
+      if (query.endDate) {
+        conditions.push(lt(cloudSchema.orders.createdAt, localDayRange(query.endDate, query.endDate, tz).endExclusive));
+      }
     }
 
     // Status filter
@@ -584,15 +635,15 @@ export async function orderRoutes(fastify: FastifyInstance) {
       conditions.push(eq(cloudSchema.orders.outletId, query.outletId));
     }
 
-    if (query.startDate) {
-      conditions.push(
-        sql`${cloudSchema.orders.createdAt} >= ${new Date(`${query.startDate}T00:00:00`)}`
-      );
-    }
-    if (query.endDate) {
-      conditions.push(
-        sql`${cloudSchema.orders.createdAt} <= ${new Date(`${query.endDate}T23:59:59`)}`
-      );
+    if (query.startDate || query.endDate) {
+      // Business-local calendar days (not the server's time zone)
+      const tz = await getOrgTimeZone(orgId);
+      if (query.startDate) {
+        conditions.push(gte(cloudSchema.orders.createdAt, startOfLocalDay(query.startDate, tz)));
+      }
+      if (query.endDate) {
+        conditions.push(lt(cloudSchema.orders.createdAt, localDayRange(query.endDate, query.endDate, tz).endExclusive));
+      }
     }
     if (query.status) {
       conditions.push(eq(cloudSchema.orders.status, query.status));

@@ -472,8 +472,9 @@ export default function DashboardOverviewPage() {
   const period: string = viewMode === "Daily" ? "yesterday" : "last week";
 
   // Active/in-progress orders count
+  // (Any order still open on the POS/Captain app: placed, cooking, ready, served or held.)
   const activeOrderCount = recentOrders.filter(
-    (o) => o.status === "PLACED" || o.status === "IN_PROGRESS"
+    (o) => o.status !== "COMPLETED" && o.status !== "CANCELLED"
   ).length;
 
   // ─── Recent activity (latest 5 orders) ───
