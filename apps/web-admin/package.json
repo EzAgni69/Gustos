@@ -8,6 +8,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
+    "test": "vitest --run",
+    "test:watch": "vitest",
     "clean": "rm -rf .next .turbo"
   },
   "dependencies": {
@@ -33,11 +35,17 @@
     "@gusto/eslint-config": "workspace:*",
     "@gusto/tsconfig": "workspace:*",
     "@tailwindcss/postcss": "^4.1.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.0",
+    "jsdom": "^30.1.3",
     "postcss": "^8.5.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^5.0.5"
   }
 }

@@ -11,9 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
-  Building2,
   Store,
-  DollarSign,
   TrendingUp,
   Loader2,
   UtensilsCrossed,
@@ -25,12 +23,58 @@ import {
   ArrowRight,
   IndianRupee,
   ShoppingCart,
-  Clock,
   AlertTriangle,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { useRealtimeEvent } from "@/lib/socket-context";
 import type { Organization, Outlet, User, Order } from "@gusto/api-contracts";
+
+// ─── ViewMode ───────────────────────────────────────────────────────────────
+type ViewMode = "Daily" | "Weekly";
+
+// ─── getDayBounds ────────────────────────────────────────────────────────────
+// Returns the local-midnight start and end of a day that is `daysAgo` days
+// before today. `daysAgo = 0` → today; `daysAgo = 1` → yesterday, etc.
+function getDayBounds(daysAgo: number): { start: Date; end: Date } {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo);
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+  return { start, end };
+}
+
+// ─── computeChange ───────────────────────────────────────────────────────────
+// Returns the percentage change from `prev` to `curr`.
+// - Returns `null`  when both values are 0 (no meaningful change).
+// - Returns `100`   when prev is 0 but curr is non-zero (new activity).
+// - Returns the rounded percentage change otherwise.
+function computeChange(curr: number, prev: number): number | null {
+  if (curr === 0 && prev === 0) return null;
+  if (prev === 0) return 100;
+  return Math.round(((curr - prev) / prev) * 100);
+}
+
+// ─── ComparisonBadge ─────────────────────────────────────────────────────────
+// Renders a colored badge showing the percentage change vs a comparison period.
+// - Renders nothing when `change` is null (both values were zero — no meaningful change)
+// - Green (emerald) for positive or zero change (change >= 0)
+// - Red for negative change (change < 0)
+// - Uses "−" (U+2212 MINUS SIGN) for negative values, "+" for positive/zero
+function ComparisonBadge({ change, period }: { change: number | null; period: string }) {
+  if (change === null) return null;
+
+  const isPositive = change >= 0;
+  const colorClass = isPositive
+    ? "text-emerald-700 bg-emerald-50"
+    : "text-red-700 bg-red-50";
+  const sign = isPositive ? "+" : "−";
+  const absChange = Math.abs(change);
+
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold ${colorClass}`}>
+      {sign}{absChange}% vs {period}
+    </span>
+  );
+}
 
 interface LowStockItem {
   id: string;
@@ -40,6 +84,154 @@ interface LowStockItem {
   unit: string;
 }
 
+interface KpiMetrics {
+  revenue: number;
+  orders: number;
+  avgOrderValue: number;
+  revenueChange: number | null;
+  ordersChange: number | null;
+  avgChange: number | null;
+}
+
+// ─── WeeklyTrendChart ────────────────────────────────────────────────────────
+// SVG polyline chart comparing this week's revenue against last week's.
+// viewBox="0 0 500 180", fully fluid with width="100%".
+const PAD_LEFT = 20;
+const PAD_RIGHT = 20;
+const PAD_TOP = 20;
+const PAD_BOTTOM = 40;
+const CHART_W = 500;
+const CHART_H_TOTAL = 180;
+const chartW = CHART_W - PAD_LEFT - PAD_RIGHT; // 460
+const chartH = CHART_H_TOTAL - PAD_TOP - PAD_BOTTOM; // 120
+
+function toPoints(values: number[], maxVal: number): string {
+  return values
+    .map((v, i) => {
+      const x = PAD_LEFT + (i / 6) * chartW;
+      const y = maxVal === 0
+        ? PAD_TOP + chartH
+        : PAD_TOP + chartH - (v / maxVal) * chartH;
+      return `${x},${y}`;
+    })
+    .join(" ");
+}
+
+function WeeklyTrendChart({
+  thisWeek,
+  lastWeek,
+  labels,
+}: {
+  thisWeek: number[];
+  lastWeek: number[];
+  labels: string[];
+}) {
+  const maxVal = Math.max(...thisWeek, ...lastWeek, 0);
+
+  // Grid line y-positions (5 evenly spaced horizontal lines)
+  const gridLines = [0, 1, 2, 3, 4].map(
+    (n) => PAD_TOP + (n / 4) * chartH
+  );
+
+  const thisWeekPoints = toPoints(thisWeek, maxVal);
+  const lastWeekPoints = toPoints(lastWeek, maxVal);
+
+  return (
+    <svg
+      viewBox={`0 0 ${CHART_W} ${CHART_H_TOTAL}`}
+      width="100%"
+      aria-label="Weekly revenue trend chart"
+      role="img"
+      className="block"
+    >
+      {/* Horizontal grid lines */}
+      {gridLines.map((y, i) => (
+        <line
+          key={i}
+          x1={PAD_LEFT}
+          y1={y}
+          x2={CHART_W - PAD_RIGHT}
+          y2={y}
+          stroke="#f1f5f9"
+          strokeWidth={1}
+        />
+      ))}
+
+      {/* Last-week polyline (gray, dashed) */}
+      <polyline
+        points={lastWeekPoints}
+        fill="none"
+        stroke="#94a3b8"
+        strokeWidth={2}
+        strokeDasharray="4 3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      {/* This-week polyline (blue, solid) */}
+      <polyline
+        points={thisWeekPoints}
+        fill="none"
+        stroke="#3b82f6"
+        strokeWidth={2.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      {/* This-week data point circles */}
+      {thisWeek.map((v, i) => {
+        const x = PAD_LEFT + (i / 6) * chartW;
+        const y = maxVal === 0
+          ? PAD_TOP + chartH
+          : PAD_TOP + chartH - (v / maxVal) * chartH;
+        return (
+          <circle key={i} cx={x} cy={y} r={3.5} fill="#3b82f6">
+            <title>₹{v.toLocaleString("en-IN")}</title>
+          </circle>
+        );
+      })}
+
+      {/* X-axis day labels */}
+      {labels.map((label, i) => {
+        const x = PAD_LEFT + (i / 6) * chartW;
+        return (
+          <text
+            key={i}
+            x={x}
+            y={CHART_H_TOTAL - 6}
+            textAnchor="middle"
+            fontSize={10}
+            fill="#94a3b8"
+            fontFamily="inherit"
+          >
+            {label}
+          </text>
+        );
+      })}
+
+      {/* Inline legend */}
+      {/* This Week */}
+      <rect x={PAD_LEFT} y={PAD_TOP - 14} width={10} height={10} rx={2} fill="#3b82f6" />
+      <text x={PAD_LEFT + 14} y={PAD_TOP - 5} fontSize={10} fill="#64748b" fontFamily="inherit">
+        This Week
+      </text>
+      {/* Last Week — dashed line swatch */}
+      <line
+        x1={PAD_LEFT + 80}
+        y1={PAD_TOP - 10}
+        x2={PAD_LEFT + 90}
+        y2={PAD_TOP - 10}
+        stroke="#94a3b8"
+        strokeWidth={2}
+        strokeDasharray="4 3"
+      />
+      <text x={PAD_LEFT + 94} y={PAD_TOP - 5} fontSize={10} fill="#64748b" fontFamily="inherit">
+        Last Week
+      </text>
+    </svg>
+  );
+}
+
 export default function DashboardOverviewPage() {
   const [loading, setLoading] = useState(true);
   const [org, setOrg] = useState<Organization | null>(null);
@@ -47,6 +239,7 @@ export default function DashboardOverviewPage() {
   const [staff, setStaff] = useState<User[]>([]);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
   const [lowStockItems, setLowStockItems] = useState<LowStockItem[]>([]);
+  const [viewMode, setViewMode] = useState<ViewMode>("Daily");
 
   const loadDashboardData = async () => {
     setLoading(true);
@@ -119,31 +312,163 @@ export default function DashboardOverviewPage() {
     }
   );
 
-  // ─── Revenue Chart Data (real data: last 7 days) ───
-  const revenueData = useMemo(() => {
-    const now = new Date();
-    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const days: { day: string; value: number }[] = [];
-
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(now.getTime() - i * 86400000);
-      const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-      const dayEnd = new Date(dayStart.getTime() + 86400000);
-
-      const dayRevenue = recentOrders
-        .filter((o) => {
-          const oDate = new Date(o.createdAt);
-          return o.status === "COMPLETED" && oDate >= dayStart && oDate < dayEnd;
-        })
-        .reduce((acc, o) => acc + o.totalAmount, 0);
-
-      days.push({ day: dayNames[date.getDay()]!, value: dayRevenue });
-    }
-    return days;
+  // ─── Daily Bar Data (today's single-bar) ────────────────────────────────
+  const dailyBarData = useMemo(() => {
+    const { start, end } = getDayBounds(0);
+    const revenue = recentOrders
+      .filter((o) => o.status === "COMPLETED" && new Date(o.createdAt) >= start && new Date(o.createdAt) < end)
+      .reduce((s, o) => s + o.totalAmount, 0);
+    return [{ day: "Today", value: revenue }];
   }, [recentOrders]);
 
-  const maxRevenue = Math.max(...revenueData.map((d) => d.value), 1);
+  // ─── Revenue Chart Data (real data: last 7 days + prior 7 days) ───
+  const { revenueData, lastWeekRevenueData } = useMemo(() => {
+    const now = new Date();
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const thisWeekDays: { day: string; value: number }[] = [];
+    const lastWeekDays: { day: string; value: number }[] = [];
+
+    for (let i = 6; i >= 0; i--) {
+      // This week: days 0–6 ago
+      const dateThis = new Date(now.getTime() - i * 86400000);
+      const dayStartThis = new Date(dateThis.getFullYear(), dateThis.getMonth(), dateThis.getDate());
+      const dayEndThis = new Date(dayStartThis.getTime() + 86400000);
+      const dayRevenueThis = recentOrders
+        .filter((o) => {
+          const oDate = new Date(o.createdAt);
+          return o.status === "COMPLETED" && oDate >= dayStartThis && oDate < dayEndThis;
+        })
+        .reduce((acc, o) => acc + o.totalAmount, 0);
+      thisWeekDays.push({ day: dayNames[dateThis.getDay()]!, value: dayRevenueThis });
+
+      // Last week: days 7–13 ago (same weekday, one week earlier)
+      const dateLast = new Date(now.getTime() - (i + 7) * 86400000);
+      const dayStartLast = new Date(dateLast.getFullYear(), dateLast.getMonth(), dateLast.getDate());
+      const dayEndLast = new Date(dayStartLast.getTime() + 86400000);
+      const dayRevenueLast = recentOrders
+        .filter((o) => {
+          const oDate = new Date(o.createdAt);
+          return o.status === "COMPLETED" && oDate >= dayStartLast && oDate < dayEndLast;
+        })
+        .reduce((acc, o) => acc + o.totalAmount, 0);
+      lastWeekDays.push({ day: dayNames[dateLast.getDay()]!, value: dayRevenueLast });
+    }
+    return { revenueData: thisWeekDays, lastWeekRevenueData: lastWeekDays };
+  }, [recentOrders]);
+
   const totalWeekRevenue = revenueData.reduce((acc, d) => acc + d.value, 0);
+
+  // ─── Mode-aware chart variables ──────────────────────────────────────────
+  const chartData = viewMode === "Daily" ? dailyBarData : revenueData;
+  const chartTitle = viewMode === "Daily" ? "Today's Revenue" : "Weekly Revenue";
+  const chartSubtitle =
+    viewMode === "Daily"
+      ? "Completed orders revenue for today"
+      : "Sales performance across all outlets (last 7 days)";
+  const maxChartValue = Math.max(...chartData.map((d) => d.value), 1);
+
+  // ─── Daily KPI Metrics (today vs yesterday completed orders) ───
+  const dailyMetrics = useMemo((): KpiMetrics => {
+    const todayBounds = getDayBounds(0);
+    const yesterdayBounds = getDayBounds(1);
+
+    const todayOrders = recentOrders.filter(
+      (o) =>
+        o.status === "COMPLETED" &&
+        new Date(o.createdAt) >= todayBounds.start &&
+        new Date(o.createdAt) < todayBounds.end
+    );
+    const yesterdayOrders = recentOrders.filter(
+      (o) =>
+        o.status === "COMPLETED" &&
+        new Date(o.createdAt) >= yesterdayBounds.start &&
+        new Date(o.createdAt) < yesterdayBounds.end
+    );
+
+    const currRevenue = todayOrders.reduce((acc, o) => acc + o.totalAmount, 0);
+    const prevRevenue = yesterdayOrders.reduce((acc, o) => acc + o.totalAmount, 0);
+    const currCount = todayOrders.length;
+    const prevCount = yesterdayOrders.length;
+    const currAvg = currCount > 0 ? currRevenue / currCount : 0;
+    const prevAvg = prevCount > 0 ? prevRevenue / prevCount : 0;
+
+    return {
+      revenue: currRevenue,
+      orders: currCount,
+      avgOrderValue: currAvg,
+      revenueChange: computeChange(currRevenue, prevRevenue),
+      ordersChange: computeChange(currCount, prevCount),
+      avgChange: computeChange(currAvg, prevAvg),
+    };
+  }, [recentOrders]);
+
+  // ─── Weekly KPI Metrics (last 7 days vs prior 7 days completed orders) ───
+  const weeklyMetrics = useMemo((): KpiMetrics => {
+    const now = new Date();
+    const last7Start = getDayBounds(6).start;
+    const prior7Start = getDayBounds(13).start;
+    const prior7End = last7Start;
+
+    const last7Orders = recentOrders.filter(
+      (o) =>
+        o.status === "COMPLETED" &&
+        new Date(o.createdAt) >= last7Start &&
+        new Date(o.createdAt) < now
+    );
+    const prior7Orders = recentOrders.filter(
+      (o) =>
+        o.status === "COMPLETED" &&
+        new Date(o.createdAt) >= prior7Start &&
+        new Date(o.createdAt) < prior7End
+    );
+
+    const currRevenue = last7Orders.reduce((acc, o) => acc + o.totalAmount, 0);
+    const prevRevenue = prior7Orders.reduce((acc, o) => acc + o.totalAmount, 0);
+    const currCount = last7Orders.length;
+    const prevCount = prior7Orders.length;
+    const currAvg = currCount > 0 ? currRevenue / currCount : 0;
+    const prevAvg = prevCount > 0 ? prevRevenue / prevCount : 0;
+
+    return {
+      revenue: currRevenue,
+      orders: currCount,
+      avgOrderValue: currAvg,
+      revenueChange: computeChange(currRevenue, prevRevenue),
+      ordersChange: computeChange(currCount, prevCount),
+      avgChange: computeChange(currAvg, prevAvg),
+    };
+  }, [recentOrders]);
+
+  // ─── Weekly Trend Data (Mon–Sun this week vs last week) ───
+  const weeklyTrendData = useMemo(() => {
+    const now = new Date();
+    const currentDayOfWeek = now.getDay(); // 0=Sun, 1=Mon … 6=Sat
+    const mondayOffset = currentDayOfWeek === 0 ? 6 : currentDayOfWeek - 1;
+    const thisMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
+    const lastMonday = new Date(thisMonday.getTime() - 7 * 86_400_000);
+
+    const series = (weekStart: Date) =>
+      Array.from({ length: 7 }, (_, i) => {
+        const dayStart = new Date(weekStart.getTime() + i * 86_400_000);
+        const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+        return recentOrders
+          .filter((o) => {
+            const d = new Date(o.createdAt);
+            return o.status === "COMPLETED" && d >= dayStart && d < dayEnd;
+          })
+          .reduce((s, o) => s + o.totalAmount, 0);
+      });
+
+    return {
+      thisWeek: series(thisMonday),
+      lastWeek: series(lastMonday),
+      labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    };
+  }, [recentOrders]);
+
+  // ─── Active metrics derived from viewMode ───
+  const activeMetrics: KpiMetrics = viewMode === "Daily" ? dailyMetrics : weeklyMetrics;
+  const period: string = viewMode === "Daily" ? "yesterday" : "last week";
 
   // Active/in-progress orders count
   const activeOrderCount = recentOrders.filter(
@@ -222,9 +547,12 @@ export default function DashboardOverviewPage() {
 
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {/* Revenue */}
         <Card className="shadow-xs border-gray-100">
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-sm font-medium text-gray-500">Weekly Revenue</CardTitle>
+            <CardTitle className="text-sm font-medium text-gray-500">
+              {viewMode === "Daily" ? "Today's Revenue" : "Weekly Revenue"}
+            </CardTitle>
             <IndianRupee className="w-4 h-4 text-emerald-600" />
           </CardHeader>
           <CardContent>
@@ -233,16 +561,61 @@ export default function DashboardOverviewPage() {
             ) : (
               <>
                 <div className="text-2xl font-bold text-gray-900">
-                  ₹{totalWeekRevenue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                  ₹{activeMetrics.revenue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
                 </div>
                 <p className="text-xs text-gray-500 flex items-center gap-1 mt-1 font-medium">
-                  Last 7 days across all outlets
+                  <ComparisonBadge change={activeMetrics.revenueChange} period={period} />
                 </p>
               </>
             )}
           </CardContent>
         </Card>
 
+        {/* Orders */}
+        <Card className="shadow-xs border-gray-100">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+            <CardTitle className="text-sm font-medium text-gray-500">Completed Orders</CardTitle>
+            <ShoppingCart className="w-4 h-4 text-blue-600" />
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
+            ) : (
+              <>
+                <div className="text-2xl font-bold text-gray-900">
+                  {activeMetrics.orders}
+                </div>
+                <p className="text-xs text-gray-500 flex items-center gap-1 mt-1 font-medium">
+                  <ComparisonBadge change={activeMetrics.ordersChange} period={period} />
+                </p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Avg Order Value */}
+        <Card className="shadow-xs border-gray-100">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+            <CardTitle className="text-sm font-medium text-gray-500">Avg Order Value</CardTitle>
+            <TrendingUp className="w-4 h-4 text-purple-600" />
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
+            ) : (
+              <>
+                <div className="text-2xl font-bold text-gray-900">
+                  ₹{activeMetrics.avgOrderValue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                </div>
+                <p className="text-xs text-gray-500 flex items-center gap-1 mt-1 font-medium">
+                  <ComparisonBadge change={activeMetrics.avgChange} period={period} />
+                </p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Active Outlets */}
         <Card className="shadow-xs border-gray-100">
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
             <CardTitle className="text-sm font-medium text-gray-500">Active Outlets</CardTitle>
@@ -263,87 +636,55 @@ export default function DashboardOverviewPage() {
             )}
           </CardContent>
         </Card>
+      </div>
 
-        <Card className="shadow-xs border-gray-100">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-sm font-medium text-gray-500">Organization</CardTitle>
-            <Building2 className="w-4 h-4 text-indigo-600" />
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
-            ) : (
-              <>
-                <div className="text-2xl font-bold text-gray-900 truncate" title={org?.name || "—"}>
-                  {org?.name || "—"}
-                </div>
-                <p className="text-xs text-gray-500 mt-1 font-medium truncate">
-                  GST: {org?.gstNumber || "Not configured"}
-                </p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="shadow-xs border-gray-100">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-sm font-medium text-gray-500">Total Staff</CardTitle>
-            <Users2 className="w-4 h-4 text-purple-600" />
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
-            ) : (
-              <>
-                <div className="text-2xl font-bold text-gray-900">{staff.length}</div>
-                <p className="text-xs text-gray-500 mt-1 font-medium">
-                  {staff.filter((s) => s.isActive).length} active employees
-                </p>
-              </>
-            )}
-          </CardContent>
-        </Card>
+      {/* View Mode Toggle */}
+      <div className="flex items-center gap-3">
+        <div className="inline-flex rounded-full border border-gray-200 bg-gray-100 p-0.5 gap-0.5">
+          {(["Daily", "Weekly"] as ViewMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={
+                viewMode === mode
+                  ? "bg-white text-gray-900 shadow-sm rounded-full px-4 py-1.5 text-sm font-semibold transition-all duration-150"
+                  : "text-gray-500 hover:text-gray-700 rounded-full px-4 py-1.5 text-sm font-semibold transition-all duration-150"
+              }
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Revenue Chart + Activity Feed */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
         <Card className="col-span-4 shadow-xs border-gray-100">
           <CardHeader>
-            <CardTitle className="text-gray-900">Weekly Revenue</CardTitle>
-            <CardDescription>Sales performance across all outlets (last 7 days)</CardDescription>
+            <CardTitle className="text-gray-900">{chartTitle}</CardTitle>
+            <CardDescription>{chartSubtitle}</CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? (
-              <div className="h-[250px] flex items-center justify-center">
+              <div className="h-[180px] flex items-center justify-center">
                 <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
               </div>
             ) : (
-              <div className="h-[250px] flex items-end justify-between gap-2 px-2 mt-4">
-                {revenueData.map((data, idx) => {
-                  const heightPercentage = (data.value / maxRevenue) * 100;
-                  return (
-                    <div key={idx} className="flex flex-col items-center gap-2 flex-1 group">
-                      <div className="w-full flex justify-center relative">
-                        {/* Tooltip */}
-                        <div className="opacity-0 group-hover:opacity-100 absolute -top-9 bg-gray-900 text-white text-[10px] font-semibold py-1 px-2 rounded-md transition-opacity whitespace-nowrap z-10 pointer-events-none shadow-lg">
-                          ₹{data.value.toLocaleString("en-IN")}
-                        </div>
-                        {/* Bar */}
-                        <div
-                          className="w-full max-w-[40px] rounded-t-md transition-all duration-500 ease-out"
-                          style={{
-                            height: `${Math.max(heightPercentage, 2)}%`,
-                            background:
-                              data.value > 0
-                                ? "linear-gradient(to top, #3b82f6, #60a5fa)"
-                                : "#e5e7eb",
-                          }}
-                        />
-                      </div>
-                      <span className="text-xs font-medium text-gray-500">{data.day}</span>
+              <div className="space-y-2 py-2">
+                {chartData.map((d) => (
+                  <div key={d.day} className="flex items-center gap-2">
+                    <div className="w-10 text-xs text-gray-500 text-right shrink-0">{d.day}</div>
+                    <div className="flex-1 bg-gray-100 rounded-full h-2.5">
+                      <div
+                        className="bg-blue-500 h-2.5 rounded-full transition-all duration-300"
+                        style={{ width: `${(d.value / maxChartValue) * 100}%` }}
+                      />
                     </div>
-                  );
-                })}
+                    <div className="w-20 text-xs text-gray-700 text-right shrink-0 font-medium">
+                      ₹{d.value.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </CardContent>
@@ -410,6 +751,27 @@ export default function DashboardOverviewPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Weekly Growth Section */}
+      <Card className="shadow-xs border-gray-100">
+        <CardHeader>
+          <CardTitle>Weekly Growth</CardTitle>
+          <CardDescription>Revenue comparison: this week vs last week</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="h-[180px] flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+            </div>
+          ) : (
+            <WeeklyTrendChart
+              thisWeek={weeklyTrendData.thisWeek}
+              lastWeek={weeklyTrendData.lastWeek}
+              labels={weeklyTrendData.labels}
+            />
+          )}
+        </CardContent>
+      </Card>
 
       {/* Quick Actions */}
       <Card className="shadow-xs border-gray-100">

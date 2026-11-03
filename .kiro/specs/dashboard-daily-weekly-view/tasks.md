@@ -6,15 +6,15 @@ Refactor `apps/web-admin/src/app/(dashboard)/page.tsx` to add a Daily/Weekly vie
 
 ## Tasks
 
-- [ ] 1. Add helper functions and derived types
-  - [ ] 1.1 Add `ViewMode` type, `getDayBounds` helper, and `computeChange` helper inside `page.tsx`
+- [x] 1. Add helper functions and derived types
+  - [x] 1.1 Add `ViewMode` type, `getDayBounds` helper, and `computeChange` helper inside `page.tsx`
     - Define `type ViewMode = "Daily" | "Weekly"` at the top of the file
     - Implement `getDayBounds(daysAgo: number): { start: Date; end: Date }` using local midnight boundaries
     - Implement `computeChange(curr: number, prev: number): number | null` returning `null` when both are zero, `100` when only prev is zero, and `Math.round(((curr - prev) / prev) * 100)` otherwise
     - _Requirements: 3.6, 3.7, 3.8, 3.9, 3.10, 4.6, 4.7, 4.8_
 
-- [ ] 2. Add `viewMode` state and KPI `useMemo` hooks
-  - [ ] 2.1 Add `viewMode` state initialised to `"Daily"` and compute `dailyMetrics` and `weeklyMetrics` via `useMemo`
+- [x] 2. Add `viewMode` state and KPI `useMemo` hooks
+  - [x] 2.1 Add `viewMode` state initialised to `"Daily"` and compute `dailyMetrics` and `weeklyMetrics` via `useMemo`
     - Add `const [viewMode, setViewMode] = useState<ViewMode>("Daily")` to the component
     - Implement `dailyMetrics` useMemo (today vs yesterday completed orders — revenue, count, avg, change values)
     - Implement `weeklyMetrics` useMemo (last 7 days vs prior 7 days completed orders — revenue, count, avg, change values)
@@ -36,15 +36,15 @@ Refactor `apps/web-admin/src/app/(dashboard)/page.tsx` to add a Daily/Weekly vie
     - **Validates: Requirements 4.2, 4.3, 4.4**
     - For any orders array, `weeklyMetrics.revenue` must equal the manual sum of `totalAmount` for COMPLETED orders in the last 7 calendar days
 
-- [ ] 3. Add `ComparisonBadge` component and `WeeklyTrendChart` SVG component
-  - [ ] 3.1 Implement `ComparisonBadge` inline in `page.tsx`
+- [x] 3. Add `ComparisonBadge` component and `WeeklyTrendChart` SVG component
+  - [x] 3.1 Implement `ComparisonBadge` inline in `page.tsx`
     - Render nothing when `change` is `null`
     - Apply `text-emerald-700 bg-emerald-50` for positive/zero change
     - Apply `text-red-700 bg-red-50` for negative change
     - Format as `"+X% vs {period}"` or `"−X% vs {period}"`
     - _Requirements: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 4.6, 4.7, 4.8_
 
-  - [ ] 3.2 Implement `WeeklyTrendChart` SVG component inline in `page.tsx`
+  - [x] 3.2 Implement `WeeklyTrendChart` SVG component inline in `page.tsx`
     - Use `viewBox="0 0 500 180"` with `width="100%"`
     - Draw 5 horizontal grid lines (slate-100)
     - Render last-week polyline (gray, dashed `strokeDasharray="4 3"`)
@@ -59,11 +59,11 @@ Refactor `apps/web-admin/src/app/(dashboard)/page.tsx` to add a Daily/Weekly vie
     - **Validates: Requirements 7.2, 7.3**
     - For any orders array, each data point at index `i` in both series must equal the manual sum for that calendar day
 
-- [ ] 4. Checkpoint — core logic complete
+- [x] 4. Checkpoint — core logic complete
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 5. Render ViewToggle and update KPI Cards
-  - [ ] 5.1 Add the `ViewToggle` pill above the main chart and replace the four KPI cards
+- [x] 5. Render ViewToggle and update KPI Cards
+  - [x] 5.1 Add the `ViewToggle` pill above the main chart and replace the four KPI cards
     - Render two `<button>` elements in a rounded pill container using `cn()` for active/inactive styles
     - Active segment: `bg-white text-gray-900 shadow-sm`; inactive: `text-gray-500 hover:text-gray-700`
     - Replace the existing four KPI cards (Weekly Revenue, Active Outlets, Organization, Total Staff) with: Revenue, Orders, Avg Order Value, Active Outlets
@@ -84,15 +84,15 @@ Refactor `apps/web-admin/src/app/(dashboard)/page.tsx` to add a Daily/Weekly vie
     - **Validates: Requirements 2.4**
     - For any `viewMode`, the active segment has the active class and the other does not
 
-- [ ] 6. Update main chart to be mode-aware and add Weekly Trend Section
-  - [ ] 6.1 Parameterise the existing bar chart and add `dailyBarData` useMemo
+- [x] 6. Update main chart to be mode-aware and add Weekly Trend Section
+  - [x] 6.1 Parameterise the existing bar chart and add `dailyBarData` useMemo
     - Compute `dailyBarData` (single bar, `[{ day: "Today", value: todayRevenue }]`)
     - Derive `chartData`, `chartTitle`, `chartSubtitle`, and `maxChartValue` based on `viewMode`
     - Update bar chart JSX to use `chartData` / `maxChartValue` / `chartTitle` / `chartSubtitle`
     - Show spinner in the chart area while `loading`
     - _Requirements: 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 8.2_
 
-  - [ ] 6.2 Add `weeklyTrendData` useMemo and render the Weekly Trend Section card
+  - [x] 6.2 Add `weeklyTrendData` useMemo and render the Weekly Trend Section card
     - Compute `weeklyTrendData` with `thisWeek` (7 values from this Monday) and `lastWeek` (7 values from last Monday) using completed-order revenue sums
     - Render a new `<Card>` below the main chart + activity row with title "Weekly Growth" and subtitle "Revenue comparison: this week vs last week"
     - Pass `weeklyTrendData` into `<WeeklyTrendChart>`, always visible regardless of `viewMode`
@@ -109,8 +109,8 @@ Refactor `apps/web-admin/src/app/(dashboard)/page.tsx` to add a Daily/Weekly vie
     - **Validates: Requirements 7.1**
     - For any `viewMode`, the Weekly Trend Section card must be present in the rendered output
 
-- [ ] 7. Verify real-time event handling preserves `viewMode`
-  - [ ] 7.1 Confirm `useRealtimeEvent` callback does not reset `viewMode` and add an integration test
+- [x] 7. Verify real-time event handling preserves `viewMode`
+  - [x] 7.1 Confirm `useRealtimeEvent` callback does not reset `viewMode` and add an integration test
     - Verify the existing `loadDashboardData` callback in `useRealtimeEvent` does not call `setViewMode`
     - Write an example-based integration test with a mock socket: set `viewMode` to "Weekly", fire an `ORDER_COMPLETED` event, assert `viewMode` remains "Weekly"
     - _Requirements: 9.1_
@@ -120,7 +120,7 @@ Refactor `apps/web-admin/src/app/(dashboard)/page.tsx` to add a Daily/Weekly vie
     - **Validates: Requirements 9.1**
     - After any listed real-time event and data re-fetch, `viewMode` must be unchanged
 
-- [ ] 8. Final checkpoint — Ensure all tests pass
+- [x] 8. Final checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

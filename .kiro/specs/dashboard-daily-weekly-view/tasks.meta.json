@@ -1,0 +1,217 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Add `ViewMode` type, `getDayBounds` helper, and `computeChange` helper inside `page.tsx`": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219408
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701230819
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701290614
+      }
+    ],
+    "2.1 Add `viewMode` state initialised to `\"Daily\"` and compute `dailyMetrics` and `weeklyMetrics` via `useMemo`": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219443
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701296644
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701751945
+      }
+    ],
+    "3.1 Implement `ComparisonBadge` inline in `page.tsx`": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219474
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701302438
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701756923
+      }
+    ],
+    "3.2 Implement `WeeklyTrendChart` SVG component inline in `page.tsx`": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219505
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701307762
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701762165
+      }
+    ],
+    "4. Checkpoint — core logic complete": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219528
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701782444
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701826032
+      }
+    ],
+    "5.1 Add the `ViewToggle` pill above the main chart and replace the four KPI cards": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219562
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701841988
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702327906
+      }
+    ],
+    "6.1 Parameterise the existing bar chart and add `dailyBarData` useMemo": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219683
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701847089
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702334087
+      }
+    ],
+    "6.2 Add `weeklyTrendData` useMemo and render the Weekly Trend Section card": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219709
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701852052
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702339974
+      }
+    ],
+    "7.1 Confirm `useRealtimeEvent` callback does not reset `viewMode` and add an integration test": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219738
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702357470
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702946031
+      }
+    ],
+    "8. Final checkpoint — Ensure all tests pass": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701219765
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702951982
+      },
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793703064858
+      }
+    ],
+    "1. Add helper functions and derived types": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701290635
+      }
+    ],
+    "2. Add `viewMode` state and KPI `useMemo` hooks": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701751983
+      }
+    ],
+    "3. Add `ComparisonBadge` component and `WeeklyTrendChart` SVG component": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793701762195
+      }
+    ],
+    "5. Render ViewToggle and update KPI Cards": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702327953
+      }
+    ],
+    "6. Update main chart to be mode-aware and add Weekly Trend Section": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702340006
+      }
+    ],
+    "7. Verify real-time event handling preserves `viewMode`": [
+      {
+        "executionId": "181928df-adf0-4bbb-b9c9-9d76b05503f3",
+        "chatSessionId": "sess_61741e40-cb09-496d-aca8-f4c6b01ca60a",
+        "timestamp": 1793702946074
+      }
+    ]
+  }
+}
