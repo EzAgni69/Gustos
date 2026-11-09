@@ -12,6 +12,8 @@
 import { useState, useCallback } from "react";
 import type { KDSKot, HoldStatus } from "../types";
 import { getTimerStatus, formatElapsed } from "../types";
+import { OrderModeBadge } from "./OrderModeBadge";
+import { classify, classifyRequest, getTicketAlert, sortByUrgency, TIER_ICON } from "../utils/specialRequests";
 
 interface KOTCardProps {
   kot: KDSKot;
@@ -31,6 +33,11 @@ export function KOTCard({
   const [isMarking, setIsMarking] = useState(false);
   const [isFadingOut, setIsFadingOut] = useState(false);
   const [readyCounts, setReadyCounts] = useState<Record<number, number>>({});
+
+  // Allergy / dietary alert across items still to be cooked
+  const ticketAlert = getTicketAlert(
+    kot.status === "READY" ? [] : kot.items.filter((_, idx) => (readyCounts[idx] || 0) < kot.items[idx]!.quantity)
+  );
 
   const timerStatus = getTimerStatus(elapsedSeconds);
   const timeDisplay = formatElapsed(elapsedSeconds);
@@ -79,9 +86,17 @@ export function KOTCard({
 
   return (
     <div
-      className={`kot-card ${timerStatus} ${isFadingOut ? "fade-out" : ""} ${isReady ? "is-ready" : ""} ${holdStatus === "HOLD" ? "kot-held" : ""}`}
+      className={`kot-card ${timerStatus} ${isFadingOut ? "fade-out" : ""} ${isReady ? "is-ready" : ""} ${holdStatus === "HOLD" ? "kot-held" : ""} ${kot.isRush ? "kot-rush" : ""}`}
       id={`kot-${kot.kotId}`}
     >
+      {/* ─── Rush Banner ─── */}
+      {kot.isRush && (
+        <div className="kot-rush-banner" role="alert">
+          <span className="kot-rush-banner-icon">🚨</span>
+          <span className="kot-rush-banner-text">RUSH — Prepare immediately</span>
+        </div>
+      )}
+
       {/* ─── Hold / Fire Banner ─── */}
       {holdStatus === "HOLD" && (
         <div className="kot-hold-banner">
@@ -100,11 +115,24 @@ export function KOTCard({
         </div>
       )}
 
+      {/* ─── Plating vs Packaging ─── */}
+      <OrderModeBadge kot={kot} />
+
+      {/* ─── Allergy / Dietary Alert ─── */}
+      {ticketAlert && (
+        <div className={`kot-alert-banner ${ticketAlert.tier === "ALLERGY" ? "is-allergy" : "is-dietary"}`} role="alert">
+          <span className="kot-alert-banner-icon" aria-hidden="true">{TIER_ICON[ticketAlert.tier]}</span>
+          <span className="kot-alert-banner-title">{ticketAlert.tier === "ALLERGY" ? "Allergy" : "Dietary"}</span>
+          <span className="kot-alert-banner-labels">{ticketAlert.labels.join(" · ")}</span>
+        </div>
+      )}
+
       {/* ─── Card Header ─── */}
       <div className="kot-card-header">
         <div className="kot-card-header-left">
           <span className="kot-number">KOT #{kot.kotNumber}</span>
-          {kot.tableName && <span className="kot-table">{kot.tableName}</span>}
+          {/* Mode badge shows the table; keep the chip only for servers without orderMode */}
+          {kot.tableName && !kot.orderMode && <span className="kot-table">{kot.tableName}</span>}
         </div>
         <div className="kot-card-header-right">
           <span className={`kot-timer ${timerStatus}`}>{timeDisplay}</span>
@@ -187,47 +215,24 @@ export function KOTCard({
               </div>
               {item.modifiers && item.modifiers.length > 0 && (
                 <div className="kot-item-modifiers">
-                  {item.modifiers.map((mod, i) => {
-                    const lower = mod.toLowerCase();
-                    const isSpicy =
-                      lower.includes("spicy") || lower.includes("chilli") || lower.includes("pepper");
-                    const isDietary =
-                      lower.includes("jain") ||
-                      lower.includes("garlic") ||
-                      lower.includes("onion") ||
-                      lower.includes("swaminarayan");
-                    const isCombo =
-                      lower.includes("l:") ||
-                      lower.includes("r:") ||
-                      lower.includes("pizza:") ||
-                      lower.includes("drink:");
-
-                    const modClass = isSpicy
-                      ? "is-spicy"
-                      : isDietary
-                      ? "is-dietary"
-                      : isCombo
-                      ? "is-combo"
-                      : "";
-
-                    const icon = isSpicy
-                      ? "🌶️"
-                      : isDietary
-                      ? "🌿"
-                      : isCombo
-                      ? "🌓"
-                      : "•";
-
-                    return (
-                      <span key={i} className={`kot-item-modifier ${modClass}`}>
-                        <span style={{ marginRight: "4px" }}>{icon}</span>
-                        {mod}
-                      </span>
-                    );
-                  })}
+                  {sortByUrgency(item.modifiers.map(classify)).map((mod, i) => (
+                    <span key={i} className={`kot-item-modifier tier-${mod.tier.toLowerCase()}`}>
+                      <span className="kot-item-modifier-icon" aria-hidden="true">{mod.icon}</span>
+                      {mod.tier === "ALLERGY" && <span className="sr-only">Allergy: </span>}
+                      {mod.text}
+                    </span>
+                  ))}
                 </div>
               )}
-              {item.notes && <div className="kot-item-notes">📝 {item.notes}</div>}
+              {item.notes && (() => {
+                const tier = classifyRequest(item.notes);
+                const critical = tier === "ALLERGY" || tier === "DIETARY" || tier === "SPICE";
+                return (
+                  <div className={`kot-item-notes tier-${tier.toLowerCase()}`}>
+                    <span aria-hidden="true">{critical ? TIER_ICON[tier] : "📝"}</span> {item.notes}
+                  </div>
+                );
+              })()}
             </div>
           );
         })}

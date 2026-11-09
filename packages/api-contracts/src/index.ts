@@ -1413,3 +1413,6 @@ export const posHeartbeatSchema = z.object({
 });
 
 export type PosHeartbeat = z.infer<typeof posHeartbeatSchema>;
+
+// ─── Kitchen stations ───
+export * from "./kds-stations.js";

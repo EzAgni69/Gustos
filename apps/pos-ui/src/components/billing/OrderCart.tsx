@@ -2,6 +2,7 @@ import React from "react";
 import { useCartStore } from "../../store/useCartStore";
 import { useUIStore } from "../../store/useUIStore";
 import { CashIcon, SplitIcon } from "../common/PaymentIcons";
+import { KOTHistoryModal } from "../modals/KOTHistoryModal";
 
 export const OrderCart: React.FC = () => {
   const {
@@ -30,6 +31,8 @@ export const OrderCart: React.FC = () => {
 
   const { openModal, showNotification } = useUIStore();
   const totals = getTotals();
+  const [showKOTs, setShowKOTs] = React.useState(false);
+  const firedKOTCount = new Set(items.map((i) => i.kotId).filter(Boolean)).size;
 
   return (
     <aside className="w-80 sm:w-96 bg-surface border-l border-border flex flex-col h-full select-none shrink-0 shadow-2xl">
@@ -53,6 +56,15 @@ export const OrderCart: React.FC = () => {
                   <span className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-mono">
                     ACTIVE
                   </span>
+                )}
+                {activeOrderId && firedKOTCount > 0 && (
+                  <button
+                    onClick={() => setShowKOTs(true)}
+                    className="text-[9px] bg-surface hover:bg-surface-hover text-text-main px-1.5 py-0.5 rounded border border-border-hover font-mono font-bold"
+                    title="Kitchen tickets: Rush, Reprint or Cancel"
+                  >
+                    🧾 KOTs ({firedKOTCount})
+                  </button>
                 )}
               </div>
               <div className="text-[11px] text-text-muted font-mono flex items-center gap-1">
@@ -429,6 +441,9 @@ export const OrderCart: React.FC = () => {
           </span>
         </button>
       </div>
+    {showKOTs && activeOrderId && (
+        <KOTHistoryModal orderId={activeOrderId} orderNumber={orderNumber} onClose={() => setShowKOTs(false)} />
+      )}
     </aside>
   );
 };

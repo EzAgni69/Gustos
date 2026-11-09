@@ -116,6 +116,32 @@ export function useAudio() {
     }
   }, [isMuted, getAudioCtx]);
 
+  // ─── Rush: rapid triple high-pitched beep, played twice ───
+  const playRush = useCallback(() => {
+    if (isMuted) return;
+    try {
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      for (let i = 0; i < 6; i++) {
+        const t = now + i * 0.16 + (i >= 3 ? 0.35 : 0);
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(1046.5, t); // C6
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.linearRampToValueAtTime(0.3, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.13);
+      }
+    } catch {
+      // Audio unavailable — fail silently
+    }
+  }, [isMuted, getAudioCtx]);
+
   // ─── Start/Stop recurring alarm ───
   const startAlarm = useCallback(() => {
     if (isAlarmActiveRef.current) return;
@@ -163,6 +189,7 @@ export function useAudio() {
     isMuted,
     toggleMute,
     playDing,
+    playRush,
     startAlarm,
     stopAlarm,
   };

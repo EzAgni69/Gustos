@@ -23,13 +23,15 @@ import { KOTCard } from "./components/KOTCard";
 import { EmptyState } from "./components/EmptyState";
 import { ConnectionOverlay } from "./components/ConnectionOverlay";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { getTimerStatus, TIMER_RED_THRESHOLD, getItemStationId, KDS_STATIONS } from "./types";
+import { ExpoBoard } from "./components/ExpoBoard";
+import { getTimerStatus, TIMER_RED_THRESHOLD, getItemStationId, KDS_STATIONS, EXPO_STATION_ID } from "./types";
+import type { KotStationStatusPayload } from "./types";
 
 export function App() {
   const [selectedStation, setSelectedStation] = useState<string | null>(() => {
     try {
       const stored = localStorage.getItem("kds-selected-station");
-      if (stored && KDS_STATIONS.some((s) => s.id === stored)) {
+      if (stored && (stored === EXPO_STATION_ID || KDS_STATIONS.some((s) => s.id === stored))) {
         return stored;
       }
       return null;
@@ -38,6 +40,11 @@ export function App() {
     }
   });
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const isExpo = selectedStation === EXPO_STATION_ID;
+  // Bumped on every kitchen event so the Expo board refetches its checklist
+  const [expoRefreshKey, setExpoRefreshKey] = useState(0);
+  const [expoCount, setExpoCount] = useState(0);
+  const refreshExpo = useCallback(() => setExpoRefreshKey((k) => k + 1), []);
   const prevKotCountRef = useRef(0);
   const hadRedKotsRef = useRef(false);
 
@@ -62,14 +69,20 @@ export function App() {
     hydrate,
     addKOT,
     cancelKOT,
+    rushKOT,
+    setOrderMode,
     modifyKOT,
     completeKOT,
     recallKOT,
     updateStatus,
+    setReadyStations,
+    completeStation,
   } = useKOTStore();
+  const activeKotsRef = useRef(activeKots);
+  activeKotsRef.current = activeKots;
 
   // ─── Audio ───
-  const { isMuted, toggleMute, playDing, startAlarm, stopAlarm } = useAudio();
+  const { isMuted, toggleMute, playDing, playRush, startAlarm, stopAlarm } = useAudio();
 
   // ─── Socket.IO ───
   const handleNewKOT = useCallback(
@@ -86,6 +99,24 @@ export function App() {
       playDing();
     },
     [cancelKOT, playDing]
+  );
+
+  const handleRushKOT = useCallback(
+    (payload: { kotId: string }) => {
+      rushKOT(payload.kotId);
+      playRush();
+    },
+    [rushKOT, playRush]
+  );
+
+  const handleOrderModeChanged = useCallback(
+    (payload: { orderId: string; oldMode: Parameters<typeof setOrderMode>[1]; newMode: Parameters<typeof setOrderMode>[2] }) => {
+      if (payload.oldMode === payload.newMode) return;
+      setOrderMode(payload.orderId, payload.oldMode, payload.newMode);
+      // Only chime if this kitchen actually has tickets for the order
+      if (activeKotsRef.current.some((k) => k.orderId === payload.orderId)) playDing();
+    },
+    [setOrderMode, playDing]
   );
 
   const handleModifyKOT = useCallback(
@@ -105,8 +136,17 @@ export function App() {
       } else {
         updateStatus(kotId, status);
       }
+      refreshExpo();
     },
-    [updateStatus, completeKOT]
+    [updateStatus, completeKOT, refreshExpo]
+  );
+
+  const handleStationStatus = useCallback(
+    (payload: KotStationStatusPayload) => {
+      setReadyStations(payload.kotId, payload.readyStations);
+      refreshExpo();
+    },
+    [setReadyStations, refreshExpo]
   );
 
   const {
@@ -114,15 +154,40 @@ export function App() {
     markReady,
     markInProgress,
     recallKOT: recallKOTOnServer,
+    markStationReady,
+    recallStation: recallStationOnServer,
+    refresh: refreshKots,
     serverUrl,
     setServerUrl,
     bumpQueueLength,
   } = useSocket({
-    onNewKOT: handleNewKOT,
+    onNewKOT: (kot) => {
+      handleNewKOT(kot);
+      refreshExpo();
+    },
     onStatusUpdate: handleStatusUpdate,
-    onHydrate: hydrate,
-    onCancelKOT: handleCancelKOT,
-    onModifyKOT: handleModifyKOT,
+    onHydrate: (kots) => {
+      hydrate(kots);
+      refreshExpo();
+    },
+    onCancelKOT: (payload) => {
+      handleCancelKOT(payload);
+      refreshExpo();
+    },
+    onModifyKOT: (payload) => {
+      handleModifyKOT(payload);
+      refreshExpo();
+    },
+    onRushKOT: (payload) => {
+      handleRushKOT(payload);
+      refreshExpo();
+    },
+    onOrderModeChanged: (payload) => {
+      handleOrderModeChanged(payload);
+      refreshExpo();
+    },
+    onStationStatus: handleStationStatus,
+    onExpoEvent: refreshExpo,
   });
 
   // ─── Timers ───
@@ -145,10 +210,14 @@ export function App() {
 
   // ─── Station Filtering ───
   const filteredKots = useMemo(() => {
+    if (isExpo) return [];
     if (!selectedStation) return activeKots;
 
     return activeKots
       .map((kot) => {
+        // This station already finished its part — other stations may still be cooking
+        if (kot.readyStations?.includes(selectedStation)) return null;
+
         // If KOT is explicitly pinned to this station, keep all items
         if (kot.station && kot.station.toLowerCase() === selectedStation.toLowerCase()) {
           return kot;
@@ -167,14 +236,21 @@ export function App() {
         };
       })
       .filter((kot): kot is typeof activeKots[0] => kot !== null);
-  }, [activeKots, selectedStation]);
+  }, [activeKots, selectedStation, isExpo]);
 
   // ─── Mark Ready handler ───
+  // On a station screen only that station's part is bumped; the KOT turns
+  // READY on the server once every station on it is done. "ALL" bumps the KOT.
   const handleMarkReady = useCallback(
     async (kotId: string) => {
-      await markReady(kotId);
+      if (selectedStation && !isExpo) {
+        completeStation(kotId, selectedStation);
+        await markStationReady(kotId, selectedStation);
+      } else {
+        await markReady(kotId);
+      }
     },
-    [markReady]
+    [selectedStation, isExpo, completeStation, markStationReady, markReady]
   );
 
   // ─── Mark In Progress handler ───
@@ -187,13 +263,19 @@ export function App() {
 
   // ─── Recall handler ───
   const handleRecall = useCallback(
-    async (kotId: string) => {
+    async (kotId: string, stationId?: string) => {
       // Optimistically restore in local state
-      recallKOT(kotId);
+      recallKOT(kotId, stationId);
       // Sync back to server
-      await recallKOTOnServer(kotId);
+      if (stationId) {
+        await recallStationOnServer(kotId, stationId);
+        // The KOT may already have left this screen entirely — reload the full ticket
+        await refreshKots();
+      } else {
+        await recallKOTOnServer(kotId);
+      }
     },
-    [recallKOT, recallKOTOnServer]
+    [recallKOT, recallKOTOnServer, recallStationOnServer, refreshKots]
   );
 
   // ─── History toggle ───
@@ -205,7 +287,7 @@ export function App() {
     <div className="kds-app">
       <Header
         connectionStatus={connectionStatus}
-        activeCount={filteredKots.length}
+        activeCount={isExpo ? expoCount : filteredKots.length}
         selectedStation={selectedStation}
         onStationChange={handleStationChange}
         isMuted={isMuted}
@@ -216,7 +298,14 @@ export function App() {
       />
 
       <main className="kds-main">
-        {filteredKots.length === 0 ? (
+        {isExpo ? (
+          <ExpoBoard
+            serverUrl={serverUrl}
+            refreshKey={expoRefreshKey}
+            onCountChange={setExpoCount}
+            onOrderReady={playDing}
+          />
+        ) : filteredKots.length === 0 ? (
           <EmptyState />
         ) : (
           <div className="kds-grid">

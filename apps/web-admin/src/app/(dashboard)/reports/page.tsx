@@ -35,9 +35,11 @@ import {
   Loader2,
   CalendarDays,
   ArrowUpRight,
+  FileDown,
 } from "lucide-react";
 import type { Outlet } from "@gusto/api-contracts";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, getApiBaseUrl } from "@/lib/api-client";
+import { useToast } from "@/lib/toast";
 
 // ─── Date Range Helpers ───
 
@@ -64,6 +66,13 @@ function getDateRangeStart(range: DateRange): Date {
   }
 }
 
+function localDateString(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 // ─── Report data types ───
 type SalesReport = {
   summary: { totalOrders: number; totalRevenue: number; totalTax: number; totalDiscount: number; avgOrderValue: number; totalItemsSold: number };
@@ -85,6 +94,7 @@ type InventoryReport = {
 // ─── Component ───
 
 export default function ReportsPage() {
+  const { toast } = useToast();
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState<DateRange>("30d");
@@ -93,6 +103,8 @@ export default function ReportsPage() {
   const [salesReport, setSalesReport] = useState<SalesReport | null>(null);
   const [profitReport, setProfitReport] = useState<ProfitReport | null>(null);
   const [inventoryReport, setInventoryReport] = useState<InventoryReport | null>(null);
+  const [tallyDate, setTallyDate] = useState<string>(() => localDateString());
+  const [tallyExporting, setTallyExporting] = useState(false);
 
   const loadReports = async (currentOutlets: Outlet[], outletId: string, range: DateRange) => {
     const rangeStart = getDateRangeStart(range);
@@ -183,6 +195,46 @@ export default function ReportsPage() {
     document.body.removeChild(link);
   };
 
+  const exportToTally = async () => {
+    if (selectedOutletId === "all") {
+      toast({ title: "Select an outlet", description: "Tally export is generated per outlet.", variant: "error" });
+      return;
+    }
+    setTallyExporting(true);
+    try {
+      const token = document.cookie.match(/(?:^|; )gusto_token=([^;]*)/)?.[1];
+      const params = new URLSearchParams({ outletId: selectedOutletId, date: tallyDate });
+      const res = await fetch(`${getApiBaseUrl()}/reports/tally-export?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${decodeURIComponent(token)}` } : {},
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.message || "Failed to generate Tally export");
+      }
+      const voucherCount = Number(res.headers.get("X-Tally-Voucher-Count") ?? "0");
+      const blob = await res.blob();
+      const outletName = outlets.find((o) => o.id === selectedOutletId)?.name ?? "Outlet";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Tally_${outletName.replace(/[^A-Za-z0-9_-]+/g, "_")}_${tallyDate}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast({
+        title: "Tally export downloaded",
+        description: voucherCount > 0
+          ? `${voucherCount} sales voucher(s) for ${tallyDate}.`
+          : `No completed orders on ${tallyDate} — the file contains no vouchers.`,
+        variant: "success",
+      });
+    } catch (err) {
+      toast({ title: "Tally export failed", description: err instanceof Error ? err.message : undefined, variant: "error" });
+    }
+    setTallyExporting(false);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -217,6 +269,28 @@ export default function ReportsPage() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white pl-2 h-9">
+            <input
+              type="date"
+              aria-label="Tally export date"
+              className="h-full bg-transparent text-sm font-medium text-gray-700 focus:outline-none"
+              value={tallyDate}
+              max={localDateString()}
+              onChange={(e) => setTallyDate(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-full rounded-l-none border-l border-gray-200 font-semibold text-emerald-700"
+              onClick={exportToTally}
+              disabled={tallyExporting || !tallyDate || selectedOutletId === "all"}
+              title={selectedOutletId === "all" ? "Select an outlet to export to Tally" : "Download Tally XML for this outlet and date"}
+            >
+              {tallyExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
+              Export to Tally
+            </Button>
+          </div>
 
           <select
             className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"

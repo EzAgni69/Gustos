@@ -20,6 +20,8 @@ export const API = {
     LIST: "/api/tables",
     STATUS: (id: string) => `/api/tables/${id}/status`,
     TRANSFER: "/api/tables/transfer",
+    SWAP: "/api/tables/swap",
+    MERGE: "/api/tables/merge",
   },
   ORDERS: {
     LIST: "/api/orders",
@@ -41,6 +43,7 @@ export const API = {
     FIRE: (orderId: string) => `/api/orders/${orderId}/kot`,
     LIST: "/api/kots",
     UPDATE_STATUS: (id: string) => `/api/kots/${id}/status`,
+    RUSH: (orderId: string, kotId: string) => `/api/orders/${orderId}/kot/${kotId}/rush`,
   },
   PRINT: {
     BILL: (orderId: string) => `/api/print/bill/${orderId}`,
@@ -55,9 +58,14 @@ export const SOCKET_EVENTS = {
   ORDER_UPDATED: "order:updated",
   KOT_NEW: "kot:new",
   KOT_STATUS_UPDATE: "kot:status-update",
+  KOT_RUSH: "kot:rush",
   SYNC_MENU_UPDATED: "sync:menu-updated",
   SYNC_TABLES_UPDATED: "sync:tables-updated",
   SYNC_USERS_UPDATED: "sync:users-updated",
+  /** Pass (Expo) sent a finished table order out — food ready for pickup */
+  EXPO_ORDER_READY: "expo:order-ready",
+  /** App-local (never sent by the server): a KOT was bumped READY on the KDS. */
+  KOT_READY_FOR_PICKUP: "local:kot-ready-for-pickup",
 } as const;
 
 // ─── Common Modifiers (hardcoded for now — will come from server later) ───

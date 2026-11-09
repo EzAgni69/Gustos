@@ -32,6 +32,19 @@ import {
 } from "../services/order.service.js";
 import { generateKOT } from "../services/kot.service.js";
 import { undoLastAction, canUndo } from "../services/undo.service.js";
+import { getDayHistory } from "../services/history.service.js";
+import {
+  correctPaymentMode,
+  voidSettledOrder,
+  type PaymentCorrectionInput,
+  type SettledVoidInput,
+} from "../services/settlement.service.js";
+
+/** Post-settlement edits are cashier/manager operations — never waiters/captains. */
+function canEditSettledBill(role?: string): boolean {
+  if (!role) return true;
+  return ["SUPER_ADMIN", "ADMIN", "POS_ADMIN", "OWNER", "MANAGER", "CASHIER"].includes(role);
+}
 
 const router = Router();
 
@@ -67,6 +80,59 @@ router.get("/", (req, res) => {
     activeOnly: active === "true",
   });
   res.json({ success: true, data: orders });
+});
+
+/**
+ * GET /api/orders/history?date=YYYY-MM-DD
+ * Full history of one business day (defaults to today): orders with items,
+ * KOTs, invoices and event trail, plus a sales summary and activity feed.
+ * Must be registered before GET /:id.
+ */
+router.get("/history", (req, res) => {
+  try {
+    const data = getDayHistory(req.query.date as string | undefined);
+    res.json({ success: true, data });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to load day history";
+    res.status(500).json({ success: false, message });
+  }
+});
+
+/**
+ * POST /api/orders/:id/correct-payment
+ * Fix the tender on a settled bill (e.g. CASH → UPI). Amounts are unchanged.
+ * Body: { paymentMode, paymentSubMethod?, paymentSplits?, reason, approvedBy }
+ */
+router.post("/:id/correct-payment", (req, res) => {
+  if (!canEditSettledBill(req.currentUser?.role)) {
+    res.status(403).json({ success: false, message: "Insufficient permissions to correct settled bills" });
+    return;
+  }
+  try {
+    const data = correctPaymentMode(req.params.id!, req.body as PaymentCorrectionInput, req.currentUser?.id);
+    res.json({ success: true, data, message: `Payment mode for ${data.orderNumber} corrected to ${data.paymentMode}` });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to correct payment mode";
+    res.status(message === "Order not found" ? 404 : 400).json({ success: false, message });
+  }
+});
+
+/**
+ * POST /api/orders/:id/void-settled
+ * Reverse a settled bill (post-settlement void). Body: { reason, approvedBy }
+ */
+router.post("/:id/void-settled", (req, res) => {
+  if (!canEditSettledBill(req.currentUser?.role)) {
+    res.status(403).json({ success: false, message: "Insufficient permissions to void settled bills" });
+    return;
+  }
+  try {
+    const data = voidSettledOrder(req.params.id!, req.body as SettledVoidInput, req.currentUser?.id);
+    res.json({ success: true, data, message: `Bill ${data.invoiceNumber} voided` });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to void settled bill";
+    res.status(message === "Order not found" ? 404 : 400).json({ success: false, message });
+  }
 });
 
 /**

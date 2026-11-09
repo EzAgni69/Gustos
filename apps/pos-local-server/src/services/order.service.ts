@@ -27,6 +27,7 @@ import {
   emitOnlineOrderReceived,
 } from "../socket/events.js";
 import { cancelKOT, generateModificationKOT } from "./kot.service.js";
+import { platformMarkerLabel } from "./order-channel.js";
 
 // ─── Types ───
 
@@ -291,8 +292,10 @@ export function getOrderById(orderId: string) {
  * Create a DRAFT online order from an incoming Zomato/Swiggy webhook.
  */
 export function createOnlineOrderFromWebhook(payload: any) {
-  // Map Zomato payload to Gustos schema
-  const customerName = payload.customer?.name || "Zomato Customer";
+  // Map aggregator payload to Gustos schema (provider defaults to Zomato,
+  // the only integration currently routed by sync-worker)
+  const platformLabel = platformMarkerLabel(payload.provider);
+  const customerName = payload.customer?.name || `${platformLabel} Customer`;
   const customerPhone = payload.customer?.phone;
   
   // Create DRAFT order
@@ -344,7 +347,7 @@ export function createOnlineOrderFromWebhook(payload: any) {
   
   // Attach the cloud's onlineOrderId to the notes or a new field so we can ack it later
   db.update(schema.orders)
-    .set({ notes: `onlineOrderId:${payload.onlineOrderId} | Zomato: ${payload.order_id}` })
+    .set({ notes: `onlineOrderId:${payload.onlineOrderId} | ${platformLabel}: ${payload.order_id}` })
     .where(eq(schema.orders.id, newOrder.id))
     .run();
 

@@ -19,7 +19,10 @@ import type {
   KotStatusUpdatePayload,
   KotCancelledPayload,
   KotModificationPayload,
+  KotRushPayload,
+  OrderModeChangedPayload,
   KotListItem,
+  KotStationStatusPayload,
 } from "../types";
 import { payloadToKDSKot, listItemToKDSKot } from "./useKOTStore";
 import { useBumpQueue } from "./useBumpQueue";
@@ -72,6 +75,22 @@ interface UseSocketOptions {
   onHydrate: (kots: KDSKot[]) => void;
   onCancelKOT?: (payload: KotCancelledPayload) => void;
   onModifyKOT?: (payload: KotModificationPayload) => void;
+  onRushKOT?: (payload: KotRushPayload) => void;
+  onOrderModeChanged?: (payload: OrderModeChangedPayload) => void;
+  /** A station marked / recalled its part of a KOT */
+  onStationStatus?: (payload: KotStationStatusPayload) => void;
+  /** Pass bumped or recalled a whole order (expo:order-ready / expo:order-recalled) */
+  onExpoEvent?: (event: "order-ready" | "order-recalled", payload: Record<string, unknown>) => void;
+}
+
+/** Authenticated fetch against the POS server (used by the Expo board). */
+export async function kdsFetch<T>(serverUrl: string, path: string, init: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (AUTH_TOKEN) headers["Authorization"] = `Bearer ${AUTH_TOKEN}`;
+  const res = await fetch(`${serverUrl}${path}`, { ...init, headers: { ...headers, ...(init.headers as Record<string, string>) } });
+  const data = (await res.json()) as { success: boolean; data: T; message?: string };
+  if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
+  return data.data;
 }
 
 export function useSocket({
@@ -80,6 +99,10 @@ export function useSocket({
   onHydrate,
   onCancelKOT,
   onModifyKOT,
+  onRushKOT,
+  onOrderModeChanged,
+  onStationStatus,
+  onExpoEvent,
 }: UseSocketOptions) {
   const [serverUrl, setServerUrlState] = useState<string>(getInitialServerUrl);
   const socketRef = useRef<Socket | null>(null);
@@ -95,6 +118,10 @@ export function useSocket({
   const onHydrateRef = useRef(onHydrate);
   const onCancelKOTRef = useRef(onCancelKOT);
   const onModifyKOTRef = useRef(onModifyKOT);
+  const onRushKOTRef = useRef(onRushKOT);
+  const onOrderModeChangedRef = useRef(onOrderModeChanged);
+  const onStationStatusRef = useRef(onStationStatus);
+  const onExpoEventRef = useRef(onExpoEvent);
 
   useEffect(() => {
     onNewKOTRef.current = onNewKOT;
@@ -102,7 +129,11 @@ export function useSocket({
     onHydrateRef.current = onHydrate;
     onCancelKOTRef.current = onCancelKOT;
     onModifyKOTRef.current = onModifyKOT;
-  }, [onNewKOT, onStatusUpdate, onHydrate, onCancelKOT, onModifyKOT]);
+    onRushKOTRef.current = onRushKOT;
+    onOrderModeChangedRef.current = onOrderModeChanged;
+    onStationStatusRef.current = onStationStatus;
+    onExpoEventRef.current = onExpoEvent;
+  }, [onNewKOT, onStatusUpdate, onHydrate, onCancelKOT, onModifyKOT, onRushKOT, onOrderModeChanged, onStationStatus, onExpoEvent]);
 
   const setServerUrl = useCallback((url: string) => {
     const trimmed = url.trim().replace(/\/+$/, "");
@@ -239,10 +270,37 @@ export function useSocket({
       onCancelKOTRef.current?.(payload);
     });
 
+    // ─── Listen for RUSH (priority) requests from POS ───
+    socket.on("kot:rush", (payload: KotRushPayload) => {
+      console.log("[KDS] RUSH KOT:", payload.kotNumber);
+      onRushKOTRef.current?.(payload);
+    });
+
+    // ─── Order switched dine-in ↔ takeaway ↔ delivery after firing ───
+    socket.on("order:mode-changed", (payload: OrderModeChangedPayload) => {
+      console.log("[KDS] Order mode changed:", payload.orderNumber, payload.oldMode, "→", payload.newMode);
+      onOrderModeChangedRef.current?.(payload);
+      // Moving onto a table: re-fetch to pick up the new table name
+      if (payload.newMode === "DINE_IN") fetchActiveKOTs();
+    });
+
     // ─── Listen for KOT modification ───
     socket.on("kot:modification", (payload: KotModificationPayload) => {
       console.log("[KDS] KOT modification received:", payload.kotNumber);
       onModifyKOTRef.current?.(payload);
+    });
+
+    // ─── Station readiness (multi-station KOTs) ───
+    socket.on("kot:station-status", (payload: KotStationStatusPayload) => {
+      onStationStatusRef.current?.(payload);
+    });
+
+    // ─── Expo / pass ───
+    socket.on("expo:order-ready", (payload: Record<string, unknown>) => {
+      onExpoEventRef.current?.("order-ready", payload);
+    });
+    socket.on("expo:order-recalled", (payload: Record<string, unknown>) => {
+      onExpoEventRef.current?.("order-recalled", payload);
     });
 
     return () => {
@@ -323,11 +381,43 @@ export function useSocket({
     }
   }, [serverUrl, enqueueBump]);
 
+  // ─── Station-scoped bump: this station finished its part of the KOT ───
+  const markStationReady = useCallback(async (kotId: string, stationId: string) => {
+    try {
+      await kdsFetch(serverUrl, `/api/kots/${kotId}/stations/${stationId}/ready`, { method: "POST" });
+    } catch (err) {
+      if (err instanceof TypeError) {
+        console.error("[KDS] Network error on station bump, queuing offline:", err);
+        enqueueBump(kotId, "READY", stationId);
+      } else {
+        console.error("[KDS] Station bump rejected:", err);
+      }
+    }
+  }, [serverUrl, enqueueBump]);
+
+  // ─── Station-scoped recall (from history) ───
+  const recallStation = useCallback(async (kotId: string, stationId: string) => {
+    try {
+      await kdsFetch(serverUrl, `/api/kots/${kotId}/stations/${stationId}/recall`, { method: "POST" });
+    } catch (err) {
+      if (err instanceof TypeError) {
+        console.error("[KDS] Network error on station recall, queuing offline:", err);
+        enqueueBump(kotId, "IN_PROGRESS", stationId);
+      } else {
+        console.error("[KDS] Station recall rejected:", err);
+      }
+    }
+  }, [serverUrl, enqueueBump]);
+
   return {
     connectionStatus,
     markReady,
     markInProgress,
     recallKOT,
+    markStationReady,
+    recallStation,
+    /** Re-fetch active KOTs from the server (source of truth) */
+    refresh: fetchActiveKOTs,
     serverUrl,
     setServerUrl,
     bumpQueueLength,

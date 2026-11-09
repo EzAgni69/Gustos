@@ -8,12 +8,13 @@
 
 import { useCallback } from "react";
 import type { CompletedKot } from "../types";
+import { getStationConfig } from "../types";
 
 interface HistoryPanelProps {
   isOpen: boolean;
   onClose: () => void;
   completedKots: CompletedKot[];
-  onRecall: (kotId: string) => void;
+  onRecall: (kotId: string, stationId?: string) => void;
 }
 
 export function HistoryPanel({
@@ -23,8 +24,8 @@ export function HistoryPanel({
   onRecall,
 }: HistoryPanelProps) {
   const handleRecall = useCallback(
-    (kotId: string) => {
-      onRecall(kotId);
+    (kotId: string, stationId?: string) => {
+      onRecall(kotId, stationId);
     },
     [onRecall]
   );
@@ -97,9 +98,9 @@ export function HistoryPanel({
             <div className="kds-history-list">
               {completedKots.map((kot) => (
                 <div
-                  key={kot.kotId}
+                  key={`${kot.kotId}-${kot.stationId ?? "all"}`}
                   className="kds-history-item"
-                  id={`history-${kot.kotId}`}
+                  id={`history-${kot.kotId}${kot.stationId ? `-${kot.stationId}` : ""}`}
                 >
                   {/* Item Header */}
                   <div className="kds-history-item-header">
@@ -126,7 +127,13 @@ export function HistoryPanel({
                   {/* Item Meta */}
                   <div className="kds-history-item-meta">
                     <span>Order #{kot.orderNumber}</span>
-                    {kot.station && <span>📍 {kot.station}</span>}
+                    {kot.stationId ? (
+                      <span>
+                        {getStationConfig(kot.stationId)?.icon} {getStationConfig(kot.stationId)?.name ?? kot.stationId} part
+                      </span>
+                    ) : (
+                      kot.station && <span>📍 {kot.station}</span>
+                    )}
                     {kot.waiterName && <span>👤 {kot.waiterName}</span>}
                   </div>
 
@@ -147,7 +154,7 @@ export function HistoryPanel({
                   {/* Recall Button */}
                   <button
                     className="kds-history-recall-btn"
-                    onClick={() => handleRecall(kot.kotId)}
+                    onClick={() => handleRecall(kot.kotId, kot.stationId)}
                     id={`btn-recall-${kot.kotId}`}
                   >
                     🔄 RECALL

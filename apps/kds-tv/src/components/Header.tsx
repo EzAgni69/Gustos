@@ -14,7 +14,7 @@
 
 import { useState, useEffect } from "react";
 import type { ConnectionStatus } from "../types";
-import { KDS_STATIONS } from "../types";
+import { KDS_STATIONS, EXPO_STATION_ID } from "../types";
 
 interface HeaderProps {
   connectionStatus: ConnectionStatus;
@@ -105,6 +105,15 @@ export function Header({
             {station.shortName}
           </button>
         ))}
+        {/* Expediter / pass: whole table orders with a station checklist */}
+        <button
+          className={`kds-station-tab kds-station-tab-expo ${selectedStation === EXPO_STATION_ID ? "active" : ""}`}
+          onClick={() => onStationChange(EXPO_STATION_ID)}
+          id="station-filter-expo"
+        >
+          <span style={{ marginRight: "6px" }}>🛎️</span>
+          EXPO
+        </button>
       </nav>
 
       {/* ─── Right: History + Mute + Queue Badge + Clock + Status ─── */}

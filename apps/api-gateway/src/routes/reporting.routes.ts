@@ -7,10 +7,12 @@
  * GET /api/v1/reports/inventory      — Inventory stock levels & low-stock alerts
  * GET /api/v1/reports/profitability  — Revenue vs. cost analysis
  * GET /api/v1/reports/dashboard      — Quick summary for dashboard widgets
+ * GET /api/v1/reports/tally-export   — Tally XML daily sales summary (outletId, date)
  */
 
 import type { FastifyInstance } from "fastify";
 import { eq, and, sql, lt, gte } from "drizzle-orm";
+import { z } from "zod";
 import { getOrgTimeZone, localDayRange, localDateKey, localToday, localWeekStartKey } from "../utils/business-time.js";
 import {
   salesReportQuerySchema,
@@ -21,6 +23,13 @@ import * as schema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { getOrganizationId, requireMinRole } from "../middleware/auth.js";
 import { success, error } from "../utils/response.js";
+import { buildTallyDailySummary, renderTallyXml, TallyExportError } from "../services/tally-export.js";
+
+const tallyExportQuerySchema = z.object({
+  outletId: z.string().uuid(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+  company: z.string().trim().min(1).max(200).optional(),
+});
 
 export async function reportingRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -462,6 +471,35 @@ export async function reportingRoutes(fastify: FastifyInstance) {
           },
         })
       );
+    }
+  );
+  // ─── Tally Accounting Export (XML) ───
+  fastify.get(
+    "/api/v1/reports/tally-export",
+    { preHandler: [requireMinRole("MANAGER")] },
+    async (request, reply) => {
+      const orgId = getOrganizationId(request);
+      const parsed = tallyExportQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send(error(parsed.error.issues[0]?.message ?? "Invalid query"));
+      }
+      const { outletId, date, company } = parsed.data;
+
+      try {
+        const summary = await buildTallyDailySummary(orgId, outletId, date);
+        const xml = renderTallyXml(summary, { companyName: company });
+        const safeName = summary.outlet.name.replace(/[^A-Za-z0-9_-]+/g, "_");
+        return reply
+          .header("Content-Type", "application/xml; charset=utf-8")
+          .header("Content-Disposition", `attachment; filename="Tally_${safeName}_${date}.xml"`)
+          .header("X-Tally-Voucher-Count", String(summary.vouchers.length))
+          .send(xml);
+      } catch (err) {
+        if (err instanceof TallyExportError) {
+          return reply.status(err.statusCode).send(error(err.message));
+        }
+        throw err;
+      }
     }
   );
 }

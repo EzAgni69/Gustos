@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { calculateCartTotals, type CartItem, type CartItemAddOn, type CartTotals, type DiscountConfig, type GSTRate } from "@gusto/core-logic";
-import type { POSMenuItem } from "./useMenuStore";
+import { useMenuStore, type POSMenuItem } from "./useMenuStore";
 import { apiClient } from "../api/client";
 import { db } from "../lib/db";
 import { useUIStore } from "./useUIStore";
@@ -140,6 +140,20 @@ function safeParseJson<T>(val: any, fallback: T): T {
   return fallback;
 }
 
+/**
+ * Block adding 86'd items. Checks the live menu store (not the passed object)
+ * so a stale reference — e.g. a customizer opened before the item was 86'd —
+ * is still caught. Covers card taps, short-code entry and the customizer.
+ */
+function isSoldOut(menuItem: POSMenuItem): boolean {
+  const live = useMenuStore.getState().items.find((i) => i.id === menuItem.id);
+  if ((live ?? menuItem).isAvailable === false) {
+    useUIStore.getState().showNotification(`🚫 ${menuItem.name} is sold out (86'd).`);
+    return true;
+  }
+  return false;
+}
+
 export const useCartStore = create<CartStoreState>((set, get) => ({
   activeOrderId: null,
   orderNumber: null,
@@ -212,6 +226,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   },
 
   addItem: (menuItem, modifiers = [], notes = "") => {
+    if (isSoldOut(menuItem)) return;
     const { items } = get();
     // For unsaved items, check if identical modifiers exist — merge quantity
     const modString = [...modifiers].sort().join("|") + `|${notes}`;
@@ -247,6 +262,7 @@ export const useCartStore = create<CartStoreState>((set, get) => ({
   },
 
   addItemWithCustomization: ({ menuItem, variantName, variantPrice, quantity, modifiers, addOns, notes }) => {
+    if (isSoldOut(menuItem)) return;
     const { items } = get();
     const newItem: POSCartItem = {
       cartItemId: newCartItemId(),

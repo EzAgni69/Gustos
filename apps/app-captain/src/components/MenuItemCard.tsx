@@ -37,6 +37,11 @@ export function MenuItemCard({ item, quantity = 0, onAdd, onPress, onInfoPress }
           <Text style={[styles.name, !isAvailable && styles.textUnavailable]} numberOfLines={2}>
             {item.name}
           </Text>
+          {item.shortCode ? (
+            <Text style={styles.shortCode} accessibilityLabel={`Code ${item.shortCode}`}>
+              {item.shortCode}
+            </Text>
+          ) : null}
           {item.description ? (
             <Pressable 
               onPress={() => onInfoPress(item)}
@@ -133,6 +138,17 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
+  },
+  shortCode: {
+    color: colors.textTertiary,
+    fontSize: fontSize.xs,
+    fontWeight: fontWeight.semibold,
+    fontVariant: ["tabular-nums"],
+    backgroundColor: colors.bgInput,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: "hidden",
   },
   name: {
     flex: 1,

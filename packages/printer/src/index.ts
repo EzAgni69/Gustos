@@ -618,6 +618,51 @@ export function buildKOTReceipt(data: KOTData): ReceiptLine[] {
 }
 
 /**
+ * Build a RUSH KOT slip — an urgent re-print of a KOT's items with a loud
+ * header so the kitchen prioritises it.
+ */
+export function buildRushKOTReceipt(data: KOTData & { rushedBy?: string }): ReceiptLine[] {
+  const lines: ReceiptLine[] = [];
+
+  lines.push({ type: "text", content: "!!! RUSH !!!", align: "center", bold: true, size: "double" });
+  lines.push({ type: "text", content: "PRIORITY — PREPARE IMMEDIATELY", align: "center", bold: true });
+  lines.push({ type: "divider" });
+  lines.push({ type: "text", content: `KOT: ${data.kotNumber}`, align: "left", bold: true });
+  lines.push({ type: "text", content: `Order: ${data.orderNumber}`, align: "left" });
+  if (data.tableName) {
+    lines.push({ type: "text", content: `Table: ${data.tableName}`, align: "left", bold: true, size: "double" });
+  }
+  if (data.station) {
+    lines.push({ type: "text", content: `Station: ${data.station}`, align: "left", bold: true });
+  }
+  lines.push({ type: "text", content: `Fired: ${formatTime(data.createdAt)}`, align: "left" });
+  lines.push({ type: "text", content: `Rushed: ${formatTime(new Date())}`, align: "left", bold: true });
+  if (data.rushedBy) {
+    lines.push({ type: "text", content: `Rushed By: ${data.rushedBy}`, align: "left" });
+  }
+  lines.push({ type: "divider" });
+
+  for (const item of data.items) {
+    lines.push({ type: "text", content: `${item.quantity}x ${item.name}`, bold: true, size: "double" });
+    if (item.variantName) {
+      lines.push({ type: "text", content: `   ${item.variantName}` });
+    }
+    if (item.modifiers && item.modifiers.length > 0) {
+      lines.push({ type: "text", content: `   → ${item.modifiers.join(", ")}` });
+    }
+    if (item.notes) {
+      lines.push({ type: "text", content: `   Note: ${item.notes}` });
+    }
+  }
+
+  lines.push({ type: "divider" });
+  lines.push({ type: "text", content: "!!! RUSH !!!", align: "center", bold: true, size: "double" });
+  lines.push({ type: "blank" });
+
+  return lines;
+}
+
+/**
  * Build a Modification KOT template for kitchen changes.
  */
 export function buildModificationKOTReceipt(data: ModificationKOTData): ReceiptLine[] {

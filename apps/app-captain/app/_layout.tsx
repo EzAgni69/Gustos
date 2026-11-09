@@ -40,6 +40,7 @@ function useProtectedRoute(isReady: boolean, fontsLoaded: boolean) {
 }
 
 import { OfflineBanner } from "../src/components/OfflineBanner";
+import { PickupAlert } from "../src/components/PickupAlert";
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -110,6 +111,8 @@ export default function RootLayout() {
           }}
         />
       </Stack>
+      {/* Rendered after the Stack so it floats above every screen */}
+      <PickupAlert />
     </GestureRoot>
   );
 }

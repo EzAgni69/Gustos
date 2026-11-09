@@ -43,6 +43,58 @@ export function calculateGST(amount: number, rate: GSTRate): TaxBreakdown {
   };
 }
 
+/**
+ * Intra-state supply → CGST + SGST (half each).
+ * Inter-state supply → IGST (full rate).
+ */
+export type GSTSupplyType = "INTRA_STATE" | "INTER_STATE";
+
+export interface GSTSplit {
+  taxableAmount: number;
+  taxRate: GSTRate;
+  supplyType: GSTSupplyType;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  totalTax: number;
+}
+
+/**
+ * Calculate the full GST split (CGST/SGST or IGST) for a taxable amount.
+ * Intra-state reuses calculateGST so the two always agree.
+ */
+export function calculateGSTSplit(
+  taxableAmount: number,
+  rate: GSTRate,
+  supplyType: GSTSupplyType = "INTRA_STATE"
+): GSTSplit {
+  if (supplyType === "INTER_STATE") {
+    const igst = roundCurrency((taxableAmount * Number(rate)) / 100);
+    return { taxableAmount: roundCurrency(taxableAmount), taxRate: rate, supplyType, cgst: 0, sgst: 0, igst, totalTax: igst };
+  }
+  const { cgst, sgst, totalTax } = calculateGST(taxableAmount, rate);
+  return { taxableAmount: roundCurrency(taxableAmount), taxRate: rate, supplyType, cgst, sgst, igst: 0, totalTax };
+}
+
+/** Two-digit GST state code from a GSTIN (e.g. "27AAAAA0000A1Z5" → "27"), or null if malformed. */
+export function getStateCodeFromGSTIN(gstin?: string | null): string | null {
+  const code = gstin?.trim().slice(0, 2);
+  return code && /^\d{2}$/.test(code) ? code : null;
+}
+
+/**
+ * Determine supply type from supplier and place-of-supply state codes.
+ * Unknown place of supply defaults to intra-state (restaurant service is
+ * supplied at the outlet's location).
+ */
+export function resolveGSTSupplyType(
+  supplierStateCode: string | null,
+  placeOfSupplyStateCode?: string | null
+): GSTSupplyType {
+  if (!supplierStateCode || !placeOfSupplyStateCode) return "INTRA_STATE";
+  return supplierStateCode === placeOfSupplyStateCode ? "INTRA_STATE" : "INTER_STATE";
+}
+
 // ─── Cart Calculation Engine ───
 
 export interface CartItemAddOn {

@@ -146,6 +146,8 @@ export interface MenuItemResponse {
   isVeg: boolean;
   isAvailable: boolean;
   sortOrder: number;
+  /** POS short code (sent by the local server; same code cashiers type) */
+  shortCode?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -158,7 +160,8 @@ export async function getCategories(): Promise<MenuCategoryResponse[]> {
 export async function getMenuItems(
   categoryId?: string
 ): Promise<MenuItemResponse[]> {
-  const query = categoryId ? `?categoryId=${categoryId}&available=true` : "?available=true";
+  // Include 86'd items: MenuItemCard greys them out so captains can see what's sold out
+  const query = categoryId ? `?categoryId=${categoryId}` : "";
   const res = await request<MenuItemResponse[]>(
     `${API.MENU.ITEMS}${query}`
   );
@@ -241,6 +244,26 @@ export async function transferOrder(
     method: "POST",
     body: JSON.stringify({ fromTableId, toTableId }),
   });
+}
+
+/** Exchange the orders on two occupied tables. */
+export async function swapTables(tableAId: string, tableBId: string): Promise<void> {
+  await request(API.TABLES.SWAP, {
+    method: "POST",
+    body: JSON.stringify({ tableAId, tableBId }),
+  });
+}
+
+/**
+ * Move every item from the source table's bill onto the target table's bill.
+ * The source order becomes MERGED and its table is released. Not reversible.
+ */
+export async function mergeTables(sourceTableId: string, targetTableId: string): Promise<OrderResponse> {
+  const res = await request<OrderResponse>(API.TABLES.MERGE, {
+    method: "POST",
+    body: JSON.stringify({ sourceTableId, targetTableId }),
+  });
+  return res.data;
 }
 
 export async function updateReservation(
@@ -553,6 +576,7 @@ export interface KOTResponse {
   kotNumber: string;
   station: string | null;
   status: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED";
+  isRush?: boolean;
   createdAt: string;
   items: KOTItemResponse[];
   orderNumber: string;
@@ -573,6 +597,23 @@ export async function updateKOTStatus(
     method: "PATCH",
     body: JSON.stringify({ status }),
   });
+}
+
+/**
+ * Flag a fired KOT as RUSH: KDS sounds the priority alarm + flashing banner
+ * and an urgent slip prints. Deliberately NOT queued offline — a rush that
+ * lands minutes later is worse than a clear "didn't send" error.
+ */
+export async function rushKOT(orderId: string, kotId: string): Promise<{ kotNumber: string }> {
+  try {
+    const res = await request<{ kotNumber: string }>(API.KOT.RUSH(orderId, kotId), { method: "POST" });
+    return res.data;
+  } catch (err) {
+    if (isNetworkError(err)) {
+      throw new Error("Not connected to the POS server. Walk over to the kitchen or try again.");
+    }
+    throw err;
+  }
 }
 
 // ─── Checkout ───

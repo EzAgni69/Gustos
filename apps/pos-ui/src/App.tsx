@@ -25,6 +25,8 @@ import { BillPreviewModal } from "./components/modals/BillPreviewModal";
 import { OnlineOrderModal } from "./components/modals/OnlineOrderModal";
 import { ItemCustomizerModal } from "./components/modals/ItemCustomizerModal";
 import { VoidItemModal } from "./components/modals/VoidItemModal";
+import { DayHistoryModal } from "./components/modals/DayHistoryModal";
+import { PastOrdersModal } from "./components/modals/PastOrdersModal";
 import { LoginScreen } from "./components/auth/LoginScreen";
 import { useSocket } from "./hooks/useSocket";
 import { useOfflineSync } from "./hooks/useOfflineSync";
@@ -95,6 +97,8 @@ export function App() {
       <OnlineOrderModal />
       <ItemCustomizerModal />
       <VoidItemModal />
+      <DayHistoryModal />
+      <PastOrdersModal />
     </div>
   );
 }

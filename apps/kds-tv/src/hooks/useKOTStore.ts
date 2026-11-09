@@ -17,8 +17,9 @@ import type {
   CompletedKot,
   HoldStatus,
   KotModificationPayload,
+  OrderMode,
 } from "../types";
-import { getCourseNumber } from "../types";
+import { getCourseNumber, getItemStationId } from "../types";
 
 const MAX_COMPLETED_KOTS = 50;
 
@@ -36,10 +37,14 @@ type KOTAction =
   | { type: "ADD_KOT"; kot: KDSKot }
   | { type: "REMOVE_KOT"; kotId: string }
   | { type: "CANCEL_KOT"; kotId: string }
+  | { type: "RUSH_KOT"; kotId: string }
+  | { type: "SET_ORDER_MODE"; orderId: string; oldMode: OrderMode; newMode: OrderMode }
   | { type: "MODIFY_KOT"; kotId: string; modifications: KotModificationPayload["modifications"] }
   | { type: "UPDATE_STATUS"; kotId: string; status: KDSKot["status"] }
   | { type: "COMPLETE_KOT"; kotId: string }
-  | { type: "RECALL_KOT"; kotId: string };
+  | { type: "RECALL_KOT"; kotId: string; stationId?: string }
+  | { type: "SET_READY_STATIONS"; kotId: string; readyStations: string[] }
+  | { type: "STATION_COMPLETE"; kotId: string; stationId: string };
 
 // ─── Reducer ───
 
@@ -53,7 +58,12 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
         seen.add(k.kotId);
         return true;
       });
-      return { ...state, kots: sortByCreatedAt(uniqueKots) };
+      // Server doesn't track "mode changed after firing" — keep that marker
+      const prevMode = new Map(state.kots.map((k) => [k.kotId, k.previousOrderMode]));
+      const merged = uniqueKots.map((k) =>
+        prevMode.get(k.kotId) ? { ...k, previousOrderMode: prevMode.get(k.kotId) } : k
+      );
+      return { ...state, kots: sortByCreatedAt(merged) };
     }
 
     case "ADD_KOT": {
@@ -65,6 +75,32 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
     case "REMOVE_KOT":
     case "CANCEL_KOT":
       return { ...state, kots: state.kots.filter((k) => k.kotId !== action.kotId) };
+
+    case "SET_ORDER_MODE": {
+      const patch = (k: KDSKot): KDSKot =>
+        k.orderId !== action.orderId
+          ? k
+          : {
+              ...k,
+              orderMode: action.newMode,
+              platform: action.newMode === "ONLINE" ? k.platform : null,
+              // Old table no longer applies once it leaves dine-in
+              tableName: action.newMode === "DINE_IN" ? k.tableName : undefined,
+              previousOrderMode: action.oldMode === action.newMode ? k.previousOrderMode : action.oldMode,
+            };
+      return {
+        kots: state.kots.map(patch),
+        completedKots: state.completedKots.map((k) => ({ ...patch(k), completedAt: k.completedAt })),
+      };
+    }
+
+    case "RUSH_KOT":
+      return {
+        ...state,
+        kots: sortByCreatedAt(
+          state.kots.map((k) => (k.kotId === action.kotId ? { ...k, isRush: true } : k))
+        ),
+      };
 
     case "MODIFY_KOT": {
       return {
@@ -131,6 +167,11 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
         completedAt: new Date().toISOString(),
       };
 
+      // Finished via a station bump on this screen → that entry is already in history
+      if (state.completedKots.some((k) => k.kotId === action.kotId && k.stationId)) {
+        return { ...state, kots: state.kots.filter((k) => k.kotId !== action.kotId) };
+      }
+
       // Remove from active, add to completed (ring buffer, newest first)
       const updatedCompleted = [completedKot, ...state.completedKots].slice(
         0,
@@ -143,15 +184,67 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
       };
     }
 
+    case "SET_READY_STATIONS":
+      return {
+        ...state,
+        kots: state.kots.map((k) =>
+          k.kotId === action.kotId ? { ...k, readyStations: action.readyStations } : k
+        ),
+      };
+
+    case "STATION_COMPLETE": {
+      // One station finished its part: hide it from that station, log it in history
+      const kot = state.kots.find((k) => k.kotId === action.kotId);
+      if (!kot) return state;
+      const readyStations = Array.from(new Set([...(kot.readyStations ?? []), action.stationId]));
+      const pinned = kot.station?.toLowerCase() === action.stationId;
+      const entry: CompletedKot = {
+        ...kot,
+        // History shows only what this station made
+        items: pinned ? kot.items : kot.items.filter((i) => getItemStationId(i) === action.stationId),
+        readyStations,
+        stationId: action.stationId,
+        completedAt: new Date().toISOString(),
+      };
+      return {
+        kots: state.kots.map((k) => (k.kotId === action.kotId ? { ...k, readyStations } : k)),
+        completedKots: [
+          entry,
+          ...state.completedKots.filter(
+            (k) => !(k.kotId === action.kotId && k.stationId === action.stationId)
+          ),
+        ].slice(0, MAX_COMPLETED_KOTS),
+      };
+    }
+
     case "RECALL_KOT": {
       const completedKot = state.completedKots.find(
-        (k) => k.kotId === action.kotId
+        (k) => k.kotId === action.kotId && (k.stationId ?? undefined) === action.stationId
       );
       if (!completedKot) return state;
 
+      if (action.stationId) {
+        // Station-level recall: only that station's part goes back on the line
+        const stationId = action.stationId;
+        const remainingHistory = state.completedKots.filter((k) => k !== completedKot);
+        const live = state.kots.find((k) => k.kotId === action.kotId);
+        const { completedAt: _c, stationId: _s, ...restored } = completedKot;
+        const base = live ?? { ...restored, status: "IN_PROGRESS" as const };
+        const updated: KDSKot = {
+          ...base,
+          status: base.status === "READY" || base.status === "SERVED" ? "IN_PROGRESS" : base.status,
+          readyStations: (base.readyStations ?? []).filter((s) => s !== stationId),
+        };
+        return {
+          kots: sortByCreatedAt([...state.kots.filter((k) => k.kotId !== action.kotId), updated]),
+          completedKots: remainingHistory,
+        };
+      }
+
       // Restore to active with IN_PROGRESS status
       const { completedAt: _, ...restoredKot } = completedKot;
-      const kot: KDSKot = { ...restoredKot, status: "IN_PROGRESS" };
+      // Whole ticket back on the line — server clears per-station marks too
+      const kot: KDSKot = { ...restoredKot, status: "IN_PROGRESS", readyStations: [] };
 
       return {
         kots: sortByCreatedAt([...state.kots, kot]),
@@ -166,9 +259,12 @@ function kotReducer(state: KOTState, action: KOTAction): KOTState {
   }
 }
 
+/** Rush KOTs first, then oldest first. */
 function sortByCreatedAt(kots: KDSKot[]): KDSKot[] {
   return [...kots].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    (a, b) =>
+      Number(!!b.isRush) - Number(!!a.isRush) ||
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   );
 }
 
@@ -187,6 +283,8 @@ export function payloadToKDSKot(payload: KotNewPayload): KDSKot {
     items: payload.items,
     status: "PENDING",
     createdAt: payload.createdAt,
+    orderMode: payload.orderMode,
+    platform: payload.platform ?? null,
   };
 }
 
@@ -210,6 +308,10 @@ export function listItemToKDSKot(item: KotListItem): KDSKot {
     })),
     status: item.status,
     createdAt: item.createdAt,
+    isRush: !!item.isRush,
+    readyStations: item.readyStations ?? [],
+    orderMode: item.orderMode,
+    platform: item.platform ?? null,
   };
 }
 
@@ -306,6 +408,14 @@ export function useKOTStore() {
     dispatch({ type: "CANCEL_KOT", kotId });
   }, []);
 
+  const setOrderMode = useCallback((orderId: string, oldMode: OrderMode, newMode: OrderMode) => {
+    dispatch({ type: "SET_ORDER_MODE", orderId, oldMode, newMode });
+  }, []);
+
+  const rushKOT = useCallback((kotId: string) => {
+    dispatch({ type: "RUSH_KOT", kotId });
+  }, []);
+
   const modifyKOT = useCallback(
     (kotId: string, modifications: KotModificationPayload["modifications"]) => {
       dispatch({ type: "MODIFY_KOT", kotId, modifications });
@@ -324,8 +434,16 @@ export function useKOTStore() {
     dispatch({ type: "COMPLETE_KOT", kotId });
   }, []);
 
-  const recallKOT = useCallback((kotId: string) => {
-    dispatch({ type: "RECALL_KOT", kotId });
+  const recallKOT = useCallback((kotId: string, stationId?: string) => {
+    dispatch({ type: "RECALL_KOT", kotId, stationId });
+  }, []);
+
+  const setReadyStations = useCallback((kotId: string, readyStations: string[]) => {
+    dispatch({ type: "SET_READY_STATIONS", kotId, readyStations });
+  }, []);
+
+  const completeStation = useCallback((kotId: string, stationId: string) => {
+    dispatch({ type: "STATION_COMPLETE", kotId, stationId });
   }, []);
 
   // Active KOTs = not READY or SERVED
@@ -354,9 +472,13 @@ export function useKOTStore() {
     addKOT,
     removeKOT,
     cancelKOT,
+    rushKOT,
+    setOrderMode,
     modifyKOT,
     updateStatus,
     completeKOT,
     recallKOT,
+    setReadyStations,
+    completeStation,
   };
 }

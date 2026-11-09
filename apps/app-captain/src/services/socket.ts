@@ -11,6 +11,18 @@ import { drainOfflineQueue } from "../lib/offlineQueue";
 
 let socket: Socket | null = null;
 
+/** Payload of the app-local KOT_READY_FOR_PICKUP event. */
+export interface KotReadyForPickup {
+  kotId: string;
+  orderId: string;
+  orderNumber: string;
+  kotNumber: string | null;
+  tableName: string | null;
+  waiterId: string | null;
+  waiterName: string | null;
+  orderMode: string | null;
+}
+
 type EventCallback = (data: unknown) => void;
 const listeners = new Map<string, Set<EventCallback>>();
 
@@ -65,6 +77,27 @@ export function connectSocket(serverUrl: string, userId?: string | null): void {
 
   socket.on(SOCKET_EVENTS.KOT_STATUS_UPDATE, (data) => {
     emit(SOCKET_EVENTS.KOT_STATUS_UPDATE, data);
+
+    // Kitchen bumped a ticket to READY → food is waiting at the pass.
+    // Re-emitted as its own event so the pickup alert doesn't have to know
+    // about every other KOT status transition.
+    const update = data as (Partial<KotReadyForPickup> & { status?: string }) | null;
+    if (update?.status === "READY" && update.kotId && update.orderId) {
+      emit(SOCKET_EVENTS.KOT_READY_FOR_PICKUP, {
+        kotId: update.kotId,
+        orderId: update.orderId,
+        orderNumber: update.orderNumber ?? "",
+        kotNumber: update.kotNumber ?? null,
+        tableName: update.tableName ?? null,
+        waiterId: update.waiterId ?? null,
+        waiterName: update.waiterName ?? null,
+        orderMode: update.orderMode ?? null,
+      } satisfies KotReadyForPickup);
+    }
+  });
+
+  socket.on(SOCKET_EVENTS.KOT_RUSH, (data) => {
+    emit(SOCKET_EVENTS.KOT_RUSH, data);
   });
 
   socket.on(SOCKET_EVENTS.KOT_NEW, (data) => {
@@ -81,6 +114,10 @@ export function connectSocket(serverUrl: string, userId?: string | null): void {
 
   socket.on(SOCKET_EVENTS.SYNC_TABLES_UPDATED, (data) => {
     emit(SOCKET_EVENTS.SYNC_TABLES_UPDATED, data);
+  });
+
+  socket.on(SOCKET_EVENTS.EXPO_ORDER_READY, (data) => {
+    emit(SOCKET_EVENTS.EXPO_ORDER_READY, data);
   });
 }
 

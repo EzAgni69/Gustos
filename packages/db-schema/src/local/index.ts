@@ -10,6 +10,7 @@ import {
   text,
   integer,
   real,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 
@@ -156,8 +157,29 @@ export const kitchenOrderTickets = sqliteTable("kitchen_order_tickets", {
   cancelledAt: text("cancelled_at"),
   cancelReason: text("cancel_reason"),
   cancelApprovedBy: text("cancel_approved_by"),
+  // Set when the pass (Expo) sends the finished table order out for pickup
+  expoBumpedAt: text("expo_bumped_at"),
   createdAt: text("created_at").notNull(),
 });
+
+/**
+ * Per-station readiness of a KOT. A KOT can span several kitchen stations
+ * (e.g. pizza + pasta); each station marks its own part ready here, and the
+ * KOT becomes READY once every required station has a row.
+ */
+export const kotStationStatus = sqliteTable(
+  "kot_station_status",
+  {
+    id: text("id").primaryKey(),
+    kotId: text("kot_id")
+      .notNull()
+      .references(() => kitchenOrderTickets.id),
+    orderId: text("order_id").notNull(),
+    stationId: text("station_id").notNull(), // KDS_STATIONS id, e.g. "pizza-oven"
+    readyAt: text("ready_at").notNull(),
+  },
+  (t) => [uniqueIndex("kot_station_status_kot_station_idx").on(t.kotId, t.stationId)]
+);
 
 export const kotItems = sqliteTable("kot_items", {
   id: text("id").primaryKey(),

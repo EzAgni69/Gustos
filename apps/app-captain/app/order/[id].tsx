@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import * as Haptics from "expo-haptics";
 import {
   getOrder,
@@ -16,6 +16,7 @@ import {
   printBill,
   updateItemQuantity,
   removeOrderItem,
+  rushKOT,
   type OrderResponse,
   type KOTResponse,
   type OrderItemResponse,
@@ -32,12 +33,14 @@ import { Ionicons } from "@expo/vector-icons";
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const navigation = useNavigation();
   const { setTable, setExistingOrder } = useCartStore();
 
   const [order, setOrder] = useState<OrderResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [firingKOT, setFiringKOT] = useState(false);
   const [printingBill, setPrintingBill] = useState(false);
+  const [rushingKotId, setRushingKotId] = useState<string | null>(null);
 
   // Void modal state for fired items
   const [voidTargetItem, setVoidTargetItem] = useState<OrderItemResponse | null>(null);
@@ -50,6 +53,18 @@ export default function OrderDetailScreen() {
     // The POS sends either the full order or just its id (KOT fired, ready, paid,
     // table transfer/swap, edits from the POS or ERP…) — refetch in the latter case.
     const unsubOrder = onSocketEvent(SOCKET_EVENTS.ORDER_UPDATED, (data: any) => {
+      // This bill was merged into another table's bill (here or on another device).
+      // Only when this screen is in front — if the merge started from our own
+      // transfer screen, that screen handles navigation.
+      if (
+        data?.type === "TABLE_MERGED" &&
+        data.orderId === id &&
+        data.mergedIntoOrderId &&
+        navigation.isFocused()
+      ) {
+        router.replace(`/order/${data.mergedIntoOrderId}`);
+        return;
+      }
       if (data?.order?.id === id) {
         setOrder(data.order);
       } else if (data?.orderId === id) {
@@ -64,9 +79,15 @@ export default function OrderDetailScreen() {
       }
     });
 
+    // Someone (this captain, another captain or the POS) rushed a KOT — show the RUSHED badge.
+    const unsubRush = onSocketEvent(SOCKET_EVENTS.KOT_RUSH, (data: any) => {
+      if (data?.orderId === id) fetchOrder();
+    });
+
     return () => {
       unsubOrder();
       unsubKOT();
+      unsubRush();
     };
   }, [id]);
 
@@ -94,6 +115,42 @@ export default function OrderDetailScreen() {
     } finally {
       setFiringKOT(false);
     }
+  };
+
+  const sendRush = async (kot: KOTResponse) => {
+    if (!order || rushingKotId) return;
+    setRushingKotId(kot.id);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    try {
+      await rushKOT(order.id, kot.id);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      // Optimistic: socket refresh will confirm.
+      setOrder((prev) =>
+        prev ? { ...prev, kots: prev.kots.map((k) => (k.id === kot.id ? { ...k, isRush: true } : k)) } : prev
+      );
+    } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      const msg = err instanceof Error ? err.message : "Could not rush this KOT.";
+      Alert.alert("Rush not sent", msg);
+    } finally {
+      setRushingKotId(null);
+    }
+  };
+
+  // First rush fires instantly; repeating it re-sounds the KDS alarm and reprints, so confirm.
+  const handleRushKOT = (kot: KOTResponse) => {
+    if (!kot.isRush) {
+      sendRush(kot);
+      return;
+    }
+    Alert.alert(
+      "Rush again?",
+      `${kot.kotNumber} is already marked RUSH. Sound the kitchen alarm again?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Rush Again", style: "destructive", onPress: () => sendRush(kot) },
+      ]
+    );
   };
 
   const handleAddItems = () => {
@@ -212,7 +269,8 @@ export default function OrderDetailScreen() {
     return [];
   };
 
-  const isOrderActive = order.status !== "COMPLETED" && order.status !== "CANCELLED";
+  const isOrderActive =
+    order.status !== "COMPLETED" && order.status !== "CANCELLED" && (order.status as string) !== "MERGED";
 
   return (
     <View style={styles.container}>
@@ -361,6 +419,11 @@ export default function OrderDetailScreen() {
                   <Ionicons name="flame" size={11} color={colors.accent} />
                   <Text style={styles.firedBadgeText}>FIRED</Text>
                 </View>
+                {kot.isRush && (
+                  <View style={styles.rushBadge}>
+                    <Text style={styles.rushBadgeText}>🚨 RUSHED</Text>
+                  </View>
+                )}
               </View>
               <StatusBadge status={kot.status} />
             </View>
@@ -507,6 +570,32 @@ export default function OrderDetailScreen() {
                 );
               })}
             </View>
+
+            {/* Rush — only while the kitchen is still working on it */}
+            {isOrderActive &&
+              (kot.status === "PENDING" || kot.status === "IN_PROGRESS") &&
+              items.some((i) => i.status !== "VOIDED") && (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.rushButton,
+                    kot.isRush && styles.rushButtonRepeat,
+                    pressed && styles.rushButtonPressed,
+                    rushingKotId === kot.id && styles.fireButtonDisabled,
+                  ]}
+                  onPress={() => handleRushKOT(kot)}
+                  disabled={rushingKotId !== null}
+                  accessibilityRole="button"
+                  accessibilityLabel={kot.isRush ? `Rush ${kot.kotNumber} again` : `Rush ${kot.kotNumber} in the kitchen`}
+                >
+                  {rushingKotId === kot.id ? (
+                    <ActivityIndicator color={kot.isRush ? colors.danger : "#fff"} size="small" />
+                  ) : (
+                    <Text style={[styles.rushButtonText, kot.isRush && styles.rushButtonTextRepeat]}>
+                      {kot.isRush ? "🚨 Rush Again" : "🚨 Rush Kitchen"}
+                    </Text>
+                  )}
+                </Pressable>
+              )}
           </View>
         ))}
 
@@ -545,7 +634,7 @@ export default function OrderDetailScreen() {
               router.push(`/order/transfer?id=${order.id}&tableId=${order.tableId}`)
             }
           >
-            <Text style={styles.transferButtonText}>Transfer Table</Text>
+            <Text style={styles.transferButtonText}>Move / Swap / Merge Table</Text>
           </Pressable>
         )}
 
@@ -776,7 +865,33 @@ const styles = StyleSheet.create({
   badgeTextMuted: {
     color: colors.textMuted,
   },
-  kotHeaderRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  kotHeaderRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap", flexShrink: 1 },
+  rushBadge: {
+    backgroundColor: colors.dangerBg,
+    borderColor: colors.danger,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  rushBadgeText: { color: colors.danger, fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 0.5 },
+  rushButton: {
+    marginTop: spacing.sm,
+    minHeight: 48,
+    borderRadius: radius.md,
+    backgroundColor: colors.danger,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+  },
+  rushButtonRepeat: {
+    backgroundColor: colors.dangerBg,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  rushButtonPressed: { opacity: 0.8 },
+  rushButtonText: { color: "#fff", fontSize: 15, fontFamily: "Inter_700Bold" },
+  rushButtonTextRepeat: { color: colors.danger },
   stationBadge: {
     backgroundColor: colors.accentBg,
     borderWidth: 1,

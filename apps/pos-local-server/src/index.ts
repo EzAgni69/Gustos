@@ -24,6 +24,7 @@ import { tableRoutes } from "./routes/table.routes.js";
 import { orderRoutes } from "./routes/order.routes.js";
 import { kotRoutes } from "./routes/kot.routes.js";
 import { checkoutRoutes } from "./routes/checkout.routes.js";
+import { expoRoutes } from "./routes/expo.routes.js";
 import { printRoutes } from "./routes/print.routes.js";
 import { shiftRoutes } from "./routes/shift.routes.js";
 import { syncRoutes } from "./routes/sync.routes.js";
@@ -109,6 +110,7 @@ app.use("/api/tables", tableRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api", kotRoutes);        // /api/orders/:id/kot, /api/kots, /api/kots/:id/status
 app.use("/api", checkoutRoutes);    // /api/orders/:id/checkout, /api/orders/:id/invoice
+app.use("/api", expoRoutes);        // /api/kots/:id/stations/*, /api/expo/*
 app.use("/api/print", printRoutes);
 app.use("/api/shifts", shiftRoutes);
 app.use("/api/sync", syncRoutes);

@@ -179,6 +179,26 @@ export const TopNav: React.FC = () => {
           <span className="text-[10px] text-text-muted font-normal">[F3]</span>
         </button>
 
+        {/* Past Orders Pill (Alt+R) */}
+        <button
+          onClick={() => openModal("PAST_ORDERS")}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border bg-surface-hover text-text-muted border-border-hover hover:text-text-main"
+          title="Past Orders — duplicate bill, payment correction, void [Alt+R]"
+        >
+          <span>🧾 Past Bills</span>
+          <span className="text-[10px] text-text-muted font-normal">[Alt+R]</span>
+        </button>
+
+        {/* Day History Pill (Ctrl+H) */}
+        <button
+          onClick={() => openModal("DAY_HISTORY")}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border bg-surface-hover text-text-muted border-border-hover hover:text-text-main"
+          title="Day History — all orders, KOTs & payments [Ctrl+H]"
+        >
+          <span>🕘 History</span>
+          <span className="text-[10px] text-text-muted font-normal">[Ctrl+H]</span>
+        </button>
+
         {/* Shift Status Pill & Warning */}
         <button
           onClick={() => openModal("SHIFT")}

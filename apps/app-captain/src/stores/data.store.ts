@@ -124,7 +124,7 @@ export const useDataStore = create<DataState>()((set, get) => ({
     const unsub4 = onSocketEvent(
       SOCKET_EVENTS.KOT_STATUS_UPDATE,
       (data: unknown) => {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // No haptic here: READY gets its own pattern via PickupAlert.
         DeviceEventEmitter.emit("kotUpdated", data);
       }
     );

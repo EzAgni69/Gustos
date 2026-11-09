@@ -13,7 +13,10 @@ import {
   cancelKOT,
   generateModificationKOT,
   markRush,
+  listKOTsForOrder,
+  assertKOTBelongsToOrder,
 } from "../services/kot.service.js";
+import { getReadyStationsMap, resetStationStatus } from "../services/expo.service.js";
 
 const router = Router();
 
@@ -57,7 +60,9 @@ router.post("/orders/:id/kot", (req, res) => {
 router.get("/kots", (req, res) => {
   const { status } = req.query;
   const kots = listKOTs(status as string | undefined);
-  res.json({ success: true, data: kots });
+  // Which stations already finished their part (station KDS screens hide those)
+  const readyStations = getReadyStationsMap(kots);
+  res.json({ success: true, data: kots.map((k) => ({ ...k, readyStations: readyStations.get(k.id) ?? [] })) });
 });
 
 /**
@@ -69,6 +74,8 @@ router.patch("/kots/:id/status", (req, res) => {
     const { status } = (req.body || {}) as {
       status: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED";
     };
+    // Whole ticket sent back to the kitchen → per-station marks no longer apply
+    if (status === "PENDING" || status === "IN_PROGRESS") resetStationStatus(req.params.id!);
     const result = updateKOTStatus(req.params.id!, status);
     res.json({
       success: true,
@@ -84,11 +91,20 @@ router.patch("/kots/:id/status", (req, res) => {
 // ─── Edge Case KOT Routes ───
 
 /**
+ * GET /api/orders/:orderId/kots
+ * Fired KOTs for one order (newest first) — POS KOT history panel.
+ */
+router.get("/orders/:orderId/kots", (req, res) => {
+  res.json({ success: true, data: listKOTsForOrder(req.params.orderId!) });
+});
+
+/**
  * POST /api/orders/:orderId/kot/:kotId/reprint
  * Reprint a KOT (resend to printer/KDS with REPRINT label).
  */
 router.post("/orders/:orderId/kot/:kotId/reprint", (req, res) => {
   try {
+    assertKOTBelongsToOrder(req.params.kotId!, req.params.orderId!);
     const result = reprintKOT(req.params.kotId!);
     res.json({
       success: true,
@@ -112,6 +128,7 @@ router.post("/orders/:orderId/kot/:kotId/cancel", (req, res) => {
       res.status(400).json({ success: false, message: "reason and approvedBy are required" });
       return;
     }
+    assertKOTBelongsToOrder(req.params.kotId!, req.params.orderId!);
     const result = cancelKOT(req.params.kotId!, reason, approvedBy, req.currentUser?.id);
     res.json({
       success: true,
@@ -166,7 +183,8 @@ router.post("/orders/:orderId/kot/modify", (req, res) => {
  */
 router.post("/orders/:orderId/kot/:kotId/rush", (req, res) => {
   try {
-    const result = markRush(req.params.kotId!, req.currentUser?.id);
+    assertKOTBelongsToOrder(req.params.kotId!, req.params.orderId!);
+    const result = markRush(req.params.kotId!, req.currentUser?.id, req.currentUser?.name);
     res.json({
       success: true,
       data: result,

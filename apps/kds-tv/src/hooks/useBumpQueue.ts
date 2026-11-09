@@ -58,22 +58,26 @@ export function useBumpQueue() {
   const enqueue = useCallback(
     (
       kotId: string,
-      targetStatus: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED"
+      targetStatus: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED",
+      stationId?: string
     ) => {
       const queue = loadQueue();
+      // Whole-KOT bumps and each station's bump are independent intents
+      const sameTarget = (item: BumpQueueItem) =>
+        item.kotId === kotId && (item.stationId ?? null) === (stationId ?? null);
 
-      // Deduplicate: if same kotId+status already queued, skip
+      // Deduplicate: if same kotId+station+status already queued, skip
       const exists = queue.some(
-        (item) =>
-          item.kotId === kotId && item.targetStatus === targetStatus
+        (item) => sameTarget(item) && item.targetStatus === targetStatus
       );
       if (exists) return;
 
-      // If same kotId with different status, replace (latest intent wins)
-      const filtered = queue.filter((item) => item.kotId !== kotId);
+      // If same target with different status, replace (latest intent wins)
+      const filtered = queue.filter((item) => !sameTarget(item));
 
       const newItem: BumpQueueItem = {
         kotId,
+        ...(stationId ? { stationId } : {}),
         targetStatus,
         timestamp: new Date().toISOString(),
         retryCount: 0,
@@ -118,14 +122,19 @@ export function useBumpQueue() {
             headers["Authorization"] = `Bearer ${authToken}`;
           }
 
-          const res = await fetch(
-            `${serverUrl}/api/kots/${item.kotId}/status`,
-            {
-              method: "PATCH",
-              headers,
-              body: JSON.stringify({ status: item.targetStatus }),
-            }
-          );
+          const res = item.stationId
+            ? await fetch(
+                `${serverUrl}/api/kots/${item.kotId}/stations/${item.stationId}/${item.targetStatus === "READY" ? "ready" : "recall"}`,
+                { method: "POST", headers }
+              )
+            : await fetch(
+                `${serverUrl}/api/kots/${item.kotId}/status`,
+                {
+                  method: "PATCH",
+                  headers,
+                  body: JSON.stringify({ status: item.targetStatus }),
+                }
+              );
 
           if (res.ok) {
             console.log(

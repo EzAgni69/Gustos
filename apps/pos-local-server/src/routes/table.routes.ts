@@ -420,6 +420,7 @@ router.post("/merge", (req, res) => {
       targetTableId,
       targetTableName: targetTable.name,
       targetOrderId: targetTable.currentOrderId,
+      sourceOrderId: sourceTable.currentOrderId,
     });
 
     res.json({

@@ -37,6 +37,10 @@ export interface MenuStoreState {
   getFilteredItems: () => POSMenuItem[];
   resetSearch: () => void;
   fetchMenu: () => Promise<void>;
+  /** Apply an availability change locally (optimistic / from socket). */
+  setItemAvailability: (itemId: string, isAvailable: boolean) => void;
+  /** 86 or restore an item on the server (manager only). Returns the server message. */
+  toggleItemAvailability: (itemId: string, isAvailable: boolean) => Promise<string>;
 }
 
 
@@ -75,6 +79,34 @@ export const useMenuStore = create<MenuStoreState>((set, get) => ({
     }
 
     return items;
+  },
+
+  setItemAvailability: (itemId, isAvailable) => {
+    const current = get().items.find((i) => i.id === itemId);
+    if (!current || current.isAvailable === isAvailable) return;
+    const updated = { ...current, isAvailable };
+    const items = get().items.map((i) => (i.id === itemId ? updated : i));
+    const shortCodeMap = { ...get().shortCodeMap };
+    if (updated.shortCode) shortCodeMap[updated.shortCode.toUpperCase()] = updated;
+    set({ items, shortCodeMap });
+    db.menuItems.put(updated).catch(() => {});
+  },
+
+  toggleItemAvailability: async (itemId, isAvailable) => {
+    const previous = get().items.find((i) => i.id === itemId)?.isAvailable;
+    get().setItemAvailability(itemId, isAvailable); // instant on this terminal
+    try {
+      const { apiClient } = await import("../api/client");
+      const res = await apiClient<{ success: boolean; message?: string; data: { isAvailable: boolean } }>(
+        `/menu/items/${itemId}/availability`,
+        { method: "PATCH", body: JSON.stringify({ isAvailable }) }
+      );
+      get().setItemAvailability(itemId, res.data.isAvailable);
+      return res.message ?? "";
+    } catch (err) {
+      if (previous !== undefined) get().setItemAvailability(itemId, previous); // roll back
+      throw err;
+    }
   },
 
   fetchMenu: async () => {

@@ -4,6 +4,7 @@ import { useCartStore } from "../../store/useCartStore";
 import { useUIStore } from "../../store/useUIStore";
 import { ReservationModal } from "./ReservationModal";
 import { GlobalReservationsModal } from "./GlobalReservationsModal";
+import { TableActionsSheet } from "./TableActionsSheet";
 import { Calendar, ListTodo, Lock } from "lucide-react";
 import { useAuthStore } from "../../store/useAuthStore";
 import { getSocket } from "../../hooks/useSocket";
@@ -15,6 +16,7 @@ export const TableMapView: React.FC = () => {
   const { user } = useAuthStore();
   const [reservingTable, setReservingTable] = React.useState<POSTable | null>(null);
   const [showGlobalReservations, setShowGlobalReservations] = React.useState(false);
+  const [actionTable, setActionTable] = React.useState<POSTable | null>(null);
 
   const currentUserName = user?.name || "Unknown";
 
@@ -44,12 +46,27 @@ export const TableMapView: React.FC = () => {
     return countsMap;
   }, [tables]);
 
-  const handleTableClick = async (table: POSTable) => {
+  const notifyIfLocked = (table: POSTable): boolean => {
     const isLockedByOther = table.lockedBy && table.lockedBy !== currentUserName;
     if (isLockedByOther) {
       showNotification(`🔒 Table ${table.tableNumber} is currently being edited by ${table.lockedBy}`);
+    }
+    return !!isLockedByOther;
+  };
+
+  // Tap on a table: occupied/billed tables get the quick-action sheet
+  // (Open Bill / Transfer / Swap / Merge); others open straight away.
+  const handleTableClick = async (table: POSTable) => {
+    if (notifyIfLocked(table)) return;
+    if ((table.status === "OCCUPIED" || table.status === "BILLED") && table.currentOrderId) {
+      setActionTable(table);
       return;
     }
+    await openTable(table);
+  };
+
+  const openTable = async (table: POSTable) => {
+    if (notifyIfLocked(table)) return;
 
     // Lock the table for us
     getSocket().emit("table:lock", { tableId: table.id, lockedBy: currentUserName });
@@ -220,7 +237,7 @@ export const TableMapView: React.FC = () => {
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
-                        await handleTableClick(table);
+                        await openTable(table);
                         openModal("BILL_PREVIEW");
                       }}
                       className="flex-1 bg-surface hover:bg-surface-hover text-[10px] font-bold py-1.5 px-1.5 rounded-lg text-text-main border border-border-hover flex items-center justify-center gap-1 shadow-xs transition-all active:scale-95"
@@ -232,7 +249,7 @@ export const TableMapView: React.FC = () => {
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
-                        await handleTableClick(table);
+                        await openTable(table);
                         openModal("PAYMENT");
                       }}
                       className="flex-1 bg-primary hover:bg-primary-hover text-[10px] font-bold py-1.5 px-1.5 rounded-lg text-text-inverse shadow-xs flex items-center justify-center gap-1 transition-all active:scale-95"
@@ -270,6 +287,19 @@ export const TableMapView: React.FC = () => {
         <ReservationModal
           table={reservingTable}
           onClose={() => setReservingTable(null)}
+        />
+      )}
+
+      {actionTable && (
+        <TableActionsSheet
+          table={actionTable}
+          currentUserName={currentUserName}
+          onClose={() => setActionTable(null)}
+          onOpenBill={() => {
+            const t = actionTable;
+            setActionTable(null);
+            openTable(t);
+          }}
         />
       )}
 

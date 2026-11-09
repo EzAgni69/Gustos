@@ -77,9 +77,16 @@ export function emitKOTStatusUpdate(
   kotId: string,
   status: string,
   orderNumber: string,
-  orderId?: string
+  orderId?: string,
+  extra: {
+    kotNumber?: string;
+    tableName?: string | null;
+    waiterId?: string | null;
+    waiterName?: string | null;
+    orderMode?: string | null;
+  } = {}
 ): void {
-  const data = { kotId, status, orderNumber, orderId };
+  const data = { kotId, status, orderNumber, orderId, ...extra };
   io?.emit("kot:status-update", data);
 }
 
@@ -205,8 +212,15 @@ export function emitTableMerged(data: {
   targetTableId: string;
   targetTableName: string;
   targetOrderId: string;
+  sourceOrderId?: string | null;
 }): void {
   io?.emit("table:merged", data);
+  // As with swap: clients and the Cloud ERP only react to the generic events.
+  // The source table's release is already announced by mergeOrders().
+  emitOrderUpdated({ type: "TABLE_MERGED", orderId: data.targetOrderId });
+  if (data.sourceOrderId) {
+    emitOrderUpdated({ type: "TABLE_MERGED", orderId: data.sourceOrderId, mergedIntoOrderId: data.targetOrderId });
+  }
 }
 
 /**
@@ -221,6 +235,8 @@ export function emitOrderModeChanged(data: {
 }): void {
   io?.to("captains").emit("order:mode-changed", data);
   io?.to("pos").emit("order:mode-changed", data);
+  // KDS re-badges open tickets (e.g. dine-in switched to takeaway → pack it)
+  io?.to("kitchen").emit("order:mode-changed", data);
   emitOrderUpdated({ type: "ORDER_MODE_CHANGED", orderId: data.orderId, orderNumber: data.orderNumber });
 }
 
@@ -247,3 +263,47 @@ export function emitOnlineOrderReceived(data: Record<string, unknown>): void {
   io?.to("pos").emit("online-order:received", data);
 }
 
+
+// ─── Station readiness & Expo (pass) ───
+
+/**
+ * A station marked (or recalled) its part of a KOT. KDS station screens hide
+ * the KOT once their station is in readyStations; Expo refreshes its checklist.
+ */
+export function emitKOTStationStatus(data: {
+  kotId: string;
+  kotNumber: string;
+  orderId: string;
+  stationId: string;
+  requiredStations: string[];
+  readyStations: string[];
+  kotReady: boolean;
+}): void {
+  io?.emit("kot:station-status", data);
+}
+
+/**
+ * The pass bumped a finished table order — food is ready for pickup.
+ * Captain app alerts the assigned waiter; POS shows a toast; KDS refreshes.
+ */
+export function emitExpoOrderReady(data: {
+  orderId: string;
+  orderNumber: string;
+  tableName: string | null;
+  orderMode: string;
+  platform: string | null;
+  waiterId: string | null;
+  waiterName: string | null;
+  kotNumbers: string[];
+  itemCount: number;
+  stations: string[];
+  forced: boolean;
+  bumpedAt: string;
+}): void {
+  io?.emit("expo:order-ready", data);
+}
+
+/** The pass pulled an order back (bumped by mistake). */
+export function emitExpoOrderRecalled(data: { orderId: string; orderNumber: string; tableName: string | null }): void {
+  io?.emit("expo:order-recalled", data);
+}

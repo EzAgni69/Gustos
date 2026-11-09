@@ -10,6 +10,7 @@ import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
 import { queueSyncEvent } from "../services/sync.service.js";
 import { emitMenuUpdated } from "../socket/events.js";
+import { requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -86,11 +87,16 @@ router.get("/items", (req, res) => {
 
 /**
  * PATCH /api/menu/items/:id/availability
- * Toggle item availability (86'd / available).
+ * Toggle item availability (86'd / available). Managers and above only.
+ * Body: { isAvailable?: boolean } — omitted toggles the current value.
  */
-router.patch("/items/:id/availability", (req, res) => {
-  const { id } = req.params;
-  const { isAvailable } = req.body as { isAvailable: boolean };
+router.patch("/items/:id/availability", requireRole("MANAGER", "OWNER", "ADMIN", "SUPER_ADMIN"), (req, res) => {
+  const id = String(req.params.id);
+  const { isAvailable } = (req.body ?? {}) as { isAvailable?: unknown };
+  if (isAvailable !== undefined && typeof isAvailable !== "boolean") {
+    res.status(400).json({ success: false, message: "isAvailable must be a boolean" });
+    return;
+  }
 
   const item = db
     .select()

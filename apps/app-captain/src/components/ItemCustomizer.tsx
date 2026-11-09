@@ -172,6 +172,7 @@ export function ItemCustomizer({
     const list = allMenuItems
       .filter(
         (m) =>
+          m.isAvailable &&
           (m.categoryId === "cat-pizza-reg" || m.categoryId === "cat-pizza-prem") &&
           !m.name.toLowerCase().includes("half")
       )

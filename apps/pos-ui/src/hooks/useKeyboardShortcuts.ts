@@ -85,6 +85,22 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // ─── Alt+R : Past Orders (today's settled bills — reprint / correct / void) ───
+      if (e.altKey && !e.ctrlKey && (e.code === "KeyR" || e.key.toLowerCase() === "r")) {
+        e.preventDefault();
+        if (activeModal === "PAST_ORDERS") closeModal();
+        else openModal("PAST_ORDERS");
+        return;
+      }
+
+      // ─── Ctrl+H : Day History (all orders, KOTs, payments for the day) ───
+      if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        if (activeModal === "DAY_HISTORY") closeModal();
+        else openModal("DAY_HISTORY");
+        return;
+      }
+
       // ─── F4 / Alt+Z : Apply Discount ───
       if (e.key === "F4" || (e.altKey && e.key.toLowerCase() === "z")) {
         e.preventDefault();

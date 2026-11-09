@@ -16,7 +16,9 @@ export type POSModal =
   | "BILL_PREVIEW"
   | "ONLINE_ORDER"
   | "ITEM_CUSTOMIZER"
-  | "VOID_ITEM";
+  | "VOID_ITEM"
+  | "DAY_HISTORY"
+  | "PAST_ORDERS";
 
 export interface VoidTargetData {
   cartItemId: string;

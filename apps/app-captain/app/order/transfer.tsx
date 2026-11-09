@@ -1,17 +1,47 @@
 import React, { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { getTables, transferOrder, type TableResponse } from "../../src/services/api";
+import {
+  getTables,
+  transferOrder,
+  swapTables,
+  mergeTables,
+  type TableResponse,
+} from "../../src/services/api";
 import { colors, spacing, fontSize, fontWeight, radius } from "../../src/config/theme";
 import * as Haptics from "expo-haptics";
 
+/**
+ * Table actions for an open order:
+ *  - Move:  shift this order to an empty table
+ *  - Swap:  exchange orders with another occupied table (guests switch seats)
+ *  - Merge: combine two occupied tables' bills into one (Table 4 joins Table 3)
+ */
+type Mode = "move" | "swap" | "merge";
+/** into: this bill goes into the picked table's bill. from: the picked table's bill comes into this one. */
+type MergeDirection = "into" | "from";
+
+const MODES: { key: Mode; label: string; hint: string }[] = [
+  { key: "move", label: "Move", hint: "Pick an empty table" },
+  { key: "swap", label: "Swap", hint: "Pick an occupied table — the two orders trade places" },
+  { key: "merge", label: "Merge", hint: "Pick an occupied table to combine bills with" },
+];
+
 export default function TransferTableScreen() {
-  const { id, tableId: currentTableId } = useLocalSearchParams<{ id: string; tableId: string }>();
+  const { id, tableId: currentTableId, mode: initialMode } = useLocalSearchParams<{
+    id: string;
+    tableId: string;
+    mode?: Mode;
+  }>();
   const router = useRouter();
 
   const [tables, setTables] = useState<TableResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [mode, setMode] = useState<Mode>(
+    initialMode === "swap" || initialMode === "merge" ? initialMode : "move"
+  );
+  const [mergeDirection, setMergeDirection] = useState<MergeDirection>("into");
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -30,25 +60,107 @@ export default function TransferTableScreen() {
     }
   };
 
-  const handleTransfer = async () => {
-    if (!selectedTableId) return;
+  const changeMode = (next: Mode) => {
+    if (next === mode) return;
+    Haptics.selectionAsync().catch(() => {});
+    setMode(next);
+    setSelectedTableId(null);
+  };
 
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  const currentTable = tables.find((t) => t.id === currentTableId);
+  const selectedTable = tables.find((t) => t.id === selectedTableId);
+
+  const candidateTables = tables.filter((t) => {
+    if (t.id === currentTableId) return false;
+    return mode === "move" ? t.status === "AVAILABLE" && !t.currentOrderId : !!t.currentOrderId;
+  });
+
+  const run = async (action: () => Promise<void>) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setSubmitting(true);
     try {
-      await transferOrder(currentTableId!, selectedTableId);
-      Alert.alert("Success", "Table transferred successfully.", [
-        { text: "OK", onPress: () => router.back() }
-      ]);
+      await action();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to transfer table.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      Alert.alert("Error", e?.message || "Something went wrong. Please try again.");
+      fetchTables(); // table states may have changed under us
     } finally {
       setSubmitting(false);
     }
   };
 
-  const availableTables = tables.filter((t) => t.status === "AVAILABLE" && t.id !== currentTableId);
-  const currentTable = tables.find((t) => t.id === currentTableId);
+  const handleMove = () =>
+    run(async () => {
+      await transferOrder(currentTableId!, selectedTableId!);
+      Alert.alert("Moved", `Order moved to ${selectedTable?.name}.`, [{ text: "OK", onPress: () => router.back() }]);
+    });
+
+  const handleSwap = () => {
+    const a = currentTable?.name ?? "this table";
+    const b = selectedTable?.name ?? "the other table";
+    Alert.alert("Swap tables?", `${a}'s order moves to ${b}, and ${b}'s order moves to ${a}.`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Swap",
+        onPress: () =>
+          run(async () => {
+            await swapTables(currentTableId!, selectedTableId!);
+            Alert.alert("Swapped", `${a} ⇄ ${b}`, [{ text: "OK", onPress: () => router.back() }]);
+          }),
+      },
+    ]);
+  };
+
+  const handleMerge = () => {
+    if (!selectedTable || !currentTable) return;
+    const source = mergeDirection === "into" ? currentTable : selectedTable;
+    const target = mergeDirection === "into" ? selectedTable : currentTable;
+    Alert.alert(
+      `Merge ${source.name} into ${target.name}?`,
+      `All items on ${source.name}'s bill move onto ${target.name}'s bill and ${source.name} is freed. This can't be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Merge",
+          style: "destructive",
+          onPress: () =>
+            run(async () => {
+              const merged = await mergeTables(source.id, target.id);
+              const targetOrderId = merged?.id ?? target.currentOrderId;
+              Alert.alert("Merged", `${source.name} merged into ${target.name}.`, [
+                {
+                  text: "OK",
+                  // This order no longer exists if it was the source — land on the combined bill.
+                  onPress: () => {
+                    router.back();
+                    if (source.id === currentTableId && targetOrderId) {
+                      // Replace the now-merged order screen underneath with the combined bill.
+                      router.replace(`/order/${targetOrderId}`);
+                    }
+                  },
+                },
+              ]);
+            }),
+        },
+      ]
+    );
+  };
+
+  const onConfirm = mode === "move" ? handleMove : mode === "swap" ? handleSwap : handleMerge;
+
+  const confirmLabel = (() => {
+    if (!selectedTable) return mode === "move" ? "Select a table" : "Select an occupied table";
+    const here = currentTable?.name ?? "This table";
+    if (mode === "move") return `Move to ${selectedTable.name}`;
+    if (mode === "swap") return `Swap ${here} ⇄ ${selectedTable.name}`;
+    return mergeDirection === "into"
+      ? `Merge ${here} → ${selectedTable.name}`
+      : `Merge ${selectedTable.name} → ${here}`;
+  })();
+
+  const emptyText =
+    mode === "move" ? "No empty tables to move to." : "No other occupied tables right now.";
 
   return (
     <View style={styles.container}>
@@ -56,7 +168,7 @@ export default function TransferTableScreen() {
         <Pressable onPress={() => router.back()} style={styles.backButton}>
           <Text style={styles.backButtonText}>Cancel</Text>
         </Pressable>
-        <Text style={styles.title}>Transfer Table</Text>
+        <Text style={styles.title}>Table Actions</Text>
         <View style={{ width: 50 }} />
       </View>
 
@@ -68,28 +180,81 @@ export default function TransferTableScreen() {
             <View style={styles.infoCard}>
               <Text style={styles.infoLabel}>Current Table</Text>
               <Text style={styles.infoValue}>{currentTable?.name || "Unknown"}</Text>
+              {currentTable?.currentOrder && (
+                <Text style={styles.infoMeta}>
+                  #{currentTable.currentOrder.orderNumber.split("-").pop()} · ₹
+                  {Number(currentTable.currentOrder.totalAmount).toFixed(0)}
+                </Text>
+              )}
             </View>
 
-            <Text style={styles.sectionTitle}>Select New Table</Text>
+            {/* Mode switch */}
+            <View style={styles.segment} accessibilityRole="tablist">
+              {MODES.map((m) => {
+                const active = m.key === mode;
+                return (
+                  <Pressable
+                    key={m.key}
+                    style={[styles.segmentItem, active && styles.segmentItemActive]}
+                    onPress={() => changeMode(m.key)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{m.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-            {availableTables.length === 0 ? (
-              <Text style={styles.emptyText}>No available tables to transfer to.</Text>
+            {mode === "merge" && (
+              <View style={styles.directionRow}>
+                {(["into", "from"] as MergeDirection[]).map((d) => {
+                  const active = d === mergeDirection;
+                  return (
+                    <Pressable
+                      key={d}
+                      style={[styles.directionChip, active && styles.directionChipActive]}
+                      onPress={() => {
+                        Haptics.selectionAsync().catch(() => {});
+                        setMergeDirection(d);
+                      }}
+                    >
+                      <Text style={[styles.directionText, active && styles.directionTextActive]}>
+                        {d === "into" ? "Send this bill into…" : "Bring a bill here from…"}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
+
+            <Text style={styles.sectionTitle}>{MODES.find((m) => m.key === mode)!.hint}</Text>
+
+            {candidateTables.length === 0 ? (
+              <Text style={styles.emptyText}>{emptyText}</Text>
             ) : (
               <View style={styles.grid}>
-                {availableTables.map((table) => {
+                {candidateTables.map((table) => {
                   const isSelected = selectedTableId === table.id;
+                  const o = table.currentOrder;
                   return (
                     <Pressable
                       key={table.id}
                       style={[styles.tableCard, isSelected && styles.tableCardSelected]}
                       onPress={() => setSelectedTableId(table.id)}
+                      accessibilityState={{ selected: isSelected }}
                     >
                       <Text style={[styles.tableName, isSelected && styles.tableNameSelected]}>
                         {table.name}
                       </Text>
                       <Text style={[styles.tableCapacity, isSelected && styles.tableCapacitySelected]}>
-                        {table.capacity} Pax
+                        {o ? `₹${Number(o.totalAmount).toFixed(0)}` : `${table.capacity} Pax`}
                       </Text>
+                      {o?.waiterName ? (
+                        <Text style={styles.tableWaiter} numberOfLines={1}>
+                          {o.waiterName}
+                        </Text>
+                      ) : null}
                     </Pressable>
                   );
                 })}
@@ -104,16 +269,19 @@ export default function TransferTableScreen() {
         <Pressable
           style={({ pressed }) => [
             styles.transferButton,
+            mode === "merge" && styles.mergeButton,
             pressed && styles.transferButtonPressed,
             (!selectedTableId || submitting) && styles.transferButtonDisabled,
           ]}
-          onPress={handleTransfer}
+          onPress={onConfirm}
           disabled={!selectedTableId || submitting}
         >
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.transferButtonText}>Confirm Transfer</Text>
+            <Text style={styles.transferButtonText} numberOfLines={1}>
+              {confirmLabel}
+            </Text>
           )}
         </Pressable>
       </View>
@@ -147,6 +315,35 @@ const styles = StyleSheet.create({
   },
   infoLabel: { color: colors.textSecondary, fontSize: fontSize.sm, marginBottom: spacing.xs },
   infoValue: { color: colors.textPrimary, fontSize: fontSize.xl, fontWeight: fontWeight.bold },
+  infoMeta: { color: colors.textSecondary, fontSize: fontSize.sm, marginTop: spacing.xs },
+  segment: {
+    flexDirection: "row",
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 4,
+  },
+  segmentItem: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
+  segmentItemActive: { backgroundColor: colors.accent },
+  segmentText: { color: colors.textSecondary, fontSize: fontSize.md, fontWeight: fontWeight.semibold },
+  segmentTextActive: { color: "#fff" },
+  directionRow: { flexDirection: "row", gap: spacing.sm },
+  directionChip: {
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  directionChipActive: { borderColor: colors.accent, backgroundColor: colors.accentBg },
+  directionText: { color: colors.textSecondary, fontSize: fontSize.sm, fontWeight: fontWeight.medium, textAlign: "center" },
+  directionTextActive: { color: colors.accent },
+  tableWaiter: { color: colors.textMuted, fontSize: fontSize.xs, marginTop: 2 },
+  mergeButton: { backgroundColor: colors.danger },
   sectionTitle: { fontSize: fontSize.md, fontWeight: fontWeight.bold, color: colors.textPrimary },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   tableCard: {
