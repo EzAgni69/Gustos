@@ -24,6 +24,7 @@ import { buildShiftReport } from "@gusto/printer";
 import { db } from "../db/index.js";
 import * as schema from "@gusto/db-schema/local";
 import { eq } from "drizzle-orm";
+import { requireRole, CASHIER_ROLES } from "../middleware/auth.js";
 
 const OUTLET_ID = process.env.OUTLET_ID || "local-outlet";
 
@@ -44,22 +45,26 @@ function getOutletConfig() {
 
 export const shiftRoutes = Router();
 
-// ─── Open Shift ───
-shiftRoutes.post("/open", (req, res) => {
-  try {
-    const { cashierId, cashierName, openingFloat } = req.body;
+// The cash drawer is a cashier / manager responsibility — never waiters or captains.
+const cashierOnly = requireRole(...CASHIER_ROLES);
 
-    if (!cashierId || !cashierName) {
-      return res.status(400).json({
-        success: false,
-        message: "cashierId and cashierName are required",
-      });
+// ─── Open Shift ───
+shiftRoutes.post("/open", cashierOnly, (req, res) => {
+  try {
+    const { openingFloat } = req.body;
+    // The shift belongs to whoever is signed in; the body may only name them
+    const cashierId = req.currentUser!.id;
+    const cashierName = req.currentUser!.name;
+
+    const float = openingFloat === undefined || openingFloat === null || openingFloat === "" ? 0 : Number(openingFloat);
+    if (!Number.isFinite(float) || float < 0) {
+      return res.status(400).json({ success: false, message: "openingFloat must be zero or more" });
     }
 
     const shift = openShift({
       cashierId,
       cashierName,
-      openingFloat: Number(openingFloat) || 0,
+      openingFloat: float,
     });
 
     return res.json({ success: true, data: shift });
@@ -81,20 +86,24 @@ shiftRoutes.get("/active", (_req, res) => {
 });
 
 // ─── Close Shift ───
-shiftRoutes.post("/:id/close", (req, res) => {
+shiftRoutes.post("/:id/close", cashierOnly, (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const { actualCashInDrawer, notes } = req.body;
 
-    if (actualCashInDrawer === undefined || actualCashInDrawer === null) {
+    if (actualCashInDrawer === undefined || actualCashInDrawer === null || actualCashInDrawer === "") {
       return res.status(400).json({
         success: false,
         message: "actualCashInDrawer is required",
       });
     }
+    const counted = Number(actualCashInDrawer);
+    if (!Number.isFinite(counted) || counted < 0) {
+      return res.status(400).json({ success: false, message: "actualCashInDrawer must be zero or more" });
+    }
 
     const report = closeShift(id, {
-      actualCashInDrawer: Number(actualCashInDrawer),
+      actualCashInDrawer: counted,
       notes,
     });
 
@@ -122,9 +131,9 @@ shiftRoutes.post("/:id/close", (req, res) => {
 });
 
 // ─── X-Report (Mid-Shift Audit) ───
-shiftRoutes.get("/:id/x-report", (req, res) => {
+shiftRoutes.get("/:id/x-report", cashierOnly, (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const report = generateXReport(id);
 
     const outlet = getOutletConfig();
@@ -138,8 +147,10 @@ shiftRoutes.get("/:id/x-report", (req, res) => {
       cashVariance: report.cashVariance ?? undefined,
     };
     
-    // Automatically print X-Report
-    queuePrint(buildShiftReport(printData), "SHIFT_REPORT", "pos").catch(console.error);
+    // Viewing the report on screen must not waste paper — print only when asked (?print=true)
+    if (req.query.print === "true") {
+      queuePrint(buildShiftReport(printData), "SHIFT_REPORT", "pos").catch(console.error);
+    }
 
     return res.json({ success: true, data: report });
   } catch (err) {
@@ -151,7 +162,7 @@ shiftRoutes.get("/:id/x-report", (req, res) => {
 });
 
 // ─── Shift History ───
-shiftRoutes.get("/history", (req, res) => {
+shiftRoutes.get("/history", cashierOnly, (req, res) => {
   const limit = Number(req.query.limit) || 20;
   const shifts = getShiftHistory(limit);
   return res.json({ success: true, data: shifts });

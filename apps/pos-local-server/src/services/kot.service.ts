@@ -4,10 +4,11 @@
  * Kitchen Order Ticket generation and status management.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 import { getNextKOTNumber } from "./sequence.service.js";
 import {
   buildKOTReceipt,
@@ -25,13 +26,14 @@ import {
   emitKOTModification,
 } from "../socket/events.js";
 import { queueSyncEvent } from "./sync.service.js";
-import { queuePrint } from "./print.service.js";
+import { queuePrint, isKotPrintingEnabled } from "./print.service.js";
 import { getOrderChannel } from "./order-channel.js";
+import { recalculateOrderTotals } from "./order.service.js";
 
 /**
  * Generate a KOT for items in an order that haven't been sent to kitchen yet.
  */
-export function generateKOT(
+export const generateKOT = atomicFn(function generateKOT(
   orderId: string,
   itemIds?: string[],
   station?: string,
@@ -44,6 +46,15 @@ export function generateKOT(
     .get();
 
   if (!order) throw new Error("Order not found");
+  if (["COMPLETED", "CANCELLED", "MERGED"].includes(order.status)) {
+    throw new Error(`Cannot fire a KOT — order is ${order.status.toLowerCase()}`);
+  }
+  if (order.orderMode === "ONLINE" && order.status === "DRAFT") {
+    throw new Error("Accept the online order before sending it to the kitchen");
+  }
+  if (itemIds !== undefined && !Array.isArray(itemIds)) {
+    throw new Error("itemIds must be an array");
+  }
 
   // Get items that need to be sent to kitchen
   const allItems = db
@@ -136,14 +147,14 @@ export function generateKOT(
 
   const printTemplate = buildKOTReceipt(kotData);
 
-  // Log KOT to console (simulated print)
-  console.log(`\n🍳 KOT FIRED — ${kotNumber} (Order: ${order.orderNumber})`);
-  for (const line of printTemplate) {
-    if (line.type === "divider") console.log("─".repeat(40));
-    else if (line.type === "blank") console.log("");
-    else if (line.content) console.log(line.content);
+  console.log(`🍳 [KOT] ${kotNumber} fired — order ${order.orderNumber}, ${itemsToSend.length} item(s)`);
+
+  // Paper ticket for kitchens that run a printer alongside (or instead of) the KDS
+  if (isKotPrintingEnabled()) {
+    queuePrint(printTemplate, "KOT", "kitchen").catch((err) => {
+      console.warn("[Printer] Could not queue KOT print:", err);
+    });
   }
-  console.log("");
 
   // Emit Socket.IO event to kitchen
   emitKOTNew({
@@ -192,7 +203,7 @@ export function generateKOT(
     printTemplate,
     createdAt: now,
   };
-}
+});
 
 /**
  * List KOTs with optional status filter (for KDS display).
@@ -278,10 +289,12 @@ export function listKOTs(status?: string) {
     .filter((kot) => kot.items.length > 0);
 }
 
+const KOT_STATUSES: readonly string[] = ["PENDING", "IN_PROGRESS", "READY", "SERVED"];
+
 /**
  * Update KOT status.
  */
-export function updateKOTStatus(
+export const updateKOTStatus = atomicFn(function updateKOTStatus(
   kotId: string,
   status: "PENDING" | "IN_PROGRESS" | "READY" | "SERVED"
 ) {
@@ -292,6 +305,14 @@ export function updateKOTStatus(
     .get();
 
   if (!kot) throw new Error("KOT not found");
+  if (!KOT_STATUSES.includes(status)) {
+    throw new Error(`status must be one of ${KOT_STATUSES.join(", ")}`);
+  }
+  if (kot.status === "CANCELLED") throw new Error("KOT is cancelled");
+  if (kot.kotType === "MODIFICATION") throw new Error("Modification slips have no kitchen status");
+  if (kot.status === status) {
+    return { kotId, status, orderId: kot.orderId };
+  }
 
   db.update(schema.kitchenOrderTickets)
     .set({ status })
@@ -313,9 +334,9 @@ export function updateKOTStatus(
       .where(eq(schema.kitchenOrderTickets.orderId, kot.orderId))
       .all();
 
-    const allReady = allKOTs.every(
-      (k) => k.id === kotId ? true : k.status === "READY" || k.status === "SERVED"
-    );
+    const allReady = allKOTs
+      .filter((k) => k.kotType !== "MODIFICATION" && k.status !== "CANCELLED")
+      .every((k) => (k.id === kotId ? true : k.status === "READY" || k.status === "SERVED"));
 
     if (allReady && order?.status !== "COMPLETED" && order?.status !== "CANCELLED") {
       db.update(schema.orders)
@@ -341,6 +362,14 @@ export function updateKOTStatus(
     }
   }
 
+  // A ticket recalled to the kitchen means the order is no longer ready
+  if ((status === "PENDING" || status === "IN_PROGRESS") && order?.status === "READY") {
+    db.update(schema.orders)
+      .set({ status: "IN_PROGRESS", updatedAt: new Date().toISOString() })
+      .where(eq(schema.orders.id, kot.orderId))
+      .run();
+  }
+
   // Captains need table / waiter / KOT number to raise a "food ready" pickup alert.
   const tableName = order?.tableId
     ? db.select().from(schema.diningTables).where(eq(schema.diningTables.id, order.tableId)).get()?.name ?? null
@@ -361,7 +390,7 @@ export function updateKOTStatus(
   });
 
   return { kotId, status, orderId: kot.orderId };
-}
+});
 
 // ─── Edge Case KOT Operations ───
 
@@ -456,7 +485,7 @@ export function listKOTsForOrder(orderId: string) {
  * Reprint a KOT — regenerates print template from existing data.
  * Marks output as "REPRINT" for kitchen clarity.
  */
-export function reprintKOT(kotId: string) {
+export const reprintKOT = atomicFn(function reprintKOT(kotId: string) {
   const kot = db
     .select()
     .from(schema.kitchenOrderTickets)
@@ -507,17 +536,11 @@ export function reprintKOT(kotId: string) {
   const printTemplate = buildKOTReceipt(kotData);
 
   // Physical reprint for the kitchen printer (jammed printer / lost slip)
-  queuePrint(printTemplate, "KOT", "pos").catch((err) => {
+  queuePrint(printTemplate, "KOT", "kitchen").catch((err) => {
     console.warn("[Printer] Could not queue KOT reprint:", err);
   });
 
-  console.log(`\n🔄 KOT REPRINT — ${kot.kotNumber} (Order: ${order?.orderNumber})`);
-  for (const line of printTemplate) {
-    if (line.type === "divider") console.log("─".repeat(40));
-    else if (line.type === "blank") console.log("");
-    else if (line.content) console.log(line.content);
-  }
-  console.log("");
+  console.log(`🔄 [KOT] ${kot.kotNumber} reprinted — order ${order?.orderNumber}`);
 
   // Re-emit to kitchen with reprint flag
   emitKOTNew({
@@ -542,13 +565,13 @@ export function reprintKOT(kotId: string) {
   });
 
   return { kotId, kotNumber: kot.kotNumber, printTemplate };
-}
+});
 
 /**
  * Cancel an entire KOT — marks all linked items as voided.
  * Kitchen receives a cancellation alert on KDS.
  */
-export function cancelKOT(
+export const cancelKOT = atomicFn(function cancelKOT(
   kotId: string,
   reason: string,
   approvedBy: string,
@@ -562,6 +585,11 @@ export function cancelKOT(
 
   if (!kot) throw new Error("KOT not found");
   if (kot.status === "CANCELLED") throw new Error("KOT is already cancelled");
+  if (kot.kotType === "MODIFICATION") throw new Error("Modification slips cannot be cancelled");
+  const kotOrder = db.select({ status: schema.orders.status }).from(schema.orders).where(eq(schema.orders.id, kot.orderId)).get();
+  if (kotOrder?.status === "COMPLETED") {
+    throw new Error("Order is already paid — void the settled bill instead");
+  }
 
   const now = new Date().toISOString();
 
@@ -584,6 +612,7 @@ export function cancelKOT(
     .all();
 
   for (const kotItem of kotItemsList) {
+    // Items voided earlier keep their original void reason / approver
     db.update(schema.orderItems)
       .set({
         status: "VOIDED",
@@ -592,9 +621,11 @@ export function cancelKOT(
         voidApprovedBy: approvedBy,
         isNcr: true,
       })
-      .where(eq(schema.orderItems.id, kotItem.orderItemId))
+      .where(and(eq(schema.orderItems.id, kotItem.orderItemId), ne(schema.orderItems.status, "VOIDED")))
       .run();
   }
+
+  db.delete(schema.kotStationStatus).where(eq(schema.kotStationStatus.kotId, kotId)).run();
 
   const order = db
     .select()
@@ -619,6 +650,10 @@ export function cancelKOT(
       createdAt: now,
     })
     .run();
+
+  // The voided items no longer count towards the bill
+  recalculateOrderTotals(kot.orderId);
+  emitOrderUpdated({ type: "KOT_CANCELLED", kotId, orderId: kot.orderId, orderNumber: order?.orderNumber });
 
   // Emit cancellation to KDS
   emitKOTCancelled({
@@ -654,18 +689,18 @@ export function cancelKOT(
     createdAt: new Date(now),
   });
 
-  queuePrint(cancelPrintTemplate, "KOT", "pos").catch((err) => {
+  queuePrint(cancelPrintTemplate, "KOT", "kitchen").catch((err) => {
     console.warn("[Printer] Could not queue cancellation KOT print:", err);
   });
 
   return { kotId, kotNumber: kot.kotNumber, status: "CANCELLED", reason };
-}
+});
 
 /**
  * Generate a modification KOT — correction slip for post-fire changes.
  * Shows old → new differences for the kitchen.
  */
-export function generateModificationKOT(
+export const generateModificationKOT = atomicFn(function generateModificationKOT(
   orderId: string,
   modifications: Array<{
     orderItemId: string;
@@ -818,18 +853,18 @@ export function generateModificationKOT(
     createdAt: new Date(now),
   });
 
-  queuePrint(modPrintTemplate, "KOT", "pos").catch((err) => {
+  queuePrint(modPrintTemplate, "KOT", "kitchen").catch((err) => {
     console.warn("[Printer] Could not queue modification KOT print:", err);
   });
 
   return { kotId, kotNumber, kotType: "MODIFICATION", modifications: modItems };
-}
+});
 
 /**
  * Mark a KOT as Rush / Priority.
  * Kitchen receives an urgent alert on KDS.
  */
-export function markRush(kotId: string, userId?: string, rushedBy?: string) {
+export const markRush = atomicFn(function markRush(kotId: string, userId?: string, rushedBy?: string) {
   const kot = db
     .select()
     .from(schema.kitchenOrderTickets)
@@ -881,7 +916,7 @@ export function markRush(kotId: string, userId?: string, rushedBy?: string) {
     })),
     createdAt: new Date(kot.createdAt),
   });
-  queuePrint(rushTemplate, "KOT", "pos").catch((err) => {
+  queuePrint(rushTemplate, "KOT", "kitchen").catch((err) => {
     console.warn("[Printer] Could not queue RUSH KOT print:", err);
   });
 
@@ -900,4 +935,4 @@ export function markRush(kotId: string, userId?: string, rushedBy?: string) {
   console.log(`\n🔥 RUSH KOT — ${kot.kotNumber} (Order: ${order?.orderNumber})`);
 
   return { kotId, kotNumber: kot.kotNumber, isRush: true };
-}
+});

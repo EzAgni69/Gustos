@@ -182,6 +182,7 @@ export async function processOrderSnapshot(payload: any, localTimestamp?: string
     // mapped exactly the way drizzle wrote it — raw postgres-js parses it as local time.)
     const [locked] = await tx
       .select({
+        organizationId: schema.orders.organizationId,
         updatedAt: schema.orders.updatedAt,
         tableId: schema.orders.tableId,
         status: schema.orders.status,
@@ -190,6 +191,11 @@ export async function processOrderSnapshot(payload: any, localTimestamp?: string
       .from(schema.orders)
       .where(eq(schema.orders.id, orderId))
       .for("update");
+    // An order id that already exists under another organization is never overwritten
+    if (locked && locked.organizationId !== organizationId) {
+      throw new Error(`Order ${orderId} belongs to a different organization — snapshot rejected`);
+    }
+
     const existingUpdatedAt = locked?.updatedAt ?? null;
 
     if (existingUpdatedAt && existingUpdatedAt.getTime() > snapshotAt.getTime()) {

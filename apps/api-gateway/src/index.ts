@@ -13,31 +13,24 @@ import { nodeProfilingIntegration } from "@sentry/profiling-node";
 
 dotenv.config();
 
-// ─── Production Safety Checks ───
-if (
-  process.env.NODE_ENV === "production" &&
-  (!process.env.JWT_SECRET || process.env.JWT_SECRET === "change-me-in-production")
-) {
-  console.error(
-    "FATAL: JWT_SECRET is set to the default insecure value. " +
-    "Set a strong random JWT_SECRET before running in production."
-  );
-  process.exit(1);
-}
-
+// Tracing every request is expensive at production volume — sample by default.
+const sentrySampleRate = Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? (process.env.NODE_ENV === "production" ? 0.1 : 1));
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
+  enabled: Boolean(process.env.SENTRY_DSN),
+  environment: process.env.NODE_ENV ?? "development",
   integrations: [
     nodeProfilingIntegration(),
   ],
-  tracesSampleRate: 1.0,
-  profilesSampleRate: 1.0,
+  tracesSampleRate: Number.isFinite(sentrySampleRate) ? sentrySampleRate : 0.1,
+  profilesSampleRate: Number.isFinite(sentrySampleRate) ? sentrySampleRate : 0.1,
 });
 
 import { authPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { Server as SocketServer } from "socket.io";
-import { initCloudSocket } from "./socket/cloud-events.js";
+import { initCloudSocket, closeCloudSocket } from "./socket/cloud-events.js";
+import { redisConnection, posSyncQueue, webhookQueue } from "./config/queue.js";
 import { authRoutes } from "./routes/auth.routes.js";
 import { organizationRoutes } from "./routes/organization.routes.js";
 import { franchiseRoutes } from "./routes/franchise.routes.js";
@@ -53,15 +46,19 @@ import { integrationRoutes } from "./routes/integration.routes.js";
 import { crmRoutes } from "./routes/crm.routes.js";
 import { hrRoutes } from "./routes/hr.routes.js";
 import { reportingRoutes } from "./routes/reporting.routes.js";
-import { posRoutes } from "./routes/pos.routes.js";
 import { recipeRoutes } from "./routes/recipe.routes.js";
 import { stockRoutes } from "./routes/stock.routes.js";
 import { vendorRoutes } from "./routes/vendor.routes.js";
+import { procurementRoutes } from "./routes/procurement.routes.js";
 import { pgClient } from "./db/index.js";
 
 
 
 const fastify = Fastify({
+  // Behind a load balancer / Railway edge the client address is in X-Forwarded-For;
+  // rate limiting and audit logs need the real one.
+  trustProxy: process.env.TRUST_PROXY !== "false",
+  bodyLimit: 1024 * 1024,
   logger: {
     level: process.env.LOG_LEVEL || "info",
     transport:
@@ -83,12 +80,22 @@ function checkOriginAllowed(origin: string | undefined): boolean {
 
   const normalizedOrigin = origin.trim().replace(/\/+$/, "").toLowerCase();
 
-  // Always permit local development and Railway cloud deployments
+  // Compare the parsed hostname — a substring test would also accept
+  // origins such as "https://localhost.evil.example".
+  let hostname = "";
+  try {
+    hostname = new URL(normalizedOrigin).hostname;
+  } catch {
+    return false;
+  }
+
+  // Local development, and this project's Railway deployments
   if (
-    normalizedOrigin.includes("localhost") ||
-    normalizedOrigin.includes("127.0.0.1") ||
-    normalizedOrigin.endsWith(".up.railway.app") ||
-    normalizedOrigin.endsWith(".railway.app")
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname.endsWith(".up.railway.app") ||
+    hostname.endsWith(".railway.app")
   ) {
     return true;
   }
@@ -106,7 +113,6 @@ const io = new SocketServer(fastify.server, {
     credentials: true,
   },
 });
-initCloudSocket(io);
 
 // ─── Register Plugins ───
 await fastify.register(cors, {
@@ -129,6 +135,9 @@ await fastify.register(cors, {
 await fastify.register(authPlugin);
 await fastify.register(errorHandlerPlugin);
 
+// Realtime hub — needs the JWT plugin to authenticate ERP users
+initCloudSocket(io, (token) => fastify.jwt.verify(token));
+
 // ─── Content Type Parsers ───
 // Allow empty or whitespace-only bodies when Content-Type is application/json (e.g. DELETE requests)
 fastify.addContentTypeParser(
@@ -139,6 +148,8 @@ fastify.addContentTypeParser(
       if (!body || (typeof body === "string" && body.trim() === "")) {
         return done(null, undefined);
       }
+      // Kept for webhook signature checks, which must hash the exact bytes received
+      (_req as { rawBody?: string }).rawBody = body;
       const json = JSON.parse(body);
       done(null, json);
     } catch (err: unknown) {
@@ -165,19 +176,42 @@ await fastify.register(integrationRoutes);
 await fastify.register(crmRoutes);
 await fastify.register(hrRoutes);
 await fastify.register(reportingRoutes);
-await fastify.register(posRoutes);
 await fastify.register(recipeRoutes);
 await fastify.register(stockRoutes);
 await fastify.register(vendorRoutes);
+await fastify.register(procurementRoutes);
 
 // ─── Health Check ───
-fastify.get("/health", async () => {
-  return {
-    status: "ok",
+// Reports the dependencies too, so a load balancer stops routing to an
+// instance that has lost its database.
+fastify.get("/health", async (_request, reply) => {
+  const withTimeout = <T>(p: Promise<T>) =>
+    Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 2_000))]);
+
+  let database = "ok";
+  let redis = "ok";
+  try {
+    await withTimeout(pgClient`select 1`);
+  } catch {
+    database = "error";
+  }
+  try {
+    await withTimeout(redisConnection.ping());
+  } catch {
+    redis = "error";
+  }
+
+  // Redis only powers sync queues and realtime; the ERP still works without it
+  const status = database === "ok" ? (redis === "ok" ? "ok" : "degraded") : "error";
+  return reply.status(database === "ok" ? 200 : 503).send({
+    status,
     service: "gusto-api-gateway",
     version: "0.1.0",
+    database,
+    redis,
+    uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-  };
+  });
 });
 
 // ─── Start Server ───
@@ -201,13 +235,41 @@ try {
 }
 
 // ─── Graceful Shutdown ───
-const shutdown = async (signal: string) => {
-  console.log(`\n[${signal}] Shutting down gracefully...`);
-  await fastify.close();
-  await pgClient.end();
-  console.log("Server closed.");
-  process.exit(0);
+let shuttingDown = false;
+const shutdown = async (signal: string, exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  fastify.log.info(`[${signal}] Shutting down gracefully...`);
+
+  // Never hang forever on a stuck connection
+  setTimeout(() => process.exit(exitCode || 1), 10_000).unref();
+
+  const step = async (name: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (err) {
+      fastify.log.error({ err }, `Shutdown step failed: ${name}`);
+    }
+  };
+
+  await step("socket.io", () => new Promise<void>((resolve) => io.close(() => resolve())));
+  await step("http", () => fastify.close());
+  await step("redis subscriber", () => closeCloudSocket());
+  await step("queues", () => Promise.all([posSyncQueue.close(), webhookQueue.close()]));
+  await step("redis", () => redisConnection.quit());
+  await step("postgres", () => pgClient.end({ timeout: 5 }));
+  await Sentry.close(2_000).catch(() => undefined);
+  process.exit(exitCode);
 };
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason) => {
+  Sentry.captureException(reason);
+  fastify.log.error({ err: reason }, "Unhandled promise rejection");
+});
+process.on("uncaughtException", (err) => {
+  Sentry.captureException(err);
+  fastify.log.fatal({ err }, "Uncaught exception");
+  void shutdown("uncaughtException", 1);
+});

@@ -4,7 +4,6 @@ interface UserInfo {
   id: string;
   name: string;
   role: string;
-  pin: string;
 }
 
 export interface AuthStoreState {
@@ -18,7 +17,14 @@ export interface AuthStoreState {
 }
 
 const getInitialToken = () => {
-  return localStorage.getItem("pos_auth_token") || null;
+  const token = localStorage.getItem("pos_auth_token") || null;
+  // Tokens issued by older builds ("pos_token_<id>") are no longer accepted by the server
+  if (token && token.startsWith("pos_token")) {
+    localStorage.removeItem("pos_auth_token");
+    localStorage.removeItem("pos_auth_user");
+    return null;
+  }
+  return token;
 };
 
 const getInitialUser = (): UserInfo | null => {

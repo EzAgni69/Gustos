@@ -2,14 +2,19 @@
  * Gusto Captain — API Client
  *
  * HTTP client for communicating with pos-local-server over LAN.
- * Automatically attaches X-User-Id header from auth store.
+ * Attaches the session token from PIN login to every request.
  */
 
 import { API } from "../config/constants";
-import { enqueueOfflineAction } from "../lib/offlineQueue";
+import { enqueueOfflineAction, resolveLocalIds } from "../lib/offlineQueue";
 
 let baseUrl = "";
 let currentUserId: string | null = null;
+let authToken: string | null = null;
+let onUnauthorized: (() => void) | null = null;
+
+/** How long to wait for the POS server before treating the request as offline. */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 // ─── Configuration ───
 
@@ -24,8 +29,36 @@ export function setCurrentUserId(userId: string | null): void {
   currentUserId = userId;
 }
 
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
+/** Called when the server rejects our session (expired, or the user was deactivated). */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
 export function getBaseUrl(): string {
   return baseUrl;
+}
+
+/** RFC 4122 v4 id — lets the server ignore a line it already saved when a request is replayed. */
+export function generateClientId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+class NetworkError extends TypeError {
+  constructor(message = "Network request failed") {
+    super(message);
+    this.name = "NetworkError";
+  }
 }
 
 // ─── Core Request ───
@@ -49,19 +82,50 @@ async function request<T = unknown>(
     ...(options.headers as Record<string, string>),
   };
 
+  if (authToken) {
+    headers["Authorization"] = `Bearer ${authToken}`;
+  }
   if (currentUserId) {
     headers["X-User-Id"] = currentUserId;
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers,
-  });
+  // An order created while offline is known by a temporary id until it syncs
+  const resolvedPath = resolveLocalIds(path);
 
-  const json = await response.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${resolvedPath}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // Timed out or unreachable — both mean "offline" to the caller
+    if ((err as Error)?.name === "AbortError") throw new NetworkError("Network request failed (timeout)");
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let json: any = null;
+  try {
+    json = await response.json();
+  } catch {
+    // Non-JSON body (proxy error page, empty response)
+  }
 
   if (!response.ok) {
-    throw new Error(json.message || `Request failed: ${response.status}`);
+    if (response.status === 401 && authToken) {
+      onUnauthorized?.();
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+    throw new Error(json?.message || `Request failed: ${response.status}`);
+  }
+
+  if (!json) {
+    throw new Error("Unexpected response from the POS server");
   }
 
   return json as ApiResponse<T>;
@@ -71,6 +135,7 @@ async function request<T = unknown>(
  * Check if an error is a network error (device offline / Wi-Fi dead zone).
  */
 function isNetworkError(err: unknown): boolean {
+  if (err instanceof NetworkError) return true;
   if (err instanceof TypeError) {
     const msg = err.message.toLowerCase();
     return (
@@ -93,8 +158,20 @@ interface HealthResponse {
 }
 
 export async function checkHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${baseUrl}${API.HEALTH}`);
-  return res.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(`${baseUrl}${API.HEALTH}`, { signal: controller.signal });
+    if (!res.ok) throw new Error(`POS server responded with ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new Error("POS server did not respond. Check the IP address and Wi-Fi.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ─── Auth ───
@@ -113,15 +190,18 @@ export async function getUsers(): Promise<AuthUser[]> {
 export async function pinLogin(
   pin: string,
   userId?: string
-): Promise<{ id: string; name: string; role: string }> {
-  const res = await request<{ id: string; name: string; role: string }>(
+): Promise<{ id: string; name: string; role: string; token: string }> {
+  const res = (await request<{ id: string; name: string; role: string }>(
     API.AUTH.PIN_LOGIN,
     {
       method: "POST",
       body: JSON.stringify({ pin, userId }),
     }
-  );
-  return res.data;
+  )) as ApiResponse<{ id: string; name: string; role: string }> & { token?: string };
+  if (!res.token) {
+    throw new Error("POS server is out of date — it did not return a session. Update the POS server.");
+  }
+  return { ...res.data, token: res.token };
 }
 
 // ─── Menu ───
@@ -430,8 +510,13 @@ export async function listOrders(filters?: {
 
 export async function addItemsToOrder(
   orderId: string,
-  items: AddItemInput[]
+  rawItems: AddItemInput[]
 ): Promise<OrderResponse> {
+  // Each line carries a client id so a replay (offline queue, lost response) cannot duplicate it
+  const items = rawItems.map((item) => ({
+    ...item,
+    clientItemId: (item as AddItemInput & { clientItemId?: string }).clientItemId ?? generateClientId(),
+  }));
   try {
     const res = await request<OrderResponse>(API.ORDERS.ADD_ITEMS(orderId), {
       method: "POST",

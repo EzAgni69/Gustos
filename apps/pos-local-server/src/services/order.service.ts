@@ -9,8 +9,10 @@ import { eq, and, notInArray, desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 import {
   calculateCartTotals,
+  calculateLineGross,
   isOrderEditable,
   type CartItem,
   type DiscountConfig,
@@ -27,6 +29,7 @@ import {
   emitOnlineOrderReceived,
 } from "../socket/events.js";
 import { cancelKOT, generateModificationKOT } from "./kot.service.js";
+import { captureUndoSnapshot, clearUndoStack } from "./undo.service.js";
 import { platformMarkerLabel } from "./order-channel.js";
 
 // ─── Types ───
@@ -65,6 +68,14 @@ export interface AddItemInput {
 
 const CLIENT_ITEM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export const ORDER_MODES = ["DINE_IN", "TAKEAWAY", "DELIVERY", "ONLINE"] as const;
+export type OrderModeValue = (typeof ORDER_MODES)[number];
+const GST_RATES: readonly string[] = ["0", "5", "12", "18", "28"];
+/** Orders in these states are closed — nothing about them may change. */
+export const TERMINAL_STATUSES = ["COMPLETED", "CANCELLED", "MERGED"];
+const MAX_ITEM_QUANTITY = 999;
+const MAX_UNIT_PRICE = 1_000_000;
+
 // ─── Config (should come from outlet settings) ───
 
 const OUTLET_ID = process.env.OUTLET_ID || "local-outlet";
@@ -72,14 +83,104 @@ const ORGANIZATION_ID = process.env.ORGANIZATION_ID || "local-org";
 
 // ─── Helpers ───
 
-export function recalculateOrderTotals(orderId: string): void {
-  const items = db
-    .select()
-    .from(schema.orderItems)
-    .where(eq(schema.orderItems.orderId, orderId))
-    .all()
-    .filter((item) => item.status !== "VOIDED");
+type OrderItemRow = typeof schema.orderItems.$inferSelect;
+type OrderRow = typeof schema.orders.$inferSelect;
 
+function safeJsonArray<T>(value: string | null | undefined): T[] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as T[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Chargeable (non-voided) order item rows → cart lines for the shared totals engine. */
+export function toCartItems(items: OrderItemRow[]): CartItem[] {
+  return items
+    .filter((item) => item.status !== "VOIDED")
+    .map((item) => ({
+      menuItemId: item.menuItemId,
+      menuItemName: item.menuItemName,
+      variantName: item.variantName ?? undefined,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      gstRate: (GST_RATES.includes(item.gstRate) ? item.gstRate : "5") as GSTRate,
+      modifiers: safeJsonArray<string>(item.modifiers),
+      notes: item.notes ?? undefined,
+      addOns: safeJsonArray<{ name: string; quantity: number; unitPrice: number }>(item.addOns),
+      discount:
+        item.itemDiscountType && item.itemDiscountValue
+          ? { type: item.itemDiscountType as "PERCENTAGE" | "FLAT", value: item.itemDiscountValue }
+          : null,
+    }));
+}
+
+/** Order-level discount stored on the order row, if any. */
+export function getOrderDiscount(order: Pick<OrderRow, "discountType" | "discountValue">): DiscountConfig | undefined {
+  if (!order.discountType || !order.discountValue) return undefined;
+  return { type: order.discountType as "PERCENTAGE" | "FLAT", value: order.discountValue };
+}
+
+function requireOrder(orderId: string): OrderRow {
+  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
+  if (!order) throw new Error("Order not found");
+  return order;
+}
+
+/** Load an order that can still be changed (not paid, cancelled or merged). */
+function requireOpenOrder(orderId: string, action: string): OrderRow {
+  const order = requireOrder(orderId);
+  if (TERMINAL_STATUSES.includes(order.status)) {
+    throw new Error(`Cannot ${action} — order ${order.orderNumber} is ${order.status.toLowerCase()}`);
+  }
+  return order;
+}
+
+/** Load an item and make sure it really belongs to the given order. */
+function requireOrderItem(orderId: string, itemId: string): OrderItemRow {
+  const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
+  if (!item || item.orderId !== orderId) throw new Error("Item not found on this order");
+  return item;
+}
+
+function requireWholeQuantity(value: unknown, label = "Quantity"): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new Error(`${label} must be a whole number`);
+  }
+  return value;
+}
+
+/**
+ * Free a table that this order was occupying. A table that has since been
+ * given to a different live order is left alone.
+ */
+function releaseTableIfHeldBy(tableId: string | null, orderId: string, order: Pick<OrderRow, "organizationId" | "outletId">): void {
+  if (!tableId) return;
+  const table = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, tableId)).get();
+  if (!table) return;
+  if (table.currentOrderId && table.currentOrderId !== orderId) {
+    const other = db.select().from(schema.orders).where(eq(schema.orders.id, table.currentOrderId)).get();
+    if (other && !TERMINAL_STATUSES.includes(other.status)) return;
+  }
+
+  db.update(schema.diningTables)
+    .set({ status: "AVAILABLE", currentOrderId: null })
+    .where(eq(schema.diningTables.id, tableId))
+    .run();
+
+  emitTableStatusChanged({ tableId, tableName: table.name, status: "AVAILABLE" });
+  queueSyncEvent("TABLE_STATUS_CHANGED", {
+    tableId,
+    tableName: table.name,
+    status: "AVAILABLE",
+    organizationId: order.organizationId,
+    outletId: order.outletId,
+  });
+}
+
+export function recalculateOrderTotals(orderId: string): void {
   const order = db
     .select()
     .from(schema.orders)
@@ -88,31 +189,14 @@ export function recalculateOrderTotals(orderId: string): void {
 
   if (!order) return;
 
-  // Filter out voided items so they are not charged to customer
-  const activeItems = items.filter((item) => item.status !== "VOIDED");
+  const items = db
+    .select()
+    .from(schema.orderItems)
+    .where(eq(schema.orderItems.orderId, orderId))
+    .all();
 
-  // Build CartItem array for core-logic (including add-ons and variant info)
-  const cartItems: CartItem[] = activeItems.map((item) => ({
-    menuItemId: item.menuItemId,
-    menuItemName: item.menuItemName,
-    variantName: item.variantName ?? undefined,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
-    gstRate: item.gstRate as GSTRate,
-    modifiers: item.modifiers ? (typeof item.modifiers === "string" ? JSON.parse(item.modifiers) : item.modifiers) : undefined,
-    addOns: item.addOns ? (typeof item.addOns === "string" ? JSON.parse(item.addOns) : item.addOns) : undefined,
-  }));
-
-  // Build discount config if set
-  let discount: DiscountConfig | undefined;
-  if (order.discountType && order.discountValue) {
-    discount = {
-      type: order.discountType as "PERCENTAGE" | "FLAT",
-      value: order.discountValue,
-    };
-  }
-
-  const totals = calculateCartTotals(cartItems, discount);
+  // Voided items are excluded so they are never charged to the customer
+  const totals = calculateCartTotals(toCartItems(items), getOrderDiscount(order));
 
   db.update(schema.orders)
     .set({
@@ -149,7 +233,21 @@ function logEvent(
 /**
  * Create a new order.
  */
-export function createOrder(input: CreateOrderInput, userId?: string) {
+export const createOrder = atomicFn(function createOrder(input: CreateOrderInput, userId?: string) {
+  if (!input || !ORDER_MODES.includes(input.orderMode)) {
+    throw new Error(`orderMode must be one of ${ORDER_MODES.join(", ")}`);
+  }
+  if (input.tableId) {
+    const table = db.select({ id: schema.diningTables.id }).from(schema.diningTables).where(eq(schema.diningTables.id, input.tableId)).get();
+    if (!table) throw new Error("Table not found");
+  }
+  if (input.paxCount !== undefined && (!Number.isInteger(input.paxCount) || input.paxCount < 1 || input.paxCount > 500)) {
+    throw new Error("paxCount must be a whole number between 1 and 500");
+  }
+  if (input.tokenNumbers !== undefined && !Array.isArray(input.tokenNumbers)) {
+    throw new Error("tokenNumbers must be an array");
+  }
+
   // If dine-in, check if there is already an active order on this table to prevent duplicates
   if (input.orderMode === "DINE_IN" && input.tableId) {
     const existingOrder = db
@@ -250,7 +348,7 @@ export function createOrder(input: CreateOrderInput, userId?: string) {
   });
 
   return getOrderById(id);
-}
+});
 
 /**
  * Get order by ID with items.
@@ -288,82 +386,100 @@ export function getOrderById(orderId: string) {
   };
 }
 
+/** Cloud id of the aggregator order a local ONLINE order was created from. */
+export function getOnlineOrderId(notes: string | null | undefined): string | null {
+  const match = notes?.match(/onlineOrderId:([^\s|]+)/);
+  return match ? match[1]! : null;
+}
+
 /**
  * Create a DRAFT online order from an incoming Zomato/Swiggy webhook.
+ *
+ * The cloud may deliver the same order more than once (reconnects, retries),
+ * so this is idempotent on the cloud's onlineOrderId: a repeat returns the
+ * order that already exists with `created: false`.
  */
-export function createOnlineOrderFromWebhook(payload: any) {
+export const createOnlineOrderFromWebhook = atomicFn(function createOnlineOrderFromWebhook(payload: any) {
+  if (!payload || typeof payload !== "object") throw new Error("Online order payload is missing");
+  const onlineOrderId = payload.onlineOrderId ? String(payload.onlineOrderId) : null;
+  const aggregatorOrderId = String(payload.order_id ?? onlineOrderId ?? "");
+  if (!aggregatorOrderId) throw new Error("Online order has no order id");
+
+  if (onlineOrderId) {
+    const existing = db
+      .select({ id: schema.orders.id, notes: schema.orders.notes })
+      .from(schema.orders)
+      .where(eq(schema.orders.orderMode, "ONLINE"))
+      .all()
+      .find((o) => getOnlineOrderId(o.notes) === onlineOrderId);
+    if (existing) return { order: getOrderById(existing.id), created: false };
+  }
+
   // Map aggregator payload to Gustos schema (provider defaults to Zomato,
   // the only integration currently routed by sync-worker)
   const platformLabel = platformMarkerLabel(payload.provider);
   const customerName = payload.customer?.name || `${platformLabel} Customer`;
   const customerPhone = payload.customer?.phone;
-  
-  // Create DRAFT order
-  const newOrderInput: CreateOrderInput = {
-    orderMode: "ONLINE",
-    customerName,
-    customerPhone,
-    notes: `Online Order ID: ${payload.order_id}`,
-  };
 
-  const newOrder = createOrder(newOrderInput, "system");
+  const newOrder = createOrder(
+    {
+      orderMode: "ONLINE",
+      customerName,
+      customerPhone,
+      // The cloud's onlineOrderId is kept in the notes so accept / reject / ready can be acknowledged
+      notes: `onlineOrderId:${onlineOrderId ?? aggregatorOrderId} | ${platformLabel}: ${aggregatorOrderId}`,
+    },
+    "system"
+  );
   if (!newOrder) throw new Error("Failed to create online order");
 
-  // Attempt to map items based on pos_mapped_id from cloud, otherwise fallback to name lookup
-  const itemsToAdd: AddItemInput[] = (payload.items || []).map((item: any) => {
-    let localItem = null;
-    
-    // 1. Try explicit mapping
-    if (item.pos_mapped_id) {
-      localItem = db
-        .select()
-        .from(schema.menuItems)
-        .where(eq(schema.menuItems.id, item.pos_mapped_id))
-        .get();
+  // Map items by the cloud's pos_mapped_id, falling back to a name lookup.
+  // Lines with an unusable quantity or price are skipped rather than failing the whole order.
+  const itemsToAdd: AddItemInput[] = [];
+  for (const item of Array.isArray(payload.items) ? payload.items : []) {
+    const quantity = Math.trunc(Number(item?.quantity));
+    const unitPrice = Number(item?.unit_price);
+    const name = typeof item?.item_name === "string" ? item.item_name.trim() : "";
+    if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      console.warn(`[OrderService] Skipping unusable line on online order ${aggregatorOrderId}:`, item);
+      continue;
     }
 
-    // 2. Fallback local lookup by name
+    let localItem = item.pos_mapped_id
+      ? db.select().from(schema.menuItems).where(eq(schema.menuItems.id, String(item.pos_mapped_id))).get()
+      : undefined;
     if (!localItem) {
-      localItem = db
-        .select()
-        .from(schema.menuItems)
-        .where(eq(schema.menuItems.name, item.item_name))
-        .get();
+      localItem = db.select().from(schema.menuItems).where(eq(schema.menuItems.name, name)).get();
     }
 
-    return {
+    itemsToAdd.push({
       menuItemId: localItem?.id || uuid(),
-      menuItemName: localItem?.name || item.item_name,
-      quantity: item.quantity,
-      unitPrice: item.unit_price,
+      menuItemName: localItem?.name || name,
+      quantity: Math.min(quantity, MAX_ITEM_QUANTITY),
+      unitPrice,
       gstRate: (localItem?.gstRate as GSTRate) || "5",
-      notes: item.special_instructions,
-    };
-  });
+      notes: typeof item.special_instructions === "string" ? item.special_instructions : undefined,
+    });
+  }
 
   if (itemsToAdd.length > 0) {
-    addItemsToOrder(newOrder.id, itemsToAdd, "system");
+    // The aggregator already sold these — availability is not re-checked
+    addItemsToOrder(newOrder.id, itemsToAdd, "system", { skipAvailabilityCheck: true, keepDraft: true });
   }
-  
-  // Attach the cloud's onlineOrderId to the notes or a new field so we can ack it later
-  db.update(schema.orders)
-    .set({ notes: `onlineOrderId:${payload.onlineOrderId} | ${platformLabel}: ${payload.order_id}` })
-    .where(eq(schema.orders.id, newOrder.id))
-    .run();
 
   const finalOrder = getOrderById(newOrder.id);
-  
+
   // Alert the POS
   emitOnlineOrderReceived(finalOrder!);
 
-  console.log(`[OrderService] Created DRAFT online order ${finalOrder?.orderNumber} for Zomato order ${payload.order_id}`);
-  return finalOrder;
-}
+  console.log(`[OrderService] Created DRAFT online order ${finalOrder?.orderNumber} for ${platformLabel} order ${aggregatorOrderId}`);
+  return { order: finalOrder, created: true };
+});
 
 /**
  * Accept a DRAFT online order.
  */
-export function acceptOnlineOrder(orderId: string, userId?: string) {
+export const acceptOnlineOrder = atomicFn(function acceptOnlineOrder(orderId: string, userId?: string) {
   const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
   if (!order) throw new Error("Order not found");
   if (order.orderMode !== "ONLINE" || order.status !== "DRAFT") {
@@ -381,17 +497,21 @@ export function acceptOnlineOrder(orderId: string, userId?: string) {
   emitOrderUpdated({ type: "ONLINE_ORDER_ACCEPTED", order: updated });
   
   // Ack to cloud
-  const match = order.notes?.match(/onlineOrderId:([^\s|]+)/);
-  const onlineOrderId = match ? match[1] : null;
-  queueSyncEvent("ONLINE_ORDER_ACCEPTED", { orderId, orderNumber: order.orderNumber, onlineOrderId });
+  queueSyncEvent("ONLINE_ORDER_ACCEPTED", {
+    orderId,
+    orderNumber: order.orderNumber,
+    onlineOrderId: getOnlineOrderId(order.notes),
+    organizationId: order.organizationId,
+    outletId: order.outletId,
+  });
 
   return updated;
-}
+});
 
 /**
  * Reject a DRAFT online order.
  */
-export function rejectOnlineOrder(orderId: string, reason: string, userId?: string) {
+export const rejectOnlineOrder = atomicFn(function rejectOnlineOrder(orderId: string, reason: string, userId?: string) {
   const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
   if (!order) throw new Error("Order not found");
   if (order.orderMode !== "ONLINE" || order.status !== "DRAFT") {
@@ -408,12 +528,17 @@ export function rejectOnlineOrder(orderId: string, reason: string, userId?: stri
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ONLINE_ORDER_REJECTED", order: updated });
   
-  const match = order.notes?.match(/onlineOrderId:([^\s|]+)/);
-  const onlineOrderId = match ? match[1] : null;
-  queueSyncEvent("ONLINE_ORDER_REJECTED", { orderId, orderNumber: order.orderNumber, reason, onlineOrderId });
+  queueSyncEvent("ONLINE_ORDER_REJECTED", {
+    orderId,
+    orderNumber: order.orderNumber,
+    reason,
+    onlineOrderId: getOnlineOrderId(order.notes),
+    organizationId: order.organizationId,
+    outletId: order.outletId,
+  });
 
   return updated;
-}
+});
 
 /**
  * List orders with optional filters.
@@ -459,7 +584,8 @@ export function listOrders(filters?: {
   // Sort by createdAt descending
   orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  const resultOrders = filters?.limit ? orders.slice(0, filters.limit) : orders;
+  const limit = filters?.limit && Number.isFinite(filters.limit) && filters.limit > 0 ? Math.floor(filters.limit) : undefined;
+  const resultOrders = limit ? orders.slice(0, limit) : orders;
 
   return resultOrders.map(order => {
     const items = db
@@ -484,10 +610,11 @@ export function listOrders(filters?: {
 /**
  * Add items to an existing order.
  */
-export function addItemsToOrder(
+export const addItemsToOrder = atomicFn(function addItemsToOrder(
   orderId: string,
   items: AddItemInput[],
-  userId?: string
+  userId?: string,
+  options: { skipAvailabilityCheck?: boolean; keepDraft?: boolean } = {}
 ) {
   const order = db
     .select()
@@ -498,6 +625,58 @@ export function addItemsToOrder(
   if (!order) throw new Error("Order not found");
   if (["COMPLETED", "CANCELLED", "MERGED"].includes(order.status)) {
     throw new Error(`Cannot add items to a ${order.status.toLowerCase()} order`);
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error("items must be a non-empty array");
+  }
+  if (items.length > 200) throw new Error("Too many items in one request");
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") throw new Error("Invalid item");
+    const label = typeof item.menuItemName === "string" && item.menuItemName.trim() ? item.menuItemName.trim() : "";
+    if (!label) throw new Error("Each item needs a menuItemName");
+    if (typeof item.menuItemId !== "string" || !item.menuItemId) throw new Error(`${label}: menuItemId is required`);
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0 || item.quantity > MAX_ITEM_QUANTITY) {
+      throw new Error(`${label}: quantity must be a whole number between 1 and ${MAX_ITEM_QUANTITY}`);
+    }
+    if (typeof item.unitPrice !== "number" || !Number.isFinite(item.unitPrice) || item.unitPrice < 0 || item.unitPrice > MAX_UNIT_PRICE) {
+      throw new Error(`${label}: unitPrice is invalid`);
+    }
+    if (!GST_RATES.includes(String(item.gstRate))) {
+      throw new Error(`${label}: gstRate must be one of ${GST_RATES.join(", ")}`);
+    }
+    if (item.modifiers !== undefined && item.modifiers !== null && !Array.isArray(item.modifiers)) {
+      throw new Error(`${label}: modifiers must be an array`);
+    }
+    if (item.addOns !== undefined && item.addOns !== null) {
+      if (!Array.isArray(item.addOns)) throw new Error(`${label}: addOns must be an array`);
+      for (const addOn of item.addOns) {
+        if (
+          !addOn ||
+          typeof addOn.name !== "string" ||
+          !Number.isInteger(addOn.quantity) ||
+          addOn.quantity <= 0 ||
+          typeof addOn.unitPrice !== "number" ||
+          !Number.isFinite(addOn.unitPrice) ||
+          addOn.unitPrice < 0
+        ) {
+          throw new Error(`${label}: add-on is invalid`);
+        }
+      }
+    }
+
+    // An item 86'd in the meantime (e.g. from another device) must not reach the kitchen
+    if (!options.skipAvailabilityCheck) {
+      const menuItem = db
+        .select({ isAvailable: schema.menuItems.isAvailable })
+        .from(schema.menuItems)
+        .where(eq(schema.menuItems.id, item.menuItemId))
+        .get();
+      if (menuItem && !menuItem.isAvailable) {
+        throw new Error(`${label} is currently unavailable`);
+      }
+    }
   }
 
   // Drop lines this order already has (same client id) — a repeated save must not duplicate them
@@ -530,17 +709,17 @@ export function addItemsToOrder(
         variantName: item.variantName,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
-        gstRate: item.gstRate,
-        modifiers: item.modifiers ? JSON.stringify(item.modifiers) : null,
-        addOns: item.addOns ? JSON.stringify(item.addOns) : null,
-        notes: item.notes,
+        gstRate: String(item.gstRate),
+        modifiers: item.modifiers && item.modifiers.length > 0 ? JSON.stringify(item.modifiers) : null,
+        addOns: item.addOns && item.addOns.length > 0 ? JSON.stringify(item.addOns) : null,
+        notes: typeof item.notes === "string" && item.notes.trim() ? item.notes.trim().slice(0, 500) : null,
         status: "PLACED",
       })
       .run();
   }
 
-  // Update order status to PLACED if still DRAFT
-  if (order.status === "DRAFT") {
+  // Update order status to PLACED if still DRAFT (online orders stay DRAFT until accepted)
+  if (order.status === "DRAFT" && !options.keepDraft) {
     db.update(schema.orders)
       .set({ status: "PLACED", updatedAt: new Date().toISOString() })
       .where(eq(schema.orders.id, orderId))
@@ -560,25 +739,25 @@ export function addItemsToOrder(
   emitOrderUpdated({ type: "ITEMS_ADDED", order: updated });
 
   return updated;
-}
+});
 
 /**
  * Update an item's quantity.
  */
-export function updateItemQuantity(
+export const updateItemQuantity = atomicFn(function updateItemQuantity(
   orderId: string,
   itemId: string,
   quantity: number,
   userId?: string
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
+  const order = requireOpenOrder(orderId, "change items");
   if (!isOrderEditable(new Date(order.createdAt))) {
     throw new Error("Order is past the 48-hour edit window");
   }
+  requireWholeQuantity(quantity);
+  if (quantity > MAX_ITEM_QUANTITY) throw new Error(`Quantity cannot exceed ${MAX_ITEM_QUANTITY}`);
 
-  const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
-  if (!item) throw new Error("Item not found");
+  const item = requireOrderItem(orderId, itemId);
   if (item.status === "VOIDED") throw new Error("Cannot update a voided item");
 
   if (quantity <= 0) {
@@ -586,6 +765,9 @@ export function updateItemQuantity(
   }
 
   const oldQty = item.quantity;
+  if (oldQty !== quantity && !item.kotId) {
+    captureUndoSnapshot(orderId, `Quantity changed: ${item.menuItemName} ${oldQty} → ${quantity}`);
+  }
   if (oldQty === quantity) {
     return getOrderById(orderId);
   }
@@ -633,24 +815,29 @@ export function updateItemQuantity(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ITEM_UPDATED", order: updated });
   return updated;
-}
+});
 
 /**
  * Remove an item from an order.
  */
-export function removeItem(
+export const removeItem = atomicFn(function removeItem(
   orderId: string,
   itemId: string,
   userId?: string
 ) {
+  requireOpenOrder(orderId, "remove items");
   const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
-  if (!item) return getOrderById(orderId);
+  // Already gone (double tap / offline replay) — removing is idempotent
+  if (!item || item.orderId !== orderId) return getOrderById(orderId);
+  if (item.status === "VOIDED") return getOrderById(orderId);
 
   // If item was already sent on a KOT, it cannot be hard deleted due to foreign key constraints and audit trail.
   // We automatically void it and notify the kitchen!
   if (item.kotId) {
     return voidItem(orderId, itemId, "Item removed from order", userId || "Staff", userId);
   }
+
+  captureUndoSnapshot(orderId, `Item removed: ${item.menuItemName}`);
 
   db.delete(schema.orderItems)
     .where(eq(schema.orderItems.id, itemId))
@@ -668,70 +855,95 @@ export function removeItem(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ITEM_REMOVED", order: updated });
   return updated;
-}
+});
 
 /**
  * Apply or update discount on an order.
  */
-export function applyDiscount(
+export const applyDiscount = atomicFn(function applyDiscount(
   orderId: string,
-  discount: DiscountConfig | null,
+  discount: (DiscountConfig & { label?: string }) | null,
   userId?: string
 ) {
+  requireOpenOrder(orderId, "change the discount");
+
   if (discount) {
-    db.update(schema.orders)
-      .set({
-        discountType: discount.type,
-        discountValue: discount.value,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(schema.orders.id, orderId))
-      .run();
-  } else {
-    db.update(schema.orders)
-      .set({
-        discountType: null,
-        discountValue: null,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(schema.orders.id, orderId))
-      .run();
+    if (discount.type !== "PERCENTAGE" && discount.type !== "FLAT") {
+      throw new Error("Discount type must be PERCENTAGE or FLAT");
+    }
+    if (typeof discount.value !== "number" || !Number.isFinite(discount.value) || discount.value < 0) {
+      throw new Error("Discount value must be zero or more");
+    }
+    if (discount.type === "PERCENTAGE" && discount.value > 100) {
+      throw new Error("Percentage discount cannot exceed 100");
+    }
   }
 
-  recalculateOrderTotals(orderId);
+  captureUndoSnapshot(orderId, discount ? "Discount applied" : "Discount removed");
 
-  logEvent(orderId, "DISCOUNT_APPLIED", { discount }, userId);
+  // A zero discount is the same as no discount
+  const active = discount && discount.value > 0 ? discount : null;
+  const label = active
+    ? (typeof active.label === "string" && active.label.trim()
+        ? active.label.trim().slice(0, 60)
+        : active.type === "PERCENTAGE"
+          ? `${active.value}% Off`
+          : "Discount")
+    : null;
 
-  return getOrderById(orderId);
-}
-
-/**
- * Attach a customer to an order.
- */
-export function attachCustomer(
-  orderId: string,
-  customer: { id?: string; name: string; phone: string },
-  userId?: string
-) {
   db.update(schema.orders)
     .set({
-      customerId: customer.id,
-      customerName: customer.name,
-      customerPhone: customer.phone,
+      discountType: active ? active.type : null,
+      discountValue: active ? active.value : null,
+      discountLabel: label,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(schema.orders.id, orderId))
     .run();
 
-  logEvent(orderId, "CUSTOMER_ATTACHED", { customer }, userId);
+  recalculateOrderTotals(orderId);
 
-  return getOrderById(orderId);
-}
+  logEvent(orderId, "DISCOUNT_APPLIED", { discount: active }, userId);
+
+  const updated = getOrderById(orderId);
+  emitOrderUpdated({ type: "DISCOUNT_APPLIED", order: updated });
+  return updated;
+});
+
+/**
+ * Attach a customer to an order.
+ */
+export const attachCustomer = atomicFn(function attachCustomer(
+  orderId: string,
+  customer: { id?: string; name: string; phone: string },
+  userId?: string
+) {
+  requireOrder(orderId);
+  const name = typeof customer?.name === "string" ? customer.name.trim().slice(0, 120) : "";
+  const phone = typeof customer?.phone === "string" ? customer.phone.replace(/[^\d+]/g, "").slice(0, 20) : "";
+  if (!name && !phone) throw new Error("Customer name or phone is required");
+
+  db.update(schema.orders)
+    .set({
+      customerId: customer.id ?? null,
+      customerName: name || null,
+      customerPhone: phone || null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(schema.orders.id, orderId))
+    .run();
+
+  logEvent(orderId, "CUSTOMER_ATTACHED", { customer: { id: customer.id, name, phone } }, userId);
+
+  const updated = getOrderById(orderId);
+  emitOrderUpdated({ type: "CUSTOMER_ATTACHED", order: updated });
+  return updated;
+});
 
 /**
  * Put an order on hold.
  */
-export function holdOrder(orderId: string, userId?: string) {
+export const holdOrder = atomicFn(function holdOrder(orderId: string, userId?: string) {
   const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
   if (!order) throw new Error("Order not found");
 
@@ -745,59 +957,71 @@ export function holdOrder(orderId: string, userId?: string) {
 
   logEvent(orderId, "ORDER_HELD", {}, userId);
 
-  return getOrderById(orderId);
-}
+  const updated = getOrderById(orderId);
+  emitOrderUpdated({ type: "ORDER_HELD", order: updated });
+  return updated;
+});
 
 /**
- * Cancel an order (within 48-hour window).
+ * Cancel an open (unpaid) order.
+ *
+ * - A paid bill is reversed with a post-settlement void instead, so the
+ *   invoice and shift totals stay consistent.
+ * - Tickets already in the kitchen are cancelled so cooking stops.
+ * - The table is freed only if this order still holds it.
+ *
+ * `force` skips the 48-hour edit window (used for ERP-initiated cancels).
  */
-export function cancelOrder(orderId: string, userId?: string) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
-  if (!isOrderEditable(new Date(order.createdAt))) {
+export const cancelOrder = atomicFn(function cancelOrder(
+  orderId: string,
+  userId?: string,
+  options: { reason?: string; force?: boolean } = {}
+) {
+  const order = requireOrder(orderId);
+  if (order.status === "COMPLETED") {
+    throw new Error("Order is already paid — void the settled bill instead");
+  }
+  if (order.status === "CANCELLED") return getOrderById(orderId); // idempotent
+  if (order.status === "MERGED") throw new Error("Order was merged into another order");
+  if (!options.force && !isOrderEditable(new Date(order.createdAt))) {
     throw new Error("Order is past the 48-hour edit window");
   }
 
+  const reason = options.reason?.trim() || "Order cancelled";
+  const now = new Date().toISOString();
+
+  // Stop the kitchen: cancel every ticket that has not gone out yet
+  const liveKots = db
+    .select()
+    .from(schema.kitchenOrderTickets)
+    .where(eq(schema.kitchenOrderTickets.orderId, orderId))
+    .all()
+    .filter((k) => k.kotType !== "MODIFICATION" && ["PENDING", "IN_PROGRESS", "READY"].includes(k.status));
+  for (const kot of liveKots) {
+    cancelKOT(kot.id, reason, userId || "Staff", userId);
+  }
+
   db.update(schema.orders)
-    .set({ status: "CANCELLED", updatedAt: new Date().toISOString() })
+    .set({ status: "CANCELLED", updatedAt: now })
     .where(eq(schema.orders.id, orderId))
     .run();
 
-  // Release table if dine-in
-  if (order.tableId) {
-    db.update(schema.diningTables)
-      .set({ status: "AVAILABLE", currentOrderId: null })
-      .where(eq(schema.diningTables.id, order.tableId))
-      .run();
+  releaseTableIfHeldBy(order.tableId, orderId, order);
+  clearUndoStack(orderId);
 
-    const tableObj = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, order.tableId)).get();
-
-    emitTableStatusChanged({
-      tableId: order.tableId,
-      tableName: tableObj?.name,
-      status: "AVAILABLE",
-    });
-
-    queueSyncEvent("TABLE_STATUS_CHANGED", {
-      tableId: order.tableId,
-      tableName: tableObj?.name,
-      status: "AVAILABLE",
-      organizationId: order.organizationId,
-      outletId: order.outletId,
-    });
-  }
-
-  logEvent(orderId, "ORDER_CANCELLED", {}, userId);
+  logEvent(orderId, "ORDER_CANCELLED", { reason, kotsCancelled: liveKots.length }, userId);
   queueSyncEvent("ORDER_CANCELLED", {
     orderId,
     orderNumber: order.orderNumber,
+    reason,
     organizationId: order.organizationId,
     outletId: order.outletId,
   });
-  syncOrderToCloud(orderId);
 
-  return getOrderById(orderId);
-}
+  const updated = getOrderById(orderId);
+  emitOrderUpdated({ type: "ORDER_CANCELLED", orderId, orderNumber: order.orderNumber, order: updated });
+  return updated;
+});
 
 // ─── Edge Case Operations ───
 
@@ -805,7 +1029,7 @@ export function cancelOrder(orderId: string, userId?: string) {
  * Void an item (NCR — Non-Chargeable Revenue).
  * Item stays in DB for audit trail. Requires reason and manager approval.
  */
-export function voidItem(
+export const voidItem = atomicFn(function voidItem(
   orderId: string,
   itemId: string,
   reason: string,
@@ -813,16 +1037,25 @@ export function voidItem(
   userId?: string,
   voidQuantity?: number
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
-
-  const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
-  if (!item) throw new Error("Item not found");
+  const order = requireOpenOrder(orderId, "void items");
+  const item = requireOrderItem(orderId, itemId);
   if (item.status === "VOIDED") throw new Error("Item is already voided");
 
+  reason = typeof reason === "string" ? reason.trim().slice(0, 300) : "";
+  approvedBy = typeof approvedBy === "string" ? approvedBy.trim().slice(0, 120) : "";
+  if (!reason) throw new Error("A reason is required to void an item");
+  if (!approvedBy) throw new Error("An approver is required to void an item");
+
+  if (voidQuantity !== undefined && voidQuantity !== null) {
+    requireWholeQuantity(voidQuantity, "voidQuantity");
+    if (voidQuantity <= 0 || voidQuantity > item.quantity) {
+      throw new Error(`voidQuantity must be between 1 and ${item.quantity}`);
+    }
+  }
+
   const now = new Date().toISOString();
-  const isPartial = voidQuantity !== undefined && voidQuantity > 0 && voidQuantity < item.quantity;
-  const qtyToVoid = isPartial ? voidQuantity : item.quantity;
+  const isPartial = voidQuantity !== undefined && voidQuantity !== null && voidQuantity < item.quantity;
+  const qtyToVoid = isPartial ? (voidQuantity as number) : item.quantity;
   const remainingQty = item.quantity - qtyToVoid;
 
   if (isPartial) {
@@ -964,13 +1197,13 @@ export function voidItem(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ITEM_VOIDED", order: updated });
   return updated;
-}
+});
 
 /**
  * Merge all items from source order into target order.
  * Source order is marked as MERGED, its table is released.
  */
-export function mergeOrders(
+export const mergeOrders = atomicFn(function mergeOrders(
   sourceOrderId: string,
   targetOrderId: string,
   userId?: string
@@ -980,8 +1213,12 @@ export function mergeOrders(
 
   if (!sourceOrder) throw new Error("Source order not found");
   if (!targetOrder) throw new Error("Target order not found");
-  if (sourceOrder.status === "COMPLETED" || sourceOrder.status === "CANCELLED" || sourceOrder.status === "MERGED") {
+  if (sourceOrderId === targetOrderId) throw new Error("Cannot merge an order into itself");
+  if (TERMINAL_STATUSES.includes(sourceOrder.status)) {
     throw new Error(`Source order is ${sourceOrder.status} — cannot merge`);
+  }
+  if (TERMINAL_STATUSES.includes(targetOrder.status)) {
+    throw new Error(`Target order is ${targetOrder.status} — cannot merge into it`);
   }
 
   const now = new Date().toISOString();
@@ -999,10 +1236,14 @@ export function mergeOrders(
       .run();
   }
 
-  // Move KOTs from source to target
+  // Move KOTs (and their per-station progress) from source to target
   db.update(schema.kitchenOrderTickets)
     .set({ orderId: targetOrderId })
     .where(eq(schema.kitchenOrderTickets.orderId, sourceOrderId))
+    .run();
+  db.update(schema.kotStationStatus)
+    .set({ orderId: targetOrderId })
+    .where(eq(schema.kotStationStatus.orderId, sourceOrderId))
     .run();
 
   // Mark source order as MERGED
@@ -1015,24 +1256,31 @@ export function mergeOrders(
     .where(eq(schema.orders.id, sourceOrderId))
     .run();
 
-  // Release source table
-  if (sourceOrder.tableId) {
-    db.update(schema.diningTables)
-      .set({ status: "AVAILABLE", currentOrderId: null })
-      .where(eq(schema.diningTables.id, sourceOrder.tableId))
-      .run();
-
-    emitTableStatusChanged({ tableId: sourceOrder.tableId, status: "AVAILABLE" });
+  // Release source table (unless both orders share the same table)
+  if (sourceOrder.tableId && sourceOrder.tableId !== targetOrder.tableId) {
+    releaseTableIfHeldBy(sourceOrder.tableId, sourceOrderId, sourceOrder);
   }
 
-  // Update paxCount on target (combine both)
+  // Combine covers; a target that was still an empty draft is now a live order
+  const movedCount = sourceItems.filter((i) => i.status !== "VOIDED").length;
+  const movedFired = sourceItems.some((i) => i.status !== "VOIDED" && i.kotId);
+  let targetStatus = targetOrder.status;
+  if (movedCount > 0 && targetStatus === "DRAFT") targetStatus = "PLACED";
+  if (movedFired && (targetStatus === "DRAFT" || targetStatus === "PLACED")) targetStatus = "IN_PROGRESS";
+  // Newly arrived items are not ready yet
+  if (movedCount > 0 && targetStatus === "READY" && sourceOrder.status !== "READY") targetStatus = "IN_PROGRESS";
+
   db.update(schema.orders)
     .set({
       paxCount: targetOrder.paxCount + sourceOrder.paxCount,
+      status: targetStatus,
       updatedAt: now,
     })
     .where(eq(schema.orders.id, targetOrderId))
     .run();
+
+  clearUndoStack(sourceOrderId);
+  clearUndoStack(targetOrderId);
 
   recalculateOrderTotals(targetOrderId);
 
@@ -1060,21 +1308,23 @@ export function mergeOrders(
   const updated = getOrderById(targetOrderId);
   emitOrderUpdated({ type: "ORDERS_MERGED", order: updated });
   return updated;
-}
+});
 
 /**
  * Move selected items from one order to another (or create a new order).
  * Handles partial splits — e.g., 3 guests from Table 5 move to Table 9.
  */
-export function moveItemsToOrder(
+export const moveItemsToOrder = atomicFn(function moveItemsToOrder(
   sourceOrderId: string,
   itemIds: string[],
   targetOrderId?: string,
   targetTableId?: string,
   userId?: string
 ) {
-  const sourceOrder = db.select().from(schema.orders).where(eq(schema.orders.id, sourceOrderId)).get();
-  if (!sourceOrder) throw new Error("Source order not found");
+  const sourceOrder = requireOpenOrder(sourceOrderId, "move items");
+  if (!Array.isArray(itemIds) || itemIds.length === 0) throw new Error("itemIds array is required");
+  itemIds = [...new Set(itemIds)];
+  if (targetOrderId && targetOrderId === sourceOrderId) throw new Error("Items are already on this order");
 
   // Validate items belong to source order
   const itemsToMove = itemIds.map(itemId => {
@@ -1100,9 +1350,14 @@ export function moveItemsToOrder(
     targetOrder = createOrder(newOrderInput, userId);
     if (!targetOrder) throw new Error("Failed to create target order");
     targetOrderId = targetOrder.id;
+    // createOrder returns the table's existing order when it already has one
+    if (targetOrderId === sourceOrderId) throw new Error("Items are already on this table's order");
   } else {
     targetOrder = db.select().from(schema.orders).where(eq(schema.orders.id, targetOrderId)).get();
     if (!targetOrder) throw new Error("Target order not found");
+    if (TERMINAL_STATUSES.includes(targetOrder.status)) {
+      throw new Error(`Target order is ${targetOrder.status.toLowerCase()} — cannot move items into it`);
+    }
   }
 
   // Move each item
@@ -1111,6 +1366,32 @@ export function moveItemsToOrder(
       .set({ orderId: targetOrderId })
       .where(eq(schema.orderItems.id, item.id))
       .run();
+  }
+
+  // A kitchen ticket whose live items have all moved now belongs to the target
+  // order, so the kitchen / pass keep tracking it under the right table.
+  const affectedKotIds = [...new Set(itemsToMove.map((i) => i.kotId).filter((id): id is string => !!id))];
+  for (const kotId of affectedKotIds) {
+    const stillOnSource = db
+      .select({ id: schema.orderItems.id })
+      .from(schema.orderItems)
+      .where(and(eq(schema.orderItems.kotId, kotId), eq(schema.orderItems.orderId, sourceOrderId)))
+      .all()
+      .length;
+    if (stillOnSource === 0) {
+      db.update(schema.kitchenOrderTickets).set({ orderId: targetOrderId }).where(eq(schema.kitchenOrderTickets.id, kotId)).run();
+      db.update(schema.kotStationStatus).set({ orderId: targetOrderId! }).where(eq(schema.kotStationStatus.kotId, kotId)).run();
+    }
+  }
+
+  // The target is a live order once it holds items
+  const targetNow = db.select().from(schema.orders).where(eq(schema.orders.id, targetOrderId!)).get()!;
+  const anyFired = itemsToMove.some((i) => i.kotId);
+  let targetStatus = targetNow.status;
+  if (targetStatus === "DRAFT") targetStatus = "PLACED";
+  if (anyFired && targetStatus === "PLACED") targetStatus = "IN_PROGRESS";
+  if (targetStatus !== targetNow.status) {
+    db.update(schema.orders).set({ status: targetStatus, updatedAt: now }).where(eq(schema.orders.id, targetOrderId!)).run();
   }
 
   // Recalculate both orders
@@ -1129,14 +1410,11 @@ export function moveItemsToOrder(
       .where(eq(schema.orders.id, sourceOrderId))
       .run();
 
-    if (sourceOrder.tableId) {
-      db.update(schema.diningTables)
-        .set({ status: "AVAILABLE", currentOrderId: null })
-        .where(eq(schema.diningTables.id, sourceOrder.tableId))
-        .run();
-      emitTableStatusChanged({ tableId: sourceOrder.tableId, status: "AVAILABLE" });
-    }
+    releaseTableIfHeldBy(sourceOrder.tableId, sourceOrderId, sourceOrder);
   }
+
+  clearUndoStack(sourceOrderId);
+  clearUndoStack(targetOrderId!);
 
   logEvent(sourceOrderId, "ITEMS_MOVED_OUT", {
     targetOrderId,
@@ -1156,17 +1434,20 @@ export function moveItemsToOrder(
     targetOrderId: targetOrderId!,
     movedItemCount: itemsToMove.length,
   });
+  // Mirror both orders to the Cloud ERP
+  emitOrderUpdated({ type: "ITEMS_MOVED", orderId: sourceOrderId });
+  emitOrderUpdated({ type: "ITEMS_MOVED", orderId: targetOrderId! });
 
   return {
     sourceOrder: getOrderById(sourceOrderId),
     targetOrder: getOrderById(targetOrderId!),
   };
-}
+});
 
 /**
  * Reorder / Repeat — create a new order with items from a past order.
  */
-export function reorderFromPast(
+export const reorderFromPast = atomicFn(function reorderFromPast(
   sourceOrderId: string,
   newTableId?: string,
   orderMode?: "DINE_IN" | "TAKEAWAY" | "DELIVERY" | "ONLINE",
@@ -1204,7 +1485,8 @@ export function reorderFromPast(
     quantity: item.quantity,
     unitPrice: item.unitPrice,
     gstRate: item.gstRate as GSTRate,
-    modifiers: item.modifiers ? JSON.parse(item.modifiers) : undefined,
+    modifiers: safeJsonArray<string>(item.modifiers),
+    addOns: safeJsonArray<{ name: string; quantity: number; unitPrice: number; amount: number }>(item.addOns),
     notes: item.notes ?? undefined,
   }));
 
@@ -1216,51 +1498,63 @@ export function reorderFromPast(
   }, userId);
 
   return getOrderById(newOrder.id);
-}
+});
 
 /**
  * Change order mode mid-order (e.g., DINE_IN → TAKEAWAY).
  * Handles table assignment/release accordingly.
  */
-export function changeOrderMode(
+export const changeOrderMode = atomicFn(function changeOrderMode(
   orderId: string,
   newMode: "DINE_IN" | "TAKEAWAY" | "DELIVERY" | "ONLINE",
   newTableId?: string,
   userId?: string
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
-  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
-    throw new Error(`Cannot change mode of ${order.status} order`);
+  if (!ORDER_MODES.includes(newMode)) {
+    throw new Error(`mode must be one of ${ORDER_MODES.join(", ")}`);
   }
+  const order = requireOpenOrder(orderId, "change the order mode");
 
   const oldMode = order.orderMode;
   const now = new Date().toISOString();
+  let assignedTableId: string | null = order.tableId;
 
-  // Release old table if switching away from DINE_IN
-  if (oldMode === "DINE_IN" && newMode !== "DINE_IN" && order.tableId) {
-    db.update(schema.diningTables)
-      .set({ status: "AVAILABLE", currentOrderId: null })
-      .where(eq(schema.diningTables.id, order.tableId))
-      .run();
-    emitTableStatusChanged({ tableId: order.tableId, status: "AVAILABLE" });
+  if (newMode === "DINE_IN") {
+    const wantsTable = newTableId ?? order.tableId;
+    if (!wantsTable) throw new Error("A table is required for a dine-in order");
+
+    if (wantsTable !== order.tableId) {
+      const targetTable = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, wantsTable)).get();
+      if (!targetTable) throw new Error("Target table not found");
+      if (targetTable.status !== "AVAILABLE") throw new Error("Target table is not available");
+
+      // Leaving the previous table (dine-in → dine-in on another table)
+      releaseTableIfHeldBy(order.tableId, orderId, order);
+
+      db.update(schema.diningTables)
+        .set({ status: "OCCUPIED", currentOrderId: orderId })
+        .where(eq(schema.diningTables.id, wantsTable))
+        .run();
+      emitTableStatusChanged({ tableId: wantsTable, tableName: targetTable.name, status: "OCCUPIED", orderId });
+      queueSyncEvent("TABLE_STATUS_CHANGED", {
+        tableId: wantsTable,
+        tableName: targetTable.name,
+        status: "OCCUPIED",
+        orderId,
+        orderNumber: order.orderNumber,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+      });
+    }
+    assignedTableId = wantsTable;
+  } else {
+    // Takeaway / delivery / online orders hold no table
+    releaseTableIfHeldBy(order.tableId, orderId, order);
+    assignedTableId = null;
   }
 
-  // Assign new table if switching to DINE_IN
-  let assignedTableId = order.tableId;
-  if (newMode === "DINE_IN" && newTableId) {
-    const targetTable = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, newTableId)).get();
-    if (!targetTable) throw new Error("Target table not found");
-    if (targetTable.status !== "AVAILABLE") throw new Error("Target table is not available");
-
-    db.update(schema.diningTables)
-      .set({ status: "OCCUPIED", currentOrderId: orderId })
-      .where(eq(schema.diningTables.id, newTableId))
-      .run();
-    emitTableStatusChanged({ tableId: newTableId, status: "OCCUPIED", orderId });
-    assignedTableId = newTableId;
-  } else if (newMode !== "DINE_IN") {
-    assignedTableId = null;
+  if (oldMode === newMode && assignedTableId === order.tableId) {
+    return getOrderById(orderId);
   }
 
   db.update(schema.orders)
@@ -1297,20 +1591,21 @@ export function changeOrderMode(
     outletId: order.outletId,
   });
 
-  return getOrderById(orderId);
-}
+  const updated = getOrderById(orderId);
+  emitOrderUpdated({ type: "ORDER_MODE_CHANGED", order: updated });
+  return updated;
+});
 
 /**
  * Reassign waiter for an active order.
  */
-export function reassignWaiter(
+export const reassignWaiter = atomicFn(function reassignWaiter(
   orderId: string,
   newWaiterId: string,
   newWaiterName: string,
   userId?: string
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
+  const order = requireOpenOrder(orderId, "reassign the waiter");
 
   const oldWaiterName = order.waiterName;
 
@@ -1333,30 +1628,41 @@ export function reassignWaiter(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "WAITER_REASSIGNED", order: updated });
   return updated;
-}
+});
 
 /**
  * Apply item-level discount (separate from order-level discount).
  */
-export function applyItemDiscount(
+export const applyItemDiscount = atomicFn(function applyItemDiscount(
   orderId: string,
   itemId: string,
   discount: { type: "PERCENTAGE" | "FLAT"; value: number; reason?: string } | null,
   userId?: string
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
-
-  const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
-  if (!item) throw new Error("Item not found");
+  requireOpenOrder(orderId, "discount items");
+  const item = requireOrderItem(orderId, itemId);
   if (item.status === "VOIDED") throw new Error("Cannot discount a voided item");
+
+  // A zero discount clears it
+  if (discount && discount.value === 0) discount = null;
 
   if (discount) {
     // Validate discount amount
-    if (discount.type === "PERCENTAGE" && (discount.value < 0 || discount.value > 100)) {
+    if (discount.type !== "PERCENTAGE" && discount.type !== "FLAT") {
+      throw new Error("Discount type must be PERCENTAGE or FLAT");
+    }
+    if (typeof discount.value !== "number" || !Number.isFinite(discount.value) || discount.value < 0) {
+      throw new Error("Discount value must be zero or more");
+    }
+    if (discount.type === "PERCENTAGE" && discount.value > 100) {
       throw new Error("Percentage discount must be between 0 and 100");
     }
-    if (discount.type === "FLAT" && discount.value > item.unitPrice * item.quantity) {
+    const lineGross = calculateLineGross({
+      unitPrice: item.unitPrice,
+      quantity: item.quantity,
+      addOns: safeJsonArray<{ name: string; quantity: number; unitPrice: number }>(item.addOns),
+    });
+    if (discount.type === "FLAT" && discount.value > lineGross) {
       throw new Error("Flat discount cannot exceed item total");
     }
 
@@ -1391,23 +1697,22 @@ export function applyItemDiscount(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ITEM_DISCOUNT", order: updated });
   return updated;
-}
+});
 
 /**
  * Mark an entire order as complimentary (NC — No Charge).
  * Order total stays for tracking, but payment is ₹0.
  */
-export function markAsComplimentary(
+export const markAsComplimentary = atomicFn(function markAsComplimentary(
   orderId: string,
   reason: string,
   approvedBy: string,
   userId?: string
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
-  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
-    throw new Error(`Cannot mark ${order.status} order as complimentary`);
-  }
+  const order = requireOpenOrder(orderId, "mark it complimentary");
+  reason = typeof reason === "string" ? reason.trim().slice(0, 300) : "";
+  approvedBy = typeof approvedBy === "string" ? approvedBy.trim().slice(0, 120) : "";
+  if (!reason || !approvedBy) throw new Error("reason and approvedBy are required");
 
   db.update(schema.orders)
     .set({
@@ -1437,26 +1742,25 @@ export function markAsComplimentary(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ORDER_COMPLIMENTARY", order: updated });
   return updated;
-}
+});
 
 /**
  * Split an order item's quantity into two separate items.
  * E.g., split qty=3 into qty=2 and qty=1.
  */
-export function splitOrderItemQuantity(
+export const splitOrderItemQuantity = atomicFn(function splitOrderItemQuantity(
   orderId: string,
   itemId: string,
   splitQuantity: number,
   userId?: string
 ) {
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) throw new Error("Order not found");
+  const order = requireOpenOrder(orderId, "split items");
   if (!isOrderEditable(new Date(order.createdAt))) {
     throw new Error("Order is past the 48-hour edit window");
   }
+  requireWholeQuantity(splitQuantity, "splitQuantity");
 
-  const item = db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId)).get();
-  if (!item) throw new Error("Item not found");
+  const item = requireOrderItem(orderId, itemId);
   if (item.status === "VOIDED") throw new Error("Cannot split a voided item");
 
   if (splitQuantity <= 0 || splitQuantity >= item.quantity) {
@@ -1465,9 +1769,18 @@ export function splitOrderItemQuantity(
 
   const remainingQuantity = item.quantity - splitQuantity;
 
+  // A flat line discount is shared between the two halves in proportion to
+  // quantity (a percentage applies to each half as-is).
+  let splitDiscountValue = item.itemDiscountValue;
+  let remainingDiscountValue = item.itemDiscountValue;
+  if (item.itemDiscountType === "FLAT" && item.itemDiscountValue) {
+    splitDiscountValue = Math.round(((item.itemDiscountValue * splitQuantity) / item.quantity) * 100) / 100;
+    remainingDiscountValue = Math.round((item.itemDiscountValue - splitDiscountValue) * 100) / 100;
+  }
+
   // 1. Update the original item's quantity to the remaining quantity
   db.update(schema.orderItems)
-    .set({ quantity: remainingQuantity })
+    .set({ quantity: remainingQuantity, itemDiscountValue: remainingDiscountValue })
     .where(eq(schema.orderItems.id, itemId))
     .run();
 
@@ -1490,7 +1803,7 @@ export function splitOrderItemQuantity(
       kotId: item.kotId, // If the original was sent to kitchen, the split is too
       isNcr: item.isNcr,
       itemDiscountType: item.itemDiscountType,
-      itemDiscountValue: item.itemDiscountValue,
+      itemDiscountValue: splitDiscountValue,
       itemDiscountReason: item.itemDiscountReason,
     })
     .run();
@@ -1536,5 +1849,5 @@ export function splitOrderItemQuantity(
   const updated = getOrderById(orderId);
   emitOrderUpdated({ type: "ITEM_UPDATED", order: updated });
   return updated;
-}
+});
 

@@ -265,7 +265,7 @@ export default function DashboardOverviewPage() {
       setLowStockItems(lows);
     }
 
-    let allOrders: Order[] = [];
+    const allOrders: Order[] = [];
 
     if (outletsRes.success && outletsRes.data) {
       setOutlets(outletsRes.data);

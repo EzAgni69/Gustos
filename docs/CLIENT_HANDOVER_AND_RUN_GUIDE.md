@@ -106,7 +106,7 @@ This package is the central nerve center for local restaurant operations. It run
    - Your default browser automatically opens to **`http://localhost:8080`** (POS Cashier Billing Counter).
    - The KDS Kitchen Display is simultaneously available at **`http://localhost:8080/kds`**.
 5. **Staff Login:**
-   - Select Cashier or Manager and enter PIN **`1234`**.
+   - Tap your name (e.g. the Cashier or Manager) and enter PIN **`1234`**. Several staff may share a PIN; the name you pick decides who is signed in.
 
 > [!TIP]
 > **LAN Access for other Counter Laptops or Tablets:**  

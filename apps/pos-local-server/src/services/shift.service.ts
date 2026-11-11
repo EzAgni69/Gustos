@@ -11,10 +11,11 @@
  * but a warning is returned to the POS UI.
  */
 
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, gte, lte, desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 
 // ─── Types ───
 
@@ -58,7 +59,14 @@ export interface ShiftReportData {
  * Open a new cashier shift.
  * Validates that no other shift is currently active.
  */
-export function openShift(input: ShiftOpenInput) {
+export const openShift = atomicFn(function openShift(input: ShiftOpenInput) {
+  if (!input.cashierId || !input.cashierName?.trim()) {
+    throw new Error("cashierId and cashierName are required");
+  }
+  if (typeof input.openingFloat !== "number" || !Number.isFinite(input.openingFloat) || input.openingFloat < 0) {
+    throw new Error("openingFloat must be zero or more");
+  }
+
   // Check for existing open shift
   const activeShift = getActiveShift();
   if (activeShift) {
@@ -89,7 +97,7 @@ export function openShift(input: ShiftOpenInput) {
     openingFloat: input.openingFloat,
     status: "OPEN",
   };
-}
+});
 
 /**
  * Get the currently active (open) shift, or null.
@@ -102,25 +110,31 @@ export function getActiveShift() {
     .get() ?? null;
 }
 
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
 /**
  * Aggregate sales data for a shift period.
  * Used by both X-Report and Z-Report.
+ *
+ * A bill belongs to the shift in which it was PAID (invoice time), not the
+ * shift in which the order was opened — a table seated before the shift
+ * change and settled after it puts its cash in the new cashier's drawer.
+ * Voided / unpaid invoices are excluded.
  */
 function aggregateShiftSales(openedAt: string, closedAt?: string) {
   const endTime = closedAt || new Date().toISOString();
 
-  // Get all completed orders in the shift window
-  const orders = db
+  const invoices = db
     .select()
-    .from(schema.orders)
-    .where(eq(schema.orders.status, "COMPLETED"))
-    .all()
-    .filter((o) => o.createdAt >= openedAt && o.createdAt <= endTime);
-
-  // Get invoices for these orders
-  const orderIds = orders.map((o) => o.id);
-  const allInvoices = db.select().from(schema.invoices).all();
-  const invoices = allInvoices.filter((inv) => orderIds.includes(inv.orderId));
+    .from(schema.invoices)
+    .where(
+      and(
+        eq(schema.invoices.isPaid, true),
+        gte(schema.invoices.createdAt, openedAt),
+        lte(schema.invoices.createdAt, endTime)
+      )
+    )
+    .all();
 
   let totalCashSales = 0;
   let totalCardSales = 0;
@@ -130,13 +144,17 @@ function aggregateShiftSales(openedAt: string, closedAt?: string) {
   let totalDiscounts = 0;
   let totalTips = 0;
   let totalChangeDue = 0;
+  // Cash that physically ended up in the drawer (bill amounts + cash tips, net of change)
+  let cashCollected = 0;
 
   for (const inv of invoices) {
     const amount = inv.totalAmount;
+    const tip = inv.tipAmount ?? 0;
 
     switch (inv.paymentMode) {
       case "CASH":
         totalCashSales += amount;
+        cashCollected += amount + tip;
         break;
       case "CARD":
         totalCardSales += amount;
@@ -149,13 +167,13 @@ function aggregateShiftSales(openedAt: string, closedAt?: string) {
         break;
       case "SPLIT":
         totalSplitSales += amount;
-        // For splits, count the cash portion separately
+        // The cash legs of a split bill also land in the drawer
         if (inv.paymentSplits) {
           try {
             const splits = JSON.parse(inv.paymentSplits) as { mode: string; amount: number }[];
             for (const split of splits) {
-              if (split.mode === "CASH") {
-                totalCashSales += split.amount;
+              if (split.mode === "CASH" && Number.isFinite(split.amount)) {
+                cashCollected += split.amount;
               }
             }
           } catch {
@@ -166,21 +184,31 @@ function aggregateShiftSales(openedAt: string, closedAt?: string) {
     }
 
     totalDiscounts += inv.discountAmount;
-    totalTips += inv.tipAmount ?? 0;
+    totalTips += tip;
     totalChangeDue += inv.changeDue ?? 0;
   }
 
   return {
-    totalCashSales,
-    totalCardSales,
-    totalUpiSales,
-    totalOnlineSales,
-    totalSplitSales,
-    totalOrders: orders.length,
-    totalDiscounts,
-    totalTips,
-    totalChangeDue,
+    totalCashSales: round2(totalCashSales),
+    totalCardSales: round2(totalCardSales),
+    totalUpiSales: round2(totalUpiSales),
+    totalOnlineSales: round2(totalOnlineSales),
+    totalSplitSales: round2(totalSplitSales),
+    totalOrders: invoices.length,
+    totalDiscounts: round2(totalDiscounts),
+    totalTips: round2(totalTips),
+    totalChangeDue: round2(totalChangeDue),
+    cashCollected: round2(cashCollected),
   };
+}
+
+/**
+ * Cash that should be in the drawer: the opening float plus every rupee of
+ * cash kept from customers. Change handed back never entered the drawer's
+ * balance (tendered − change = amount kept), so it is not subtracted again.
+ */
+function expectedCashInDrawer(openingFloat: number, cashCollected: number): number {
+  return round2(openingFloat + cashCollected);
 }
 
 /**
@@ -196,9 +224,34 @@ export function generateXReport(shiftId: string): ShiftReportData {
 
   if (!shift) throw new Error("Shift not found");
 
-  const sales = aggregateShiftSales(shift.openedAt, undefined);
+  // A closed shift's figures were frozen at close — report those, not a recount
+  if (shift.status === "CLOSED") {
+    return {
+      id: shift.id,
+      cashierId: shift.cashierId,
+      cashierName: shift.cashierName,
+      openedAt: shift.openedAt,
+      closedAt: shift.closedAt,
+      openingFloat: shift.openingFloat,
+      totalCashSales: shift.totalCashSales,
+      totalCardSales: shift.totalCardSales,
+      totalUpiSales: shift.totalUpiSales,
+      totalOnlineSales: shift.totalOnlineSales,
+      totalSplitSales: shift.totalSplitSales,
+      totalOrders: shift.totalOrders,
+      totalDiscounts: shift.totalDiscounts,
+      totalTips: shift.totalTips,
+      totalChangeDue: shift.totalChangeDue,
+      expectedCashInDrawer: shift.expectedCashInDrawer,
+      actualCashInDrawer: shift.actualCashInDrawer,
+      cashVariance: shift.cashVariance,
+      status: shift.status,
+      reportType: "Z",
+    };
+  }
 
-  const expectedCash = shift.openingFloat + sales.totalCashSales - sales.totalChangeDue;
+  const { cashCollected, ...sales } = aggregateShiftSales(shift.openedAt, undefined);
+  const expectedCash = expectedCashInDrawer(shift.openingFloat, cashCollected);
 
   return {
     id: shift.id,
@@ -220,7 +273,7 @@ export function generateXReport(shiftId: string): ShiftReportData {
  * Close a shift with cash reconciliation.
  * Generates a Z-Report (final, immutable shift close).
  */
-export function closeShift(
+export const closeShift = atomicFn(function closeShift(
   shiftId: string,
   input: ShiftCloseInput
 ): ShiftReportData {
@@ -232,12 +285,15 @@ export function closeShift(
 
   if (!shift) throw new Error("Shift not found");
   if (shift.status === "CLOSED") throw new Error("Shift is already closed");
+  if (typeof input.actualCashInDrawer !== "number" || !Number.isFinite(input.actualCashInDrawer) || input.actualCashInDrawer < 0) {
+    throw new Error("actualCashInDrawer must be zero or more");
+  }
 
   const now = new Date().toISOString();
-  const sales = aggregateShiftSales(shift.openedAt, now);
+  const { cashCollected, ...sales } = aggregateShiftSales(shift.openedAt, now);
 
-  const expectedCash = shift.openingFloat + sales.totalCashSales - sales.totalChangeDue;
-  const cashVariance = input.actualCashInDrawer - expectedCash;
+  const expectedCash = expectedCashInDrawer(shift.openingFloat, cashCollected);
+  const cashVariance = round2(input.actualCashInDrawer - expectedCash);
 
   // Update shift record with final tallies
   db.update(schema.cashierShifts)
@@ -247,7 +303,7 @@ export function closeShift(
       expectedCashInDrawer: expectedCash,
       actualCashInDrawer: input.actualCashInDrawer,
       cashVariance,
-      notes: input.notes ?? null,
+      notes: typeof input.notes === "string" && input.notes.trim() ? input.notes.trim().slice(0, 1000) : null,
       status: "CLOSED",
     })
     .where(eq(schema.cashierShifts.id, shiftId))
@@ -267,7 +323,7 @@ export function closeShift(
     status: "CLOSED",
     reportType: "Z",
   };
-}
+});
 
 /**
  * Get shift history (most recent first).
@@ -276,10 +332,9 @@ export function getShiftHistory(limit: number = 20) {
   return db
     .select()
     .from(schema.cashierShifts)
-    .orderBy(schema.cashierShifts.openedAt)
-    .limit(limit)
-    .all()
-    .reverse(); // Most recent first
+    .orderBy(desc(schema.cashierShifts.openedAt))
+    .limit(Math.min(Math.max(Math.floor(limit) || 20, 1), 200))
+    .all();
 }
 
 /**

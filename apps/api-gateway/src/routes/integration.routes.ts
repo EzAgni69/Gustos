@@ -30,11 +30,25 @@ import { db } from "../db/index.js";
 import { getOrganizationId, requireMinRole } from "../middleware/auth.js";
 import { success, paginated, error } from "../utils/response.js";
 import { webhookQueue } from "../config/queue.js";
+import { createRateLimiter } from "../utils/rate-limit.js";
+import { isProduction } from "../utils/env.js";
 
+
+/** Credentials are write-only: responses only ever carry a masked hint. */
+function maskSecrets<T extends { apiKey?: string | null; webhookSecret?: string | null }>(config: T): T {
+  return {
+    ...config,
+    apiKey: config.apiKey ? "••••" + config.apiKey.slice(-4) : null,
+    webhookSecret: config.webhookSecret ? "••••" : null,
+  };
+}
+
+// Generous enough for a busy aggregator, tight enough to blunt a flood
+const webhookLimiter = createRateLimiter({ name: "zomato-webhook", max: 600, windowMs: 60_000 });
 
 export async function integrationRoutes(fastify: FastifyInstance) {
   // ─── Zomato Webhook (unauthenticated — verified by webhook secret) ───
-  fastify.post("/api/v1/integrations/webhooks/zomato", async (request, reply) => {
+  fastify.post("/api/v1/integrations/webhooks/zomato", { preHandler: [webhookLimiter.byIp] }, async (request, reply) => {
     const body = zomatoWebhookOrderSchema.parse(request.body);
 
     // Find the integration config by restaurant ID
@@ -52,17 +66,28 @@ export async function integrationRoutes(fastify: FastifyInstance) {
         .send(error("No active Zomato integration found for this restaurant"));
     }
 
-    // Phase 1: HMAC Verification
-    const signature = request.headers["x-zomato-signature"] as string | undefined;
-    if (config.webhookSecret && signature) {
-      const hmac = crypto.createHmac("sha256", config.webhookSecret);
-      hmac.update(JSON.stringify(request.body));
-      const expectedSignature = hmac.digest("hex");
-      if (signature !== expectedSignature) {
+    // HMAC verification over the exact bytes received. An integration without
+    // a secret cannot be verified at all, so in production it is refused —
+    // otherwise anyone who knows a restaurant id could inject orders.
+    const signatureHeader = request.headers["x-zomato-signature"];
+    const signature = (Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader)?.trim().replace(/^sha256=/i, "");
+    if (config.webhookSecret) {
+      if (!signature) {
+        return reply.status(401).send(error("Missing webhook signature"));
+      }
+      const raw = (request as { rawBody?: string }).rawBody ?? JSON.stringify(request.body);
+      const expected = crypto.createHmac("sha256", config.webhookSecret).update(raw).digest("hex");
+      const given = Buffer.from(signature.toLowerCase(), "utf8");
+      const wanted = Buffer.from(expected, "utf8");
+      if (given.length !== wanted.length || !crypto.timingSafeEqual(given, wanted)) {
         return reply.status(401).send(error("Invalid webhook signature"));
       }
-    } else if (config.webhookSecret && !signature) {
-      return reply.status(401).send(error("Missing webhook signature"));
+    } else if (isProduction()) {
+      request.log.error(
+        { integrationId: config.id },
+        "Zomato webhook rejected: integration has no webhook secret configured"
+      );
+      return reply.status(401).send(error("Webhook secret is not configured for this integration"));
     }
 
     // Phase 1: Deduplication (Idempotency)
@@ -75,7 +100,7 @@ export async function integrationRoutes(fastify: FastifyInstance) {
     });
 
     if (existingOrder) {
-      console.log(`[Webhook] Duplicate Zomato order ${body.order_id} ignored`);
+      request.log.info({ externalOrderId: body.order_id }, "Duplicate Zomato order ignored");
       return reply.status(200).send(
         success(
           { onlineOrderId: existingOrder.id, status: existingOrder.status },
@@ -105,25 +130,23 @@ export async function integrationRoutes(fastify: FastifyInstance) {
       .returning();
     const onlineOrder = results[0]!;
 
-    // TODO: Notify outlet devices about new online order (via sync or push)
-    console.log(`📡 Online order received for outlet ${config.outletId}:`, {
-      id: onlineOrder.id,
-      provider: "ZOMATO",
-      externalOrderId: body.order_id,
-      customerName: body.customer?.name,
-      totalAmount: body.total,
-      status: "RECEIVED",
-    });
+    // The worker maps the items, pushes the order to the outlet's POS and
+    // starts the acknowledgement timeout. Keyed by order so a retry cannot double-send.
+    await webhookQueue.add(
+      "process-zomato-webhook",
+      {
+        onlineOrderId: onlineOrder.id,
+        organizationId: config.organizationId,
+        outletId: config.outletId,
+        payload: body,
+      },
+      { jobId: `zomato-${onlineOrder.id}` }
+    );
 
-    // Enqueue job to publish to POS and handle offline timeout
-    await webhookQueue.add("process-zomato-webhook", {
-      onlineOrderId: onlineOrder.id,
-      organizationId: config.organizationId,
-      outletId: config.outletId,
-      payload: body,
-    });
-
-    console.log(`🍕 ZOMATO ORDER RECEIVED — ${body.order_id} → outlet ${config.outletId}`);
+    request.log.info(
+      { onlineOrderId: onlineOrder.id, externalOrderId: body.order_id, outletId: config.outletId },
+      "Zomato order received"
+    );
 
     return reply.status(200).send(
       success(
@@ -192,6 +215,15 @@ export async function integrationRoutes(fastify: FastifyInstance) {
           .send(error(`${body.provider} integration already exists for this outlet`));
       }
 
+      // The outlet must be one of the caller's own
+      const outlet = await db.query.outlets.findFirst({
+        where: and(eq(schema.outlets.id, body.outletId), eq(schema.outlets.organizationId, orgId)),
+        columns: { id: true },
+      });
+      if (!outlet) {
+        return reply.status(400).send(error("Outlet not found in your organization"));
+      }
+
       const results = await db
         .insert(schema.integrationConfigs)
         .values({
@@ -201,7 +233,7 @@ export async function integrationRoutes(fastify: FastifyInstance) {
         .returning();
       const config = results[0]!;
 
-      return reply.status(201).send(success(config, "Integration config created"));
+      return reply.status(201).send(success(maskSecrets(config), "Integration config created"));
     }
   );
 
@@ -229,7 +261,7 @@ export async function integrationRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(error("Integration config not found"));
       }
 
-      return reply.send(success(results[0], "Integration config updated"));
+      return reply.send(success(maskSecrets(results[0]!), "Integration config updated"));
     }
   );
 

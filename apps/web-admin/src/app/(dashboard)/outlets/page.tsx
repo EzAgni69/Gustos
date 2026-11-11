@@ -56,6 +56,8 @@ import {
   Building2,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { FranchiseFormDialog, FranchiseDeleteDialog } from "@/components/outlets/FranchiseDialogs";
+import { SyncMonitor } from "@/components/outlets/SyncMonitor";
 
 export default function OutletsPage() {
   const { toast } = useToast();
@@ -76,6 +78,8 @@ export default function OutletsPage() {
   // ─── Franchise Edit/Delete State (dialogs implemented in task 2.2 / 2.3) ───
   const [editingFranchise, setEditingFranchise] = useState<Franchise | null>(null);
   const [isFranchiseModalOpen, setIsFranchiseModalOpen] = useState(false);
+  const [deletingFranchise, setDeletingFranchise] = useState<Franchise | null>(null);
+  const [activeTab, setActiveTab] = useState("outlets");
 
   const outletForm = useForm<CreateOutlet & { isActive?: boolean }>({
     resolver: zodResolver(createOutletSchema) as any,
@@ -242,38 +246,19 @@ export default function OutletsPage() {
     }
   };
 
-  // ─── Franchise Edit / Delete Handlers ───
-  // Full dialog UI is implemented in task 2.2 (edit) and task 2.3 (delete).
-  // These stubs open the modal shell so the card actions are functional.
+  // ─── Franchise Create / Rename / Delete ───
+  const openCreateFranchiseModal = () => {
+    setEditingFranchise(null);
+    setIsFranchiseModalOpen(true);
+  };
+
   const openEditFranchiseModal = (franchise: Franchise) => {
     setEditingFranchise(franchise);
     setIsFranchiseModalOpen(true);
   };
 
   const handleDeleteFranchise = (franchise: Franchise) => {
-    // Full cascade-delete dialog (task 2.3); provisional confirm for now
-    if (
-      !confirm(
-        `Delete franchise "${franchise.name}"? This will also delete all its outlets, tables, menus, and orders.`
-      )
-    )
-      return;
-
-    apiFetch(`/franchises/${franchise.id}`, { method: "DELETE" }).then((res) => {
-      if (res.success) {
-        setFranchises((prev) => prev.filter((f) => f.id !== franchise.id));
-        // Also remove orphaned outlets from local state
-        setOutlets((prev) =>
-          prev.filter((o) => o.franchiseId !== franchise.id)
-        );
-      } else {
-        toast({
-          title: "Delete failed",
-          description: res.message || "Failed to delete franchise",
-          variant: "error",
-        });
-      }
-    });
+    setDeletingFranchise(franchise);
   };
 
   // ─── Shared outlet rows renderer ───
@@ -357,17 +342,25 @@ export default function OutletsPage() {
           </p>
         </div>
 
-        <Button
-          onClick={() => openCreateOutletModal()}
-          className="bg-blue-600 hover:bg-blue-700"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Add Outlet
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={openCreateFranchiseModal}>
+            <Plus className="w-4 h-4 mr-2" />
+            New Franchise
+          </Button>
+          <Button
+            onClick={() => openCreateOutletModal()}
+            className="bg-blue-600 hover:bg-blue-700"
+            disabled={!loading && franchises.length === 0}
+            title={!loading && franchises.length === 0 ? "Create a franchise first" : undefined}
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Add Outlet
+          </Button>
+        </div>
       </div>
 
       {/* ─── Tabs ─── */}
-      <Tabs defaultValue="outlets" className="w-full">
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(String(v))} className="w-full">
         <TabsList className="mb-4">
           <TabsTrigger value="outlets" className="gap-2">
             <Store className="w-4 h-4" />
@@ -526,22 +519,7 @@ export default function OutletsPage() {
 
         {/* ─── Edge Sync Monitor Tab ─── */}
         <TabsContent value="sync_monitor">
-          <Card className="shadow-xs border-gray-100">
-            <CardHeader className="bg-gray-50/50 border-b border-gray-100">
-              <div className="flex items-center gap-2">
-                <Wifi className="w-5 h-5 text-blue-600" />
-                <div>
-                  <CardTitle className="text-lg">Edge Sync Monitor</CardTitle>
-                  <CardDescription>
-                    Real-time monitor of local POS servers syncing to cloud.
-                  </CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-8 text-center text-gray-500">
-              Dashboard for sync latency and online/offline heartbeats coming soon.
-            </CardContent>
-          </Card>
+          <SyncMonitor active={activeTab === "sync_monitor"} />
         </TabsContent>
       </Tabs>
 
@@ -674,29 +652,24 @@ export default function OutletsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ─── Franchise Edit Dialog shell (full implementation in task 2.2) ─── */}
-      <Dialog open={isFranchiseModalOpen} onOpenChange={setIsFranchiseModalOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Edit Franchise</DialogTitle>
-            <DialogDescription>
-              Update the details for{" "}
-              <span className="font-medium">{editingFranchise?.name}</span>.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-4 text-sm text-gray-500 text-center">
-            Franchise edit form coming in the next task.
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsFranchiseModalOpen(false)}
-            >
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ─── Franchise dialogs ─── */}
+      <FranchiseFormDialog
+        open={isFranchiseModalOpen}
+        franchise={editingFranchise}
+        onOpenChange={setIsFranchiseModalOpen}
+        onSaved={(saved, created) =>
+          setFranchises((prev) => (created ? [...prev, saved] : prev.map((f) => (f.id === saved.id ? saved : f))))
+        }
+      />
+      <FranchiseDeleteDialog
+        franchise={deletingFranchise}
+        outletCount={deletingFranchise ? (outletsByFranchise.get(deletingFranchise.id)?.length ?? 0) : 0}
+        onOpenChange={(open) => !open && setDeletingFranchise(null)}
+        onDeleted={(removed) => {
+          setFranchises((prev) => prev.filter((f) => f.id !== removed.id));
+          setOutlets((prev) => prev.filter((o) => o.franchiseId !== removed.id));
+        }}
+      />
     </div>
   );
 }

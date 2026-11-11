@@ -43,6 +43,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Users, Plus, MoreHorizontal, Loader2, Edit, Trash2, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { PermissionMatrix } from "@/components/staff/PermissionMatrix";
 import { getRoleBadgeClass, resolveOutletName, filterStaff } from "@/lib/staff-utils";
 import { EmptyState } from "@/components/shared/EmptyState";
 
@@ -440,20 +441,7 @@ export default function StaffPage() {
         </TabsContent>
 
         <TabsContent value="roles">
-          <Card className="shadow-xs border-gray-100">
-            <CardHeader className="bg-gray-50/50 border-b border-gray-100">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-blue-600" />
-                <div>
-                  <CardTitle className="text-lg">Permission Matrix</CardTitle>
-                  <CardDescription>Configure specific permissions for each role dynamically.</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-8 text-center text-gray-500">
-              Permission UI editor coming soon.
-            </CardContent>
-          </Card>
+          <PermissionMatrix />
         </TabsContent>
       </Tabs>
     </div>

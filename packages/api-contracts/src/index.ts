@@ -1360,6 +1360,96 @@ export type PurchaseOrderItem = z.infer<typeof purchaseOrderItemSchema>;
 export type GoodsReceivedNote = z.infer<typeof goodsReceivedNoteSchema>;
 export type GRNItem = z.infer<typeof grnItemSchema>;
 
+// ── Procurement requests ──
+
+const procurementLineSchema = z.object({
+  inventoryItemId: z.string().uuid(),
+  quantity: z.number().positive().max(1_000_000),
+  unitPrice: z.number().min(0).max(10_000_000),
+});
+
+export const createPurchaseOrderSchema = z.object({
+  outletId: z.string().uuid(),
+  vendorId: z.string().uuid(),
+  expectedDeliveryDate: z.coerce.date().optional().nullable(),
+  notes: z.string().max(2000).optional().nullable(),
+  items: z.array(procurementLineSchema).min(1, "Add at least one item").max(200),
+});
+
+export const updatePurchaseOrderSchema = z.object({
+  vendorId: z.string().uuid().optional(),
+  expectedDeliveryDate: z.coerce.date().optional().nullable(),
+  notes: z.string().max(2000).optional().nullable(),
+  items: z.array(procurementLineSchema).min(1).max(200).optional(),
+});
+
+/** Status changes a person may make. PARTIAL / FULFILLED are set by receiving goods. */
+export const updatePurchaseOrderStatusSchema = z.object({
+  status: z.enum(["SENT", "CANCELLED"]),
+});
+
+export const createGrnSchema = z.object({
+  outletId: z.string().uuid(),
+  purchaseOrderId: z.string().uuid().optional().nullable(),
+  receivedDate: z.coerce.date().optional(),
+  notes: z.string().max(2000).optional().nullable(),
+  items: z
+    .array(
+      z.object({
+        inventoryItemId: z.string().uuid(),
+        receivedQuantity: z.number().positive().max(1_000_000),
+        unitPrice: z.number().min(0).max(10_000_000),
+      })
+    )
+    .min(1, "Add at least one received item")
+    .max(200),
+});
+
+export const listProcurementQuerySchema = z.object({
+  outletId: z.string().optional(),
+  status: purchaseOrderStatusEnum.optional(),
+  vendorId: z.string().uuid().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export type CreatePurchaseOrder = z.infer<typeof createPurchaseOrderSchema>;
+export type UpdatePurchaseOrder = z.infer<typeof updatePurchaseOrderSchema>;
+export type CreateGrn = z.infer<typeof createGrnSchema>;
+
+/** A purchase order as returned by the API, with its vendor and lines. */
+export interface PurchaseOrderDetail extends PurchaseOrder {
+  vendorName: string;
+  outletName?: string;
+  items: (PurchaseOrderItem & { inventoryItemName: string; unit: string; receivedQuantity: number })[];
+}
+
+/** A goods-received note as returned by the API, with its lines. */
+export interface GrnDetail extends GoodsReceivedNote {
+  poNumber?: string | null;
+  vendorName?: string | null;
+  totalValue: number;
+  items: (GRNItem & { inventoryItemName: string; unit: string })[];
+}
+
+/** Sync health of one outlet's POS, as shown in the ERP's Edge Sync Monitor. */
+export interface OutletSyncStatus {
+  outletId: string;
+  outletName: string;
+  /** ONLINE: heard from recently · DEGRADED: late · OFFLINE: silent · NEVER: never connected */
+  status: "ONLINE" | "DEGRADED" | "OFFLINE" | "NEVER";
+  lastSeen: string | null;
+  secondsSinceLastSeen: number | null;
+  latencyMs: number | null;
+  /** Events waiting on the POS to reach the cloud, as last reported by the POS */
+  pendingUploads: number | null;
+  /** Events the cloud kept rejecting, parked on the POS */
+  deadUploads: number | null;
+  /** ERP edits waiting to be applied by the POS */
+  pendingCommands: number;
+  posVersion: string | null;
+}
+
 // ─── Compliance / Tax Rules ───
 
 export const taxRuleSchema = z.object({

@@ -1335,6 +1335,10 @@ export const posHeartbeats = pgTable(
     lastSeen: timestamp("last_seen").defaultNow().notNull(),
     latencyMs: integer("latency_ms").default(0).notNull(),
     status: varchar("status", { length: 20 }).default("ONLINE").notNull(), // ONLINE, OFFLINE, DEGRADED
+    // Reported by the POS with each heartbeat
+    pendingUploads: integer("pending_uploads").default(0).notNull(), // outbox events not yet in the cloud
+    deadUploads: integer("dead_uploads").default(0).notNull(), // events the cloud kept rejecting
+    posVersion: varchar("pos_version", { length: 30 }),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

@@ -40,6 +40,7 @@ vi.mock("../../socket/events.js", () => ({
 
 vi.mock("../print.service.js", () => ({
   queuePrint: vi.fn().mockResolvedValue(undefined),
+  isKotPrintingEnabled: () => false,
 }));
 
 vi.mock("../sync.service.js", () => ({

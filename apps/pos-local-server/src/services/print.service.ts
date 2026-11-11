@@ -11,12 +11,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlink, writeFile } from "node:fs/promises";
 import { v4 as uuid } from "uuid";
-import { eq, asc, inArray } from "drizzle-orm";
+import { eq, and, asc, inArray, lt } from "drizzle-orm";
 import { renderToConsole, renderToEscPos, generateCashDrawerKick, type ReceiptLine } from "@gusto/printer";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { afterCommit } from "../db/tx.js";
 
-export type PrintSource = "pos" | "captain";
+/**
+ * Which printer a job goes to:
+ *  - "pos"      billing counter printer (POS_BILL_PRINTER_*)
+ *  - "captain"  floor / WiFi printer (CAPTAIN_BILL_PRINTER_*)
+ *  - "kitchen"  kitchen ticket printer (KITCHEN_PRINTER_*), falls back to "pos"
+ */
+export type PrintSource = "pos" | "captain" | "kitchen";
 export type PrintTransport = "preview" | "network" | "system" | "device";
 export type PrintTemplateType = "BILL" | "KOT" | "SHIFT_REPORT";
 
@@ -38,11 +45,21 @@ interface PrinterConfig {
 let retryIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let isRetrying = false;
 
+/** A kitchen ticket that could not print within this window is no longer useful. */
+const KOT_JOB_MAX_AGE_MS = Number(process.env.KOT_PRINT_MAX_AGE_MINUTES ?? 20) * 60_000;
+/** Bills / reports are worth printing late, but not days late. */
+const JOB_MAX_AGE_MS = 12 * 3_600_000;
+const FINISHED_JOB_RETENTION_DAYS = 3;
+
 /**
  * Queue a print job and attempt to print it immediately.
  * If the printer is offline/unreachable, it remains in the queue for the retry loop.
+ *
+ * The job row is written in the caller's transaction; the physical print is
+ * only attempted once that transaction commits, so a rolled-back order can
+ * never produce paper.
  */
-export async function queuePrint(
+export function queuePrint(
   template: ReceiptLine[],
   templateType: PrintTemplateType,
   source: PrintSource = "pos"
@@ -50,7 +67,6 @@ export async function queuePrint(
   const jobId = uuid();
   const now = new Date().toISOString();
 
-  // 1. Insert into print queue as PENDING
   db.insert(schema.printQueue)
     .values({
       id: jobId,
@@ -62,13 +78,64 @@ export async function queuePrint(
     })
     .run();
 
-  // 2. Attempt immediate print
-  try {
-    await executePrintJob(jobId, template, source);
-  } catch (err) {
-    console.warn(`[Printer] ⚠️ Immediate print failed for job ${jobId}. Queued for retry.`);
-    // The retry loop will pick it up
-  }
+  return new Promise<void>((resolve) => {
+    afterCommit(() => {
+      executePrintJob(jobId, template, source)
+        .catch(() => {
+          console.warn(`[Printer] ⚠️ Immediate print failed for job ${jobId}. Queued for retry.`);
+        })
+        .finally(resolve);
+    });
+  });
+}
+
+/** True when new KOTs should also be printed on paper (kitchen printer configured or forced). */
+export function isKotPrintingEnabled(): boolean {
+  const flag = process.env.KOT_AUTO_PRINT?.toLowerCase();
+  if (flag === "true") return true;
+  if (flag === "false") return false;
+  return Boolean(
+    process.env.KITCHEN_PRINTER_HOST || process.env.KITCHEN_PRINTER_QUEUE || process.env.KITCHEN_PRINTER_DEVICE
+  );
+}
+
+/**
+ * Jobs left in PRINTING belong to a previous process that died mid-print.
+ * Put them back in the queue on startup.
+ */
+export function recoverInterruptedPrintJobs(): number {
+  return db
+    .update(schema.printQueue)
+    .set({ status: "PENDING" })
+    .where(eq(schema.printQueue.status, "PRINTING"))
+    .run().changes;
+}
+
+/** Give up on jobs that are too old to be useful and delete finished history. */
+export function prunePrintQueue(): number {
+  const now = Date.now();
+  const expired = db
+    .update(schema.printQueue)
+    .set({ status: "EXPIRED", errorMessage: "Printer was unavailable for too long" })
+    .where(
+      and(
+        inArray(schema.printQueue.status, ["PENDING", "FAILED"]),
+        lt(schema.printQueue.createdAt, new Date(now - JOB_MAX_AGE_MS).toISOString())
+      )
+    )
+    .run().changes;
+
+  const deleted = db
+    .delete(schema.printQueue)
+    .where(
+      and(
+        inArray(schema.printQueue.status, ["COMPLETED", "EXPIRED"]),
+        lt(schema.printQueue.createdAt, new Date(now - FINISHED_JOB_RETENTION_DAYS * 86_400_000).toISOString())
+      )
+    )
+    .run().changes;
+
+  return expired + deleted;
 }
 
 /**
@@ -121,6 +188,19 @@ export async function retryFailedPrints(): Promise<void> {
   isRetrying = true;
 
   try {
+    // A kitchen ticket printed long after it was fired only causes confusion
+    // (the KDS already showed it) — expire those instead of printing them late.
+    db.update(schema.printQueue)
+      .set({ status: "EXPIRED", errorMessage: "Kitchen ticket expired before the printer came back" })
+      .where(
+        and(
+          inArray(schema.printQueue.status, ["PENDING", "FAILED"]),
+          eq(schema.printQueue.templateType, "KOT"),
+          lt(schema.printQueue.createdAt, new Date(Date.now() - KOT_JOB_MAX_AGE_MS).toISOString())
+        )
+      )
+      .run();
+
     // Find all PENDING or FAILED jobs that haven't exceeded maxRetries
     const jobs = db
       .select()
@@ -153,6 +233,8 @@ export async function retryFailedPrints(): Promise<void> {
  */
 export function startPrintRetryLoop(intervalMs = 30_000): void {
   if (retryIntervalHandle) return;
+  const recovered = recoverInterruptedPrintJobs();
+  if (recovered > 0) console.log(`[Printer] Requeued ${recovered} print job(s) interrupted by the last shutdown`);
   console.log(`[Printer] Starting offline print retry loop (interval: ${intervalMs / 1000}s)`);
   
   retryIntervalHandle = setInterval(() => {
@@ -174,19 +256,39 @@ export function stopPrintRetryLoop(): void {
  * Get current print queue statistics for the POS UI.
  */
 export function getPrintQueueStatus() {
-  const jobs = db.select().from(schema.printQueue).all();
-  
+  const jobs = db
+    .select({ status: schema.printQueue.status, retryCount: schema.printQueue.retryCount, maxRetries: schema.printQueue.maxRetries })
+    .from(schema.printQueue)
+    .all();
+
   return {
-    pending: jobs.filter(j => j.status === "PENDING").length,
-    printing: jobs.filter(j => j.status === "PRINTING").length,
-    failed: jobs.filter(j => j.status === "FAILED").length,
-    completed: jobs.filter(j => j.status === "COMPLETED").length,
+    pending: jobs.filter((j) => j.status === "PENDING").length,
+    printing: jobs.filter((j) => j.status === "PRINTING").length,
+    failed: jobs.filter((j) => j.status === "FAILED").length,
+    /** Failed jobs that used up their automatic retries — need a manual retry */
+    stuck: jobs.filter((j) => j.status === "FAILED" && j.retryCount >= j.maxRetries).length,
+    expired: jobs.filter((j) => j.status === "EXPIRED").length,
+    completed: jobs.filter((j) => j.status === "COMPLETED").length,
   };
+}
+
+/** Manual retry from the POS: give exhausted jobs a fresh set of attempts, then run the queue. */
+export async function retryAllFailedPrints(): Promise<void> {
+  db.update(schema.printQueue).set({ retryCount: 0 }).where(eq(schema.printQueue.status, "FAILED")).run();
+  await retryFailedPrints();
 }
 
 // ─── Transport Implementation ───
 
 function readEnv(source: PrintSource, key: string): string | undefined {
+  if (source === "kitchen") {
+    // Dedicated kitchen printer, else share the billing counter printer
+    return (
+      process.env[`KITCHEN_PRINTER_${key}`] ||
+      process.env[`POS_BILL_PRINTER_${key}`] ||
+      process.env[`BILL_PRINTER_${key}`]
+    );
+  }
   const prefix = source === "captain" ? "CAPTAIN" : "POS";
   return process.env[`${prefix}_BILL_PRINTER_${key}`] || process.env[`BILL_PRINTER_${key}`];
 }
@@ -279,6 +381,14 @@ export async function triggerCashDrawer(source: PrintSource = "pos"): Promise<Pr
 
 function writeToNetworkPrinter(buffer: Buffer, host: string, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve();
+    };
+
     const socket = createConnection({ host, port, timeout: 5000 }, () => {
       socket.write(buffer, (err) => {
         if (err) {
@@ -289,11 +399,9 @@ function writeToNetworkPrinter(buffer: Buffer, host: string, port: number): Prom
       });
     });
 
-    socket.on("close", (hadError) => {
-      if (!hadError) resolve();
-    });
-    socket.on("timeout", () => socket.destroy(new Error("Printer connection timed out")));
-    socket.on("error", reject);
+    socket.on("close", (hadError) => done(hadError ? new Error("Printer connection closed with an error") : undefined));
+    socket.on("timeout", () => socket.destroy(new Error(`Printer ${host}:${port} timed out`)));
+    socket.on("error", (err) => done(err));
   });
 }
 

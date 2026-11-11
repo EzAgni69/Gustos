@@ -13,6 +13,8 @@ import {
   pinLogin,
   setBaseUrl,
   setCurrentUserId,
+  setAuthToken,
+  setUnauthorizedHandler,
 } from "../services/api";
 import { connectSocket, disconnectSocket } from "../services/socket";
 
@@ -25,6 +27,8 @@ export interface AuthUser {
 interface AuthState {
   serverIp: string | null;
   user: AuthUser | null;
+  /** Session token from PIN login, sent with every request */
+  token: string | null;
   isConnected: boolean;
   isLoading: boolean;
   isHydrated: boolean;
@@ -42,6 +46,7 @@ export const useAuthStore = create<AuthState>()(
     (set, get) => ({
       serverIp: null,
       user: null,
+      token: null,
       isConnected: false,
       isLoading: false,
       isHydrated: false,
@@ -83,7 +88,11 @@ export const useAuthStore = create<AuthState>()(
           };
 
           setCurrentUserId(user.id);
-          set({ user, isLoading: false });
+          setAuthToken(userData.token);
+          set({ user, token: userData.token, isLoading: false });
+          // Reconnect so queued offline actions drain under the new session
+          const { serverIp } = get();
+          if (serverIp) connectSocket(serverIp, user.id);
           return user;
         } catch (err) {
           set({ isLoading: false });
@@ -93,21 +102,24 @@ export const useAuthStore = create<AuthState>()(
 
       logoutUser: () => {
         setCurrentUserId(null);
-        set({ user: null });
+        setAuthToken(null);
+        set({ user: null, token: null });
       },
 
       disconnectServer: () => {
         setCurrentUserId(null);
+        setAuthToken(null);
         disconnectSocket();
-        set({ user: null, isConnected: false, serverIp: null });
+        set({ user: null, token: null, isConnected: false, serverIp: null });
       },
 
       restoreSession: () => {
-        const { serverIp, user } = get();
+        const { serverIp, user, token } = get();
         if (serverIp) {
           setBaseUrl(serverIp);
-          if (user) {
+          if (user && token) {
             setCurrentUserId(user.id);
+            setAuthToken(token);
           }
           // Reconnect socket
           connectSocket(serverIp, user?.id);
@@ -122,19 +134,34 @@ export const useAuthStore = create<AuthState>()(
       partialize: (state) => ({
         serverIp: state.serverIp,
         user: state.user,
+        token: state.token,
       }),
       onRehydrateStorage: () => (state) => {
+        // A session saved by an older build has no token — ask for the PIN again
+        const hasSession = !!state?.user && !!state?.token;
         if (state?.serverIp) {
           setBaseUrl(state.serverIp);
-          if (state.user) {
-            setCurrentUserId(state.user.id);
+          if (hasSession) {
+            setCurrentUserId(state.user!.id);
+            setAuthToken(state.token!);
           }
-          connectSocket(state.serverIp, state.user?.id);
-          useAuthStore.setState({ isConnected: true, isHydrated: true });
+          connectSocket(state.serverIp, hasSession ? state.user!.id : null);
+          useAuthStore.setState({
+            isConnected: true,
+            isHydrated: true,
+            ...(hasSession ? {} : { user: null, token: null }),
+          });
         } else {
-          useAuthStore.setState({ isHydrated: true });
+          useAuthStore.setState({ isHydrated: true, user: null, token: null });
         }
       },
     }
   )
 );
+
+// The server rejected our session (expired, or the user was deactivated in the ERP)
+setUnauthorizedHandler(() => {
+  if (useAuthStore.getState().user) {
+    useAuthStore.getState().logoutUser();
+  }
+});

@@ -26,13 +26,17 @@ router.post("/orders/:id/checkout", (req, res) => {
         invoiceNumber: result.invoiceNumber,
         totalAmount: result.totals.grandTotal,
         tipAmount: result.tipAmount,
+        payableTotal: result.payableTotal,
+        tenderedAmount: result.tenderedAmount,
+        changeDue: result.changeDue,
         paymentMode: result.paymentMode,
+        paymentSubMethod: result.paymentSubMethod,
       },
       message: `Payment received — ${result.invoiceNumber}`,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Checkout failed";
-    res.status(400).json({ success: false, message });
+    res.status(message === "Order not found" ? 404 : 400).json({ success: false, message });
   }
 });
 

@@ -19,7 +19,7 @@ import {
   type GSTRate,
   type InvoiceRecord,
 } from "@gusto/core-logic";
-import { printBillTemplate, queuePrint, getPrintQueueStatus, retryFailedPrints, triggerCashDrawer, type PrintSource } from "../services/print.service.js";
+import { printBillTemplate, queuePrint, getPrintQueueStatus, retryAllFailedPrints, triggerCashDrawer, type PrintSource } from "../services/print.service.js";
 import { emitTableStatusChanged } from "../socket/events.js";
 
 const router = Router();
@@ -30,7 +30,7 @@ function parsePrintSource(value: unknown): PrintSource {
 }
 
 function canPrintBill(role?: string): boolean {
-  if (!role) return true;
+  if (!role) return false;
   return ["SUPER_ADMIN", "ADMIN", "POS_ADMIN", "OWNER", "MANAGER", "CASHIER", "WAITER"].includes(role);
 }
 
@@ -298,7 +298,7 @@ router.post("/retry", async (req, res) => {
   }
 
   try {
-    await retryFailedPrints();
+    await retryAllFailedPrints();
     const status = getPrintQueueStatus();
     res.json({ success: true, message: "Retried failed print jobs", data: status });
   } catch (err: unknown) {

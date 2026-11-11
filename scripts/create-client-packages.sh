@@ -55,6 +55,43 @@ elif [ -f "$ROOT_DIR/data/local.sqlite" ]; then
 fi
 chmod 666 "$DIST_DIR/gusto-pos-desktop/data/local.sqlite" 2>/dev/null || true
 
+# Ship a clean database: keep menu, tables, staff and outlet settings, drop
+# every order/bill/shift/print job created while developing so the client
+# starts from zero and none of our test bills get uploaded to the cloud.
+PKG_DB="$DIST_DIR/gusto-pos-desktop/data/local.sqlite"
+if [ -f "$PKG_DB" ]; then
+  if ! command -v sqlite3 &> /dev/null; then
+    echo "❌ sqlite3 is required to clean the packaged database" >&2
+    exit 1
+  fi
+  sqlite3 "$PKG_DB" <<'SQL'
+PRAGMA foreign_keys = OFF;
+DELETE FROM kot_items;
+DELETE FROM kitchen_order_tickets;
+DELETE FROM invoices;
+DELETE FROM order_items;
+DELETE FROM orders;
+DELETE FROM cashier_shifts;
+DELETE FROM table_reservations;
+DELETE FROM print_queue;
+DELETE FROM sync_outbox;
+DELETE FROM event_log;
+DELETE FROM sequences;
+DELETE FROM sync_meta WHERE id = 'session-secret';
+UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL;
+PRAGMA foreign_keys = ON;
+VACUUM;
+SQL
+  echo "   Cleaned demo orders/bills/shifts from packaged database"
+fi
+
+# The cloud refuses POS sync without the shared key. Take it from the
+# environment of whoever builds the package (same value as POS_API_KEY on Railway).
+if [ -z "${POS_API_KEY:-}" ]; then
+  echo "⚠️  POS_API_KEY is not set: the packaged POS will work offline but cloud sync will be rejected."
+  echo "    Re-run as: POS_API_KEY=<value from Railway> ./scripts/create-client-packages.sh"
+fi
+
 # 5. Create Standalone POS Package runner
 echo "📄 Step 4: Writing launcher scripts & packaging all dependencies for POS Desktop..."
 
@@ -224,7 +261,7 @@ if errorlevel 1 (
 EOF
 
 # Pre-configure .env for local server
-cat << 'EOF' > "$DIST_DIR/gusto-pos-desktop/.env"
+cat << EOF > "$DIST_DIR/gusto-pos-desktop/.env"
 POS_LOCAL_PORT=8080
 POS_LOCAL_DB_PATH=./data/local.sqlite
 API_GATEWAY_URL=https://api-service-production-a0cd.up.railway.app
@@ -232,6 +269,8 @@ CLOUD_API_URL=https://api-service-production-a0cd.up.railway.app
 ORGANIZATION_ID=00000000-0000-0000-0000-000000000001
 OUTLET_ID=00000000-0000-0000-0000-000000000003
 CLOUD_SYNC_ENABLED=true
+# Must equal POS_API_KEY on the Railway api-gateway service
+POS_API_KEY=${POS_API_KEY:-}
 EOF
 
 # Copy comprehensive client handover guide if available
@@ -265,7 +304,8 @@ Welcome to the Gusto POS testing bundle! This self-contained package runs the Po
 
 ## 🔑 Test Staff PINs
 
-When prompted on the POS login screen:
+On the POS login screen **tap your name first, then enter the PIN**
+(several people share PIN 1234, so the name decides who is signed in):
 - **Cashier / Billing:** `1234` (Rahul Kumar)
 - **Manager / Admin:** `1234` (Priya Sharma)
 - **Owner Access:** `1234` (Dave Bijal)
@@ -334,8 +374,9 @@ To generate an installable `.apk` file that can be distributed directly to the c
 
 ## 🔑 Login & Connection
 
-1. **Server IP:** Enter the POS Server IP (e.g. `192.168.1.50:8080` or Railway cloud domain).
-2. **Staff PIN:** `5678` (Vikram Singh) or `1234`.
+1. **Server IP:** Enter the POS computer's Wi-Fi IP and port, e.g. `192.168.1.50:8080`
+   (the Captain talks to the POS in the restaurant, not to the Railway cloud).
+2. **Staff PIN:** `5678` (Vikram Singh).
 3. Select an available table, add food items, tap **"Fire KOT"**, and watch it pop up on the KDS screen instantly!
 EOF
 

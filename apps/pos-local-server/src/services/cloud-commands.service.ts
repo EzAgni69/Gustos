@@ -12,13 +12,14 @@
  *   ORDER_COMMAND { action: "DELETE", orderId }
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 import { cancelOrder } from "./order.service.js";
 import { queueOrderSnapshot, suppressOrderSnapshot } from "./order-sync.service.js";
-import { emitOrderUpdated, emitTableStatusChanged } from "../socket/events.js";
+import { emitOrderUpdated } from "../socket/events.js";
 
 const OUTLET_ID = process.env.OUTLET_ID || "";
 const API_GATEWAY_URL = process.env.API_GATEWAY_URL || "http://localhost:3001";
@@ -69,36 +70,15 @@ function logEvent(orderId: string, eventType: string, payload: Record<string, un
 }
 
 /**
- * Cancel an open order. Uses the normal cancel flow (releases the table, syncs);
- * falls back to a direct cancel when that refuses (e.g. outside the edit window).
+ * Cancel an open order on behalf of the ERP. Uses the normal cancel flow
+ * (stops the kitchen, releases the table, syncs) but skips the edit window.
  */
 function cancelOpenOrder(orderId: string): void {
-  try {
-    cancelOrder(orderId, "cloud-erp");
-    return;
-  } catch (err) {
-    console.warn(`[CloudCommands] Standard cancel refused (${err instanceof Error ? err.message : err}); cancelling directly`);
-  }
-
-  const order = db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get();
-  if (!order) return;
-  const now = new Date().toISOString();
-  db.update(schema.orders).set({ status: "CANCELLED", updatedAt: now }).where(eq(schema.orders.id, orderId)).run();
-
-  if (order.tableId) {
-    const table = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, order.tableId)).get();
-    if (table?.currentOrderId === orderId) {
-      db.update(schema.diningTables)
-        .set({ status: "AVAILABLE", currentOrderId: null })
-        .where(and(eq(schema.diningTables.id, table.id), eq(schema.diningTables.currentOrderId, orderId)))
-        .run();
-      emitTableStatusChanged({ tableId: table.id, tableName: table.name, status: "AVAILABLE" });
-    }
-  }
+  cancelOrder(orderId, "cloud-erp", { reason: "Cancelled from the ERP", force: true });
 }
 
 /** Apply one command. Returns a human-readable outcome; throws on failure. */
-export function applyCloudCommand(cmd: CloudCommand): string {
+export const applyCloudCommand = atomicFn(function applyCloudCommand(cmd: CloudCommand): string {
   if (cmd.eventType !== "ORDER_COMMAND" || !cmd.payload?.orderId || !cmd.payload.action) {
     return "ignored: unsupported command";
   }
@@ -119,9 +99,13 @@ export function applyCloudCommand(cmd: CloudCommand): string {
 
   // UPDATE
   const applied: string[] = [];
-  if (notes !== undefined) {
+  if (notes !== undefined && (notes === null || typeof notes === "string")) {
+    // Online orders keep their aggregator marker — it is how accept/ready are acknowledged
+    const marker = order.orderMode === "ONLINE" ? order.notes?.match(/^onlineOrderId:[^|]+\|[^|\n]+/)?.[0] : undefined;
+    const cleaned = notes?.slice(0, 1000) ?? null;
+    const nextNotes = marker && !cleaned?.includes("onlineOrderId:") ? [marker.trim(), cleaned].filter(Boolean).join(" | ") : cleaned;
     db.update(schema.orders)
-      .set({ notes, updatedAt: new Date().toISOString() })
+      .set({ notes: nextNotes, updatedAt: new Date().toISOString() })
       .where(eq(schema.orders.id, orderId))
       .run();
     applied.push("notes");
@@ -149,7 +133,7 @@ export function applyCloudCommand(cmd: CloudCommand): string {
   // Always re-send, so the ERP reflects the POS even when nothing changed locally
   queueOrderSnapshot(orderId, true);
   return applied.join(", ") || "no changes";
-}
+});
 
 /**
  * Fetch pending ERP commands for this outlet, apply them and acknowledge.

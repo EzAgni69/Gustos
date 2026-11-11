@@ -7,9 +7,10 @@
  */
 
 import type { Server as SocketIOServer } from "socket.io";
+import { afterCommit } from "../db/tx.js";
 
 let io: SocketIOServer | null = null;
-const lockedTables = new Map<string, string>(); // tableId -> lockedBy (user name or ID)
+const lockedTables = new Map<string, { lockedBy: string; socketId: string }>(); // tableId -> lock owner
 
 /**
  * Initialize Socket.IO event handlers.
@@ -18,7 +19,6 @@ export function initSocketEvents(socketServer: SocketIOServer): void {
   io = socketServer;
 
   io.on("connection", (socket) => {
-    console.log(`[Socket.IO] Device connected: ${socket.id}`);
 
     socket.on("join:kitchen", (outletId?: string) => {
       socket.join("kitchen");
@@ -38,27 +38,47 @@ export function initSocketEvents(socketServer: SocketIOServer): void {
       console.log(`[Socket.IO] ${socket.id} joined POS channel`);
       
       // Send current locks to newly joined POS clients
-      socket.emit("table:locks-sync", Array.from(lockedTables.entries()));
+      socket.emit(
+        "table:locks-sync",
+        Array.from(lockedTables.entries()).map(([tableId, lock]) => [tableId, lock.lockedBy])
+      );
     });
 
     // ─── Table Locking Logic ───
-    
-    socket.on("table:lock", (data: { tableId: string; lockedBy: string }) => {
-      lockedTables.set(data.tableId, data.lockedBy);
-      console.log(`[Socket.IO] Table ${data.tableId} locked by ${data.lockedBy}`);
-      io?.emit("table:locked", { tableId: data.tableId, lockedBy: data.lockedBy });
+    // A lock belongs to the socket that took it and is released when that
+    // device disconnects, so a crashed tablet can never leave a table stuck.
+
+    socket.on("table:lock", (data: { tableId?: unknown; lockedBy?: unknown } | undefined) => {
+      const tableId = typeof data?.tableId === "string" ? data.tableId : "";
+      const lockedBy = typeof data?.lockedBy === "string" && data.lockedBy.trim() ? data.lockedBy.trim() : "Staff";
+      if (!tableId) return;
+
+      const existing = lockedTables.get(tableId);
+      if (existing && existing.socketId !== socket.id) {
+        // Someone else holds it — tell only the requester
+        socket.emit("table:lock-denied", { tableId, lockedBy: existing.lockedBy });
+        return;
+      }
+      lockedTables.set(tableId, { lockedBy, socketId: socket.id });
+      io?.emit("table:locked", { tableId, lockedBy });
     });
 
-    socket.on("table:unlock", (data: { tableId: string }) => {
-      if (lockedTables.has(data.tableId)) {
-        lockedTables.delete(data.tableId);
-        console.log(`[Socket.IO] Table ${data.tableId} unlocked`);
-        io?.emit("table:unlocked", { tableId: data.tableId });
+    socket.on("table:unlock", (data: { tableId?: unknown } | undefined) => {
+      const tableId = typeof data?.tableId === "string" ? data.tableId : "";
+      // Only the device holding the lock may release it
+      if (tableId && lockedTables.get(tableId)?.socketId === socket.id) {
+        lockedTables.delete(tableId);
+        io?.emit("table:unlocked", { tableId });
       }
     });
 
     socket.on("disconnect", () => {
-      console.log(`[Socket.IO] Device disconnected: ${socket.id}`);
+      for (const [tableId, lock] of lockedTables) {
+        if (lock.socketId === socket.id) {
+          lockedTables.delete(tableId);
+          io?.emit("table:unlocked", { tableId });
+        }
+      }
     });
   });
 }
@@ -67,7 +87,7 @@ export function initSocketEvents(socketServer: SocketIOServer): void {
  * Emit a new KOT event to the kitchen display and all devices.
  */
 export function emitKOTNew(kotData: Record<string, unknown>): void {
-  io?.emit("kot:new", kotData);
+  afterCommit(() => { io?.emit("kot:new", kotData); });
 }
 
 /**
@@ -87,14 +107,14 @@ export function emitKOTStatusUpdate(
   } = {}
 ): void {
   const data = { kotId, status, orderNumber, orderId, ...extra };
-  io?.emit("kot:status-update", data);
+  afterCommit(() => { io?.emit("kot:status-update", data); });
 }
 
 /**
  * Emit an order update to captains and POS.
  */
 export function emitOrderUpdated(orderData: Record<string, unknown>): void {
-  io?.emit("order:updated", orderData);
+  afterCommit(() => { io?.emit("order:updated", orderData); });
 
   // Every local order change (POS or Captain app) is mirrored to the Cloud ERP.
   // Updates relayed *from* the cloud carry no local change, so the snapshot hash
@@ -117,14 +137,14 @@ export function emitOrderUpdated(orderData: Record<string, unknown>): void {
  * Tell LAN devices (Captain, POS UI) the menu changed locally, e.g. an item was 86'd.
  */
 export function emitMenuUpdated(data: Record<string, unknown>): void {
-  io?.emit("sync:menu-updated", { ...data, timestamp: new Date().toISOString() });
+  afterCommit(() => { io?.emit("sync:menu-updated", { ...data, timestamp: new Date().toISOString() }); });
 }
 
 /**
  * Emit a table status change to all devices and notify Cloud ERP.
  */
 export function emitTableStatusChanged(tableData: Record<string, unknown>): void {
-  io?.emit("table:status-changed", tableData);
+  afterCommit(() => { io?.emit("table:status-changed", tableData); });
   if (typeof tableData.tableId === "string" && typeof tableData.status === "string") {
     import("../services/realtime-uplink.service.js").then(({ notifyCloudTableStatus }) => {
       notifyCloudTableStatus(
@@ -148,7 +168,7 @@ export function emitKOTCancelled(data: {
   orderNumber: string;
   reason: string;
 }): void {
-  io?.emit("kot:cancelled", data);
+  afterCommit(() => { io?.emit("kot:cancelled", data); });
 }
 
 /**
@@ -161,7 +181,7 @@ export function emitKOTRush(data: {
   orderNumber: string;
   tableName?: string;
 }): void {
-  io?.emit("kot:rush", data);
+  afterCommit(() => { io?.emit("kot:rush", data); });
 }
 
 /**
@@ -180,7 +200,7 @@ export function emitKOTModification(data: {
     newValue?: string;
   }>;
 }): void {
-  io?.emit("kot:modification", data);
+  afterCommit(() => { io?.emit("kot:modification", data); });
 }
 
 /**
@@ -194,7 +214,7 @@ export function emitTableSwapped(data: {
   orderAId?: string | null;
   orderBId?: string | null;
 }): void {
-  io?.emit("table:swapped", data);
+  afterCommit(() => { io?.emit("table:swapped", data); });
   // Clients (Captain, POS UI) and the Cloud ERP only react to the generic events,
   // so re-announce both tables and both orders.
   emitTableStatusChanged({ tableId: data.tableAId, tableName: data.tableAName, status: "OCCUPIED", orderId: data.orderBId ?? undefined });
@@ -214,7 +234,7 @@ export function emitTableMerged(data: {
   targetOrderId: string;
   sourceOrderId?: string | null;
 }): void {
-  io?.emit("table:merged", data);
+  afterCommit(() => { io?.emit("table:merged", data); });
   // As with swap: clients and the Cloud ERP only react to the generic events.
   // The source table's release is already announced by mergeOrders().
   emitOrderUpdated({ type: "TABLE_MERGED", orderId: data.targetOrderId });
@@ -233,10 +253,10 @@ export function emitOrderModeChanged(data: {
   newMode: string;
   tableId?: string | null;
 }): void {
-  io?.to("captains").emit("order:mode-changed", data);
-  io?.to("pos").emit("order:mode-changed", data);
+  afterCommit(() => { io?.to("captains").emit("order:mode-changed", data); });
+  afterCommit(() => { io?.to("pos").emit("order:mode-changed", data); });
   // KDS re-badges open tickets (e.g. dine-in switched to takeaway → pack it)
-  io?.to("kitchen").emit("order:mode-changed", data);
+  afterCommit(() => { io?.to("kitchen").emit("order:mode-changed", data); });
   emitOrderUpdated({ type: "ORDER_MODE_CHANGED", orderId: data.orderId, orderNumber: data.orderNumber });
 }
 
@@ -250,8 +270,8 @@ export function emitOrderItemsMoved(data: {
   sourceTableName?: string;
   targetTableName?: string;
 }): void {
-  io?.to("captains").emit("order:items-moved", data);
-  io?.to("pos").emit("order:items-moved", data);
+  afterCommit(() => { io?.to("captains").emit("order:items-moved", data); });
+  afterCommit(() => { io?.to("pos").emit("order:items-moved", data); });
   emitOrderUpdated({ type: "ITEMS_MOVED", orderId: data.sourceOrderId });
   emitOrderUpdated({ type: "ITEMS_MOVED", orderId: data.targetOrderId });
 }
@@ -260,7 +280,7 @@ export function emitOrderItemsMoved(data: {
  * Emit a new online order to POS for acceptance.
  */
 export function emitOnlineOrderReceived(data: Record<string, unknown>): void {
-  io?.to("pos").emit("online-order:received", data);
+  afterCommit(() => { io?.to("pos").emit("online-order:received", data); });
 }
 
 
@@ -279,7 +299,7 @@ export function emitKOTStationStatus(data: {
   readyStations: string[];
   kotReady: boolean;
 }): void {
-  io?.emit("kot:station-status", data);
+  afterCommit(() => { io?.emit("kot:station-status", data); });
 }
 
 /**
@@ -300,10 +320,10 @@ export function emitExpoOrderReady(data: {
   forced: boolean;
   bumpedAt: string;
 }): void {
-  io?.emit("expo:order-ready", data);
+  afterCommit(() => { io?.emit("expo:order-ready", data); });
 }
 
 /** The pass pulled an order back (bumped by mistake). */
 export function emitExpoOrderRecalled(data: { orderId: string; orderNumber: string; tableName: string | null }): void {
-  io?.emit("expo:order-recalled", data);
+  afterCommit(() => { io?.emit("expo:order-recalled", data); });
 }

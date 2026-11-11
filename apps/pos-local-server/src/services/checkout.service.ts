@@ -8,17 +8,19 @@ import { eq, and, ne, notInArray } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 import {
   calculateCartTotals,
   validatePaymentSplits,
   buildReceiptFromOrder,
   roundCurrency,
+  getUniformHalfRate,
   type PaymentSplitInput,
-  type CartItem,
   type DiscountConfig,
-  type GSTRate,
 } from "@gusto/core-logic";
-import { buildBillReceipt, renderToConsole } from "@gusto/printer";
+import { buildBillReceipt } from "@gusto/printer";
+import { toCartItems, getOrderDiscount } from "./order.service.js";
+import { clearUndoStack } from "./undo.service.js";
 import { getNextInvoiceNumber } from "./sequence.service.js";
 import { queueSyncEvent } from "./sync.service.js";
 import { syncOrderToCloud } from "./order-sync.service.js";
@@ -28,7 +30,9 @@ import { generateKOT } from "./kot.service.js";
 
 const OUTLET_ID = process.env.OUTLET_ID || "local-outlet";
 
-export type PaymentMode = "CASH" | "CARD" | "UPI" | "ONLINE" | "SPLIT" | "OTHER";
+export const PAYMENT_MODES = ["CASH", "CARD", "UPI", "ONLINE", "SPLIT", "OTHER"] as const;
+export type PaymentMode = (typeof PAYMENT_MODES)[number];
+const SPLIT_LEG_MODES: readonly string[] = ["CASH", "CARD", "UPI", "ONLINE", "OTHER"];
 
 export interface CheckoutInput {
   paymentMode: PaymentMode;
@@ -36,17 +40,26 @@ export interface CheckoutInput {
   paymentSplits?: PaymentSplitInput[];
   tipAmount?: number;
   tenderedAmount?: number; // Cash tendered by customer
-  changeDue?: number; // Change returned
+  /** Ignored — change is always computed by the server from tendered − payable */
+  changeDue?: number;
+}
+
+function cleanSubMethod(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim().toUpperCase().slice(0, 40) : null;
 }
 
 /**
  * Process payment and complete an order.
  */
-export function processCheckout(
+export const processCheckout = atomicFn(function processCheckout(
   orderId: string,
   input: CheckoutInput,
   userId?: string
 ) {
+  if (!input || !PAYMENT_MODES.includes(input.paymentMode)) {
+    throw new Error(`paymentMode must be one of ${PAYMENT_MODES.join(", ")}`);
+  }
+
   const order = db
     .select()
     .from(schema.orders)
@@ -54,8 +67,11 @@ export function processCheckout(
     .get();
 
   if (!order) throw new Error("Order not found");
-  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+  if (order.status === "COMPLETED" || order.status === "CANCELLED" || order.status === "MERGED") {
     throw new Error(`Order is already ${order.status.toLowerCase()}`);
+  }
+  if (order.orderMode === "ONLINE" && order.status === "DRAFT") {
+    throw new Error("Accept the online order before billing it");
   }
 
   // Permissive Shift Enforcement: warn if no shift is active, but allow checkout
@@ -79,63 +95,80 @@ export function processCheckout(
   // Auto-generate KOT for any items not yet sent to kitchen so KDS displays the order ticket
   const unfiredItems = activeItems.filter((item) => !item.kotId);
   if (unfiredItems.length > 0) {
-    try {
-      generateKOT(orderId, undefined, undefined, userId);
-    } catch (kotErr) {
-      console.warn(`[Checkout] Auto-KOT notice for ${order.orderNumber}:`, kotErr);
+    generateKOT(orderId, undefined, undefined, userId);
+  }
+
+  // Calculate final totals. A complimentary (NC) order is billed at ₹0: the
+  // full value is recorded as discount so sales, tax and cash figures stay true.
+  const isComplimentary = order.isComplimentary;
+  const discount: DiscountConfig | undefined = isComplimentary
+    ? { type: "PERCENTAGE", value: 100 }
+    : getOrderDiscount(order);
+  const discountLabel = isComplimentary ? "Complimentary" : order.discountLabel;
+
+  const totals = calculateCartTotals(toCartItems(activeItems), discount);
+
+  if (input.tipAmount !== undefined && input.tipAmount !== null) {
+    if (typeof input.tipAmount !== "number" || !Number.isFinite(input.tipAmount) || input.tipAmount < 0) {
+      throw new Error("tipAmount must be zero or more");
     }
   }
-
-  // Calculate final totals
-  const cartItems: CartItem[] = activeItems.map((item) => ({
-    menuItemId: item.menuItemId,
-    menuItemName: item.menuItemName,
-    variantName: item.variantName ?? undefined,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
-    gstRate: item.gstRate as GSTRate,
-    modifiers: item.modifiers ? JSON.parse(item.modifiers) : undefined,
-    notes: item.notes ?? undefined,
-    addOns: item.addOns ? JSON.parse(item.addOns) : undefined,
-  }));
-
-  let discount: DiscountConfig | undefined;
-  if (order.discountType && order.discountValue) {
-    discount = {
-      type: order.discountType as "PERCENTAGE" | "FLAT",
-      value: order.discountValue,
-    };
-  }
-
-  const totals = calculateCartTotals(cartItems, discount);
   const tipAmount = input.tipAmount && input.tipAmount > 0 ? roundCurrency(input.tipAmount) : 0;
   const payableTotal = roundCurrency(totals.grandTotal + tipAmount);
 
-  // Validate split payments if applicable
-  if (input.paymentMode === "SPLIT") {
-    if (!input.paymentSplits || input.paymentSplits.length === 0) {
+  let paymentMode: PaymentMode = input.paymentMode;
+  let paymentSubMethod = cleanSubMethod(input.paymentSubMethod);
+  let paymentSplits: PaymentSplitInput[] | null = null;
+  let tenderedAmount: number | null = null;
+  let changeDue: number | null = null;
+
+  if (payableTotal === 0) {
+    // Nothing to collect (complimentary or 100% discount)
+    paymentMode = "OTHER";
+    paymentSubMethod = isComplimentary ? "COMPLIMENTARY" : "NO_CHARGE";
+  } else if (paymentMode === "SPLIT") {
+    if (!Array.isArray(input.paymentSplits) || input.paymentSplits.length === 0) {
       throw new Error("Split payment requires paymentSplits to be provided");
     }
-    const validation = validatePaymentSplits(input.paymentSplits, payableTotal);
+    paymentSplits = input.paymentSplits.map((leg, i) => {
+      const mode = String(leg?.mode ?? "").toUpperCase();
+      if (!SPLIT_LEG_MODES.includes(mode)) {
+        throw new Error(`Payment leg ${i + 1} has an invalid mode: ${leg?.mode}`);
+      }
+      const sub = cleanSubMethod(leg.subMethod);
+      const reference = typeof leg.reference === "string" && leg.reference.trim() ? leg.reference.trim().slice(0, 80) : undefined;
+      return {
+        mode,
+        ...(sub ? { subMethod: sub } : {}),
+        amount: roundCurrency(Number(leg.amount)),
+        ...(reference ? { reference } : {}),
+      };
+    });
+    const validation = validatePaymentSplits(paymentSplits, payableTotal);
     if (!validation.valid) {
       throw new Error(validation.error);
     }
-  } else if (input.paymentMode === "CASH" && input.tenderedAmount !== undefined) {
-    const tenderedAmount = roundCurrency(input.tenderedAmount);
+    paymentSubMethod = null;
+  } else if (paymentMode === "CASH" && input.tenderedAmount !== undefined && input.tenderedAmount !== null) {
+    if (typeof input.tenderedAmount !== "number" || !Number.isFinite(input.tenderedAmount)) {
+      throw new Error("tenderedAmount must be a number");
+    }
+    tenderedAmount = roundCurrency(input.tenderedAmount);
     if (tenderedAmount < payableTotal) {
       throw new Error(
         `Tendered amount (₹${tenderedAmount.toFixed(2)}) is less than payable total (₹${payableTotal.toFixed(2)})`
       );
     }
+    changeDue = roundCurrency(tenderedAmount - payableTotal);
   }
+
+  const splitsJson = paymentSplits ? JSON.stringify(paymentSplits) : null;
+  const halfRate = getUniformHalfRate(totals.taxBreakdown);
 
   // Generate invoice
   const invoiceId = uuid();
   const invoiceNumber = getNextInvoiceNumber();
   const now = new Date().toISOString();
-
-  const tenderedAmount = input.tenderedAmount !== undefined ? roundCurrency(input.tenderedAmount) : null;
-  const changeDue = input.changeDue !== undefined ? roundCurrency(input.changeDue) : null;
 
   db.insert(schema.invoices)
     .values({
@@ -145,13 +178,15 @@ export function processCheckout(
       receiptStatus: "ORIGINAL",
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
+      cgstRate: halfRate,
       cgstAmount: totals.totalCgst,
+      sgstRate: halfRate,
       sgstAmount: totals.totalSgst,
       totalQuantity: totals.totalQuantity,
       totalAmount: totals.grandTotal,
-      paymentMode: input.paymentMode,
-      paymentSubMethod: input.paymentSubMethod,
-      paymentSplits: input.paymentSplits ? JSON.stringify(input.paymentSplits) : null,
+      paymentMode,
+      paymentSubMethod,
+      paymentSplits: splitsJson,
       tipAmount,
       tenderedAmount,
       changeDue,
@@ -164,9 +199,10 @@ export function processCheckout(
   db.update(schema.orders)
     .set({
       status: "COMPLETED",
-      paymentMode: input.paymentMode,
-      paymentSubMethod: input.paymentSubMethod,
-      paymentSplits: input.paymentSplits ? JSON.stringify(input.paymentSplits) : null,
+      paymentMode,
+      paymentSubMethod,
+      paymentSplits: splitsJson,
+      discountLabel,
       tipAmount,
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
@@ -237,9 +273,10 @@ export function processCheckout(
       orderId,
       eventType: "PAYMENT_RECEIVED",
       payload: JSON.stringify({
-        paymentMode: input.paymentMode,
-        paymentSubMethod: input.paymentSubMethod,
-        paymentSplits: input.paymentSplits,
+        paymentMode,
+        paymentSubMethod,
+        paymentSplits,
+        isComplimentary,
         totalAmount: totals.grandTotal,
         tipAmount,
         tenderedAmount,
@@ -261,9 +298,10 @@ export function processCheckout(
     outletId: order.outletId,
     organizationId: order.organizationId,
     invoiceNumber,
-    paymentMode: input.paymentMode,
-    paymentSubMethod: input.paymentSubMethod,
-    paymentSplits: input.paymentSplits,
+    paymentMode,
+    paymentSubMethod,
+    paymentSplits,
+    isComplimentary,
     tipAmount,
     tenderedAmount,
     changeDue,
@@ -310,19 +348,21 @@ export function processCheckout(
   }
 
   const receiptData = buildReceiptFromOrder({
-    order,
+    order: { ...order, discountLabel },
     items: activeItems,
     invoice: {
       invoiceNumber,
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
+      cgstRate: halfRate,
       cgstAmount: totals.totalCgst,
+      sgstRate: halfRate,
       sgstAmount: totals.totalSgst,
       totalQuantity: totals.totalQuantity,
       totalAmount: totals.grandTotal,
-      paymentMode: input.paymentMode,
-      paymentSubMethod: input.paymentSubMethod,
-      paymentSplits: input.paymentSplits ? JSON.stringify(input.paymentSplits) : null,
+      paymentMode,
+      paymentSubMethod,
+      paymentSplits: splitsJson,
       tipAmount,
       tenderedAmount,
       changeDue,
@@ -333,10 +373,10 @@ export function processCheckout(
 
   const printTemplate = buildBillReceipt(receiptData);
 
-  // Log receipt to console (simulated print)
-  console.log(`\n🧾 RECEIPT — ${invoiceNumber} (Order: ${order.orderNumber})`);
-  console.log(renderToConsole(printTemplate));
-  console.log("");
+  console.log(
+    `🧾 [Checkout] ${invoiceNumber} — order ${order.orderNumber} settled ₹${payableTotal.toFixed(2)} via ${paymentMode}`
+  );
+  clearUndoStack(orderId);
 
   emitOrderUpdated({
     type: "ORDER_COMPLETED",
@@ -351,10 +391,14 @@ export function processCheckout(
     invoiceNumber,
     totals,
     tipAmount,
-    paymentMode: input.paymentMode,
+    payableTotal,
+    tenderedAmount,
+    changeDue,
+    paymentMode,
+    paymentSubMethod,
     printTemplate,
   };
-}
+});
 
 /**
  * Get invoice data for an order.
@@ -387,7 +431,18 @@ export function getInvoice(orderId: string) {
     order,
     items: activeItems.map((i) => ({
       ...i,
-      modifiers: i.modifiers ? JSON.parse(i.modifiers) : [],
+      modifiers: safeParseArray(i.modifiers),
+      addOns: safeParseArray(i.addOns),
     })),
   };
+}
+
+function safeParseArray(value: string | null): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }

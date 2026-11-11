@@ -9,7 +9,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, sql } from "drizzle-orm";
 import {
   createUserSchema,
   updateUserSchema,
@@ -20,6 +20,7 @@ import * as cloudSchema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { requireMinRole, getOrganizationId } from "../middleware/auth.js";
 import { hashPassword } from "../utils/password.js";
+import { invalidateUserCache } from "../plugins/auth.js";
 import { success, paginated, error } from "../utils/response.js";
 import { publishSyncUpdate } from "../utils/sync-publisher.js";
 
@@ -102,12 +103,13 @@ export async function userRoutes(fastify: FastifyInstance) {
     { preHandler: [requireMinRole("MANAGER")] },
     async (request, reply) => {
       const orgId = getOrganizationId(request);
-      const body = createUserSchema.parse(request.body);
+      const parsedBody = createUserSchema.parse(request.body);
+      const body = { ...parsedBody, email: parsedBody.email?.trim().toLowerCase() || undefined };
 
       // If email provided, check uniqueness
       if (body.email) {
         const existing = await db.query.users.findFirst({
-          where: eq(cloudSchema.users.email, body.email),
+          where: sql`lower(${cloudSchema.users.email}) = ${body.email}`,
         });
         if (existing) {
           return reply.status(409).send(error("Email already registered"));
@@ -188,13 +190,74 @@ export async function userRoutes(fastify: FastifyInstance) {
       const orgId = getOrganizationId(request);
       const body = updateUserSchema.parse(request.body);
 
+      const target = await db.query.users.findFirst({
+        where: and(eq(cloudSchema.users.id, id), eq(cloudSchema.users.organizationId, orgId)),
+      });
+      if (!target) {
+        return reply.status(404).send(error("User not found"));
+      }
+
+      // ── Who may change whom ──
+      // Owners manage everyone. Anyone else may only manage people below their
+      // own level, may never hand out a role above their own, and may not
+      // change their own role or active flag.
+      const isSelf = id === request.user.id;
+      const isOwnerLevel = request.user.role === "OWNER" || request.user.role === "SUPER_ADMIN";
+      const requesterLevel = ROLE_HIERARCHY.indexOf(request.user.role);
+      const targetLevel = ROLE_HIERARCHY.indexOf(target.role);
+
+      if (!isOwnerLevel && !isSelf && targetLevel >= requesterLevel) {
+        return reply.status(403).send(error("Cannot modify a user with an equal or higher role than your own"));
+      }
+      if (body.role !== undefined && body.role !== target.role) {
+        if (isSelf) {
+          return reply.status(403).send(error("You cannot change your own role"));
+        }
+        if (ROLE_HIERARCHY.indexOf(body.role) > requesterLevel) {
+          return reply.status(403).send(error("Cannot assign a role higher than your own"));
+        }
+      }
+      if (isSelf && body.isActive === false) {
+        return reply.status(400).send(error("Cannot deactivate your own account"));
+      }
+
+      // The organization must always keep at least one active owner
+      const losesOwner =
+        target.role === "OWNER" &&
+        target.isActive &&
+        ((body.role !== undefined && body.role !== "OWNER") || body.isActive === false);
+      if (losesOwner) {
+        const owners = await db.query.users.findMany({
+          where: and(
+            eq(cloudSchema.users.organizationId, orgId),
+            eq(cloudSchema.users.role, "OWNER"),
+            eq(cloudSchema.users.isActive, true)
+          ),
+          columns: { id: true },
+        });
+        if (owners.length <= 1) {
+          return reply.status(400).send(error("An organization needs at least one active owner"));
+        }
+      }
+
+      const nextEmail = body.email === undefined ? undefined : body.email?.trim().toLowerCase() || null;
+      if (nextEmail && nextEmail !== target.email?.toLowerCase()) {
+        const clash = await db.query.users.findFirst({
+          where: sql`lower(${cloudSchema.users.email}) = ${nextEmail}`,
+          columns: { id: true },
+        });
+        if (clash && clash.id !== id) {
+          return reply.status(409).send(error("Email already registered"));
+        }
+      }
+
       // Build update payload
       const updateData: Record<string, unknown> = { updatedAt: new Date() };
 
       // Copy allowed fields
       if (body.outletId !== undefined) updateData.outletId = body.outletId;
       if (body.name !== undefined) updateData.name = body.name;
-      if (body.email !== undefined) updateData.email = body.email;
+      if (nextEmail !== undefined) updateData.email = nextEmail;
       if (body.phone !== undefined) updateData.phone = body.phone;
       if (body.pin !== undefined) updateData.pin = body.pin;
       if (body.role !== undefined) updateData.role = body.role;
@@ -234,7 +297,10 @@ export async function userRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(error("User not found"));
       }
 
+      // Role / active changes must apply to their next request, not in 15 seconds
+      invalidateUserCache(id);
       await notifyUserSync(orgId, updated.outletId);
+      if (target.outletId !== updated.outletId) await notifyUserSync(orgId, target.outletId);
 
       return reply.send(success(sanitizeUser(updated), "User updated"));
     }
@@ -253,19 +319,33 @@ export async function userRoutes(fastify: FastifyInstance) {
         return reply.status(400).send(error("Cannot deactivate your own account"));
       }
 
+      const targetUser = await db.query.users.findFirst({
+        where: and(
+          eq(cloudSchema.users.id, id),
+          eq(cloudSchema.users.organizationId, orgId)
+        ),
+      });
+      if (!targetUser) {
+        return reply.status(404).send(error("User not found"));
+      }
+
+      // The organization must always keep at least one active owner
+      if (targetUser.role === "OWNER" && targetUser.isActive) {
+        const owners = await db.query.users.findMany({
+          where: and(
+            eq(cloudSchema.users.organizationId, orgId),
+            eq(cloudSchema.users.role, "OWNER"),
+            eq(cloudSchema.users.isActive, true)
+          ),
+          columns: { id: true },
+        });
+        if (owners.length <= 1) {
+          return reply.status(400).send(error("An organization needs at least one active owner"));
+        }
+      }
+
       // Check role hierarchy: cannot deactivate users with equal or higher role unless OWNER/SUPER_ADMIN
       if (request.user.role !== "OWNER" && request.user.role !== "SUPER_ADMIN") {
-        const targetUser = await db.query.users.findFirst({
-          where: and(
-            eq(cloudSchema.users.id, id),
-            eq(cloudSchema.users.organizationId, orgId)
-          ),
-        });
-
-        if (!targetUser) {
-          return reply.status(404).send(error("User not found"));
-        }
-
         const requesterLevel = ROLE_HIERARCHY.indexOf(request.user.role);
         const targetLevel = ROLE_HIERARCHY.indexOf(targetUser.role);
         if (targetLevel >= requesterLevel) {
@@ -289,6 +369,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(error("User not found"));
       }
 
+      invalidateUserCache(id);
       await notifyUserSync(orgId, deactivated.outletId);
 
       return reply.send(success(null, "User deactivated"));

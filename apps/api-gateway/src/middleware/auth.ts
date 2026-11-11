@@ -26,6 +26,8 @@ const ROLE_HIERARCHY: UserRole[] = [
  */
 export function requireRole(...roles: UserRole[]) {
   return async function (request: FastifyRequest, reply: FastifyReply) {
+    // An earlier hook (authentication) may already have answered
+    if (reply.sent) return reply;
     const user = request.user;
     if (!user) {
       return reply.status(401).send({
@@ -49,6 +51,8 @@ export function requireRole(...roles: UserRole[]) {
  */
 export function requireMinRole(minRole: UserRole) {
   return async function (request: FastifyRequest, reply: FastifyReply) {
+    // An earlier hook (authentication) may already have answered
+    if (reply.sent) return reply;
     const user = request.user;
     if (!user) {
       return reply.status(401).send({

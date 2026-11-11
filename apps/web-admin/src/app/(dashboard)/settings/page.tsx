@@ -39,12 +39,14 @@ import {
   Trash2,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { IntegrationsPanel } from "@/components/settings/IntegrationsPanel";
 import { useToast } from "@/lib/toast";
 import type { Organization, TaxRule } from "@gusto/api-contracts";
 
 export default function SettingsPage() {
   const { toast } = useToast();
   const [org, setOrg] = useState<Organization | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -76,7 +78,8 @@ export default function SettingsPage() {
 
   const loadSettings = async () => {
     setLoading(true);
-    const userRes = await apiFetch<{ organizationId: string }>("/auth/me");
+    const userRes = await apiFetch<{ organizationId: string; role?: string }>("/auth/me");
+    if (userRes.success && userRes.data?.role) setUserRole(userRes.data.role);
     if (userRes.success && userRes.data?.organizationId) {
       const orgId = userRes.data.organizationId;
       const orgRes = await apiFetch<Organization>(
@@ -351,155 +354,7 @@ export default function SettingsPage() {
 
         {/* ─── Integrations Tab ─── */}
         <TabsContent value="integrations">
-          <div className="space-y-4">
-            {/* Zomato */}
-            <Card className="shadow-xs border-gray-100">
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-red-50 flex items-center justify-center text-2xl">
-                      🍽️
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Zomato</h3>
-                      <p className="text-sm text-gray-500">
-                        Receive orders from Zomato via webhook
-                      </p>
-                    </div>
-                  </div>
-                  <Badge variant="muted" className="text-xs">Not Connected</Badge>
-                </div>
-                <div className="mt-4 space-y-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="zomatoWebhook" className="text-xs font-medium text-gray-500">
-                      Webhook URL
-                    </Label>
-                    <Input
-                      id="zomatoWebhook"
-                      placeholder="https://api.yourdomain.com/webhooks/zomato"
-                      disabled
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="zomatoApiKey" className="text-xs font-medium text-gray-500">
-                      API Key
-                    </Label>
-                    <Input
-                      id="zomatoApiKey"
-                      type="password"
-                      placeholder="Enter your Zomato API key"
-                      disabled
-                    />
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button variant="outline" disabled>
-                    <ExternalLink className="w-4 h-4 mr-2" />
-                    Configure
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Swiggy */}
-            <Card className="shadow-xs border-gray-100">
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-orange-50 flex items-center justify-center text-2xl">
-                      🛵
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Swiggy</h3>
-                      <p className="text-sm text-gray-500">
-                        Receive orders from Swiggy via webhook
-                      </p>
-                    </div>
-                  </div>
-                  <Badge variant="muted" className="text-xs">Not Connected</Badge>
-                </div>
-                <div className="mt-4 space-y-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="swiggyWebhook" className="text-xs font-medium text-gray-500">
-                      Webhook URL
-                    </Label>
-                    <Input
-                      id="swiggyWebhook"
-                      placeholder="https://api.yourdomain.com/webhooks/swiggy"
-                      disabled
-                    />
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button variant="outline" disabled>
-                    <ExternalLink className="w-4 h-4 mr-2" />
-                    Configure
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Razorpay */}
-            <Card className="shadow-xs border-gray-100">
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center">
-                      <CreditCard className="w-6 h-6 text-blue-600" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Razorpay</h3>
-                      <p className="text-sm text-gray-500">
-                        Accept online payments via Razorpay gateway
-                      </p>
-                    </div>
-                  </div>
-                  <Badge variant="muted" className="text-xs">Not Connected</Badge>
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-gray-500">Key ID</Label>
-                    <Input placeholder="rzp_live_..." disabled />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-gray-500">Key Secret</Label>
-                    <Input type="password" placeholder="Enter secret key" disabled />
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button variant="outline" disabled>
-                    <Shield className="w-4 h-4 mr-2" />
-                    Connect Razorpay
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Tally */}
-            <Card className="shadow-xs border-gray-100">
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-emerald-50 flex items-center justify-center text-2xl">
-                      📊
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Tally Export</h3>
-                      <p className="text-sm text-gray-500">
-                        Export daily sales summaries in Tally-compatible XML
-                      </p>
-                    </div>
-                  </div>
-                  <Badge variant="muted" className="text-xs">Coming Soon</Badge>
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button variant="outline" disabled>
-                    Configure
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <IntegrationsPanel canEdit={userRole === "OWNER" || userRole === "SUPER_ADMIN"} />
         </TabsContent>
 
         {/* ─── Notifications Tab ─── */}

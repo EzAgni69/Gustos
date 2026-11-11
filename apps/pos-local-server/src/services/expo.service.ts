@@ -13,6 +13,7 @@ import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { KDS_STATIONS, getItemStationId, getRequiredStations, getStationConfig } from "@gusto/api-contracts";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 import { listKOTs, updateKOTStatus } from "./kot.service.js";
 import { getOrderChannel } from "./order-channel.js";
 import {
@@ -96,7 +97,7 @@ export function getReadyStationsMap(kots: ListedKOT[]) {
  * A station marks its part of a KOT ready. When every required station is
  * done the KOT itself becomes READY (which also drives order READY).
  */
-export function markStationReady(kotId: string, stationId: string) {
+export const markStationReady = atomicFn(function markStationReady(kotId: string, stationId: string) {
   if (!getStationConfig(stationId)) throw new Error(`Unknown station: ${stationId}`);
   const kot = loadKOT(kotId);
   if (kot.status === "CANCELLED") throw new Error("KOT is cancelled");
@@ -132,10 +133,10 @@ export function markStationReady(kotId: string, stationId: string) {
   };
   emitKOTStationStatus(payload);
   return payload;
-}
+});
 
 /** Undo a station bump (station-level recall from KDS history). */
-export function recallStation(kotId: string, stationId: string) {
+export const recallStation = atomicFn(function recallStation(kotId: string, stationId: string) {
   const kot = loadKOT(kotId);
   const required = getRequiredStations({ station: kot.station, items: getKOTRoutingItems(kotId) });
 
@@ -174,15 +175,15 @@ export function recallStation(kotId: string, stationId: string) {
   };
   emitKOTStationStatus(payload);
   return payload;
-}
+});
 
 /**
  * Whole-KOT status reset (KDS "ALL" recall / POS): station marks no longer apply.
  */
-export function resetStationStatus(kotId: string) {
+export const resetStationStatus = atomicFn(function resetStationStatus(kotId: string) {
   db.delete(schema.kotStationStatus).where(eq(schema.kotStationStatus.kotId, kotId)).run();
   db.update(schema.kitchenOrderTickets).set({ expoBumpedAt: null }).where(eq(schema.kitchenOrderTickets.id, kotId)).run();
-}
+});
 
 // ─── Expo board ───
 
@@ -282,7 +283,7 @@ function logEvent(orderId: string, eventType: string, payload: Record<string, un
  * The pass sends the whole table order out. Requires every station to be
  * ready unless `force` (expediter override, e.g. a station forgot to bump).
  */
-export function bumpExpoOrder(orderId: string, options: { force?: boolean } = {}, userId?: string) {
+export const bumpExpoOrder = atomicFn(function bumpExpoOrder(orderId: string, options: { force?: boolean } = {}, userId?: string) {
   const entry = getExpoBoard().find((o) => o.orderId === orderId);
   if (!entry) throw new Error("Order is not on the pass");
   if (!entry.allReady && !options.force) {
@@ -323,10 +324,10 @@ export function bumpExpoOrder(orderId: string, options: { force?: boolean } = {}
   emitExpoOrderReady(payload);
   emitOrderUpdated({ type: "EXPO_ORDER_READY", orderId, orderNumber: entry.orderNumber });
   return payload;
-}
+});
 
 /** Bring the most recently bumped batch of an order back onto the pass. */
-export function recallExpoOrder(orderId: string, userId?: string) {
+export const recallExpoOrder = atomicFn(function recallExpoOrder(orderId: string, userId?: string) {
   const kots = db
     .select()
     .from(schema.kitchenOrderTickets)
@@ -347,7 +348,7 @@ export function recallExpoOrder(orderId: string, userId?: string) {
   const payload = { orderId, orderNumber: order?.orderNumber ?? "", tableName };
   emitExpoOrderRecalled(payload);
   return payload;
-}
+});
 
 /** Orders sent out from the pass recently (Expo history / recall list). */
 export function getRecentExpoBumps(limit = 20) {

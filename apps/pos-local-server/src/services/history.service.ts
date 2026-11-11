@@ -141,7 +141,7 @@ export function getDayHistory(date?: string) {
         events: orderEvents,
         carriedOver: !orderIds.has(order.id),
         // Why post-settlement edits (payment correction / void) are blocked, if they are.
-        settlementLock: order.status === "COMPLETED" && invoice?.isPaid ? getSettlementLock(order.createdAt) : null,
+        settlementLock: order.status === "COMPLETED" && invoice?.isPaid ? getSettlementLock(invoice.createdAt) : null,
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));

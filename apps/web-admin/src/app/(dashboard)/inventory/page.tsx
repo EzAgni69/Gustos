@@ -65,6 +65,7 @@ import {
 } from "@gusto/api-contracts";
 import { RecipeManagerModal } from "@/components/inventory/RecipeManagerModal";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { PurchaseOrdersTab, GrnTab } from "@/components/inventory/ProcurementTabs";
 
 // ─── Vendor form schema ───
 const vendorFormSchema = z.object({
@@ -149,6 +150,13 @@ export default function InventoryPage() {
     const invRes = await apiFetch<InventoryItem[]>("/inventory");
     if (invRes.success && invRes.data) {
       setInventoryItems(invRes.data);
+    } else {
+      // Never show an empty stock list as if it were real — say that loading failed
+      toast({
+        title: "Could not load inventory",
+        description: invRes.message ?? "Check your connection and reload the page.",
+        variant: "error",
+      });
     }
 
     const outletsRes = await apiFetch<Outlet[]>("/outlets");
@@ -180,6 +188,16 @@ export default function InventoryPage() {
     }
 
     setLoading(false);
+  };
+
+  /** Refresh stock levels and the audit trail (e.g. after goods are received). */
+  const reloadMaterials = async () => {
+    const [invRes, txRes] = await Promise.all([
+      apiFetch<InventoryItem[]>("/inventory"),
+      apiFetch<StockTransaction[]>("/stock/transactions?limit=50"),
+    ]);
+    if (invRes.success && invRes.data) setInventoryItems(invRes.data);
+    if (txRes.success && Array.isArray(txRes.data)) setStockTransactions(txRes.data);
   };
 
   const loadRecipes = async () => {
@@ -846,52 +864,12 @@ export default function InventoryPage() {
 
         {/* ─── PURCHASE ORDERS TAB ─── */}
         <TabsContent value="purchase_orders">
-          <Card className="shadow-xs border-gray-100">
-            <CardHeader className="bg-gray-50/50 border-b border-gray-100 flex flex-row items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ShoppingCart className="w-5 h-5 text-blue-600" />
-                <div>
-                  <CardTitle className="text-lg">Purchase Orders</CardTitle>
-                  <CardDescription>
-                    Create and track purchase orders.
-                  </CardDescription>
-                </div>
-              </div>
-              <Button className="bg-blue-600 hover:bg-blue-700">
-                <Plus className="w-4 h-4 mr-2" />
-                Create PO
-              </Button>
-            </CardHeader>
-            <CardContent className="p-8 text-center text-gray-500">
-              Purchase order workflow coming soon.
-            </CardContent>
-          </Card>
+          <PurchaseOrdersTab active={activeTab === "purchase_orders"} />
         </TabsContent>
 
         {/* ─── GRNS TAB ─── */}
         <TabsContent value="grns">
-          <Card className="shadow-xs border-gray-100">
-            <CardHeader className="bg-gray-50/50 border-b border-gray-100 flex flex-row items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ClipboardList className="w-5 h-5 text-blue-600" />
-                <div>
-                  <CardTitle className="text-lg">
-                    Goods Received Notes
-                  </CardTitle>
-                  <CardDescription>
-                    Record received stock against POs.
-                  </CardDescription>
-                </div>
-              </div>
-              <Button className="bg-blue-600 hover:bg-blue-700">
-                <Plus className="w-4 h-4 mr-2" />
-                New GRN
-              </Button>
-            </CardHeader>
-            <CardContent className="p-8 text-center text-gray-500">
-              GRN processing coming soon.
-            </CardContent>
-          </Card>
+          <GrnTab active={activeTab === "grns"} onStockChanged={reloadMaterials} />
         </TabsContent>
       </Tabs>
 

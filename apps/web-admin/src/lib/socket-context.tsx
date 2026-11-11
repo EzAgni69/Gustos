@@ -90,7 +90,10 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     const serverUrl = getSocketServerUrl();
     console.log(`[Realtime Socket] Connecting to Cloud ERP Socket at ${serverUrl}`);
 
+    const tokenMatch = typeof document !== "undefined" ? document.cookie.match(/(?:^|; )gusto_token=([^;]*)/) : null;
     const newSocket = io(serverUrl, {
+      // The gateway only admits authenticated users to their own organization's rooms
+      auth: { token: tokenMatch?.[1] ? decodeURIComponent(tokenMatch[1]) : undefined },
       transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionDelay: 2000,

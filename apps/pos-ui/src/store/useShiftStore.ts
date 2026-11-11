@@ -106,7 +106,7 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
 
     set({ isLoading: true, error: null });
     try {
-      const res = await apiClient<{ success: boolean; data: ShiftReport }>(`/shifts/${activeShift.id}/x-report`);
+      const res = await apiClient<{ success: boolean; data: ShiftReport }>(`/shifts/${activeShift.id}/x-report?print=true`);
       if (res.success) {
         set({ isLoading: false });
         return res.data;

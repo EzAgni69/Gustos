@@ -15,6 +15,7 @@ import { v4 as uuid } from "uuid";
 import * as schema from "@gusto/db-schema/local";
 import { roundCurrency, validatePaymentSplits, type PaymentSplitInput } from "@gusto/core-logic";
 import { db } from "../db/index.js";
+import { atomicFn } from "../db/tx.js";
 import { syncOrderToCloud } from "./order-sync.service.js";
 import { emitOrderUpdated } from "../socket/events.js";
 
@@ -34,16 +35,20 @@ export interface SettledVoidInput {
   approvedBy: string;
 }
 
-/** Returns why a settled order can no longer be changed, or null if it can. */
-export function getSettlementLock(orderCreatedAt: string): string | null {
+/**
+ * Returns why a settled bill can no longer be changed, or null if it can.
+ * `paidAt` is the invoice time — the same instant shift reports use to decide
+ * which shift a bill belongs to.
+ */
+export function getSettlementLock(paidAt: string): string | null {
   const closedShift = db
     .select({ id: schema.cashierShifts.id, cashierName: schema.cashierShifts.cashierName, closedAt: schema.cashierShifts.closedAt })
     .from(schema.cashierShifts)
     .where(
       and(
         eq(schema.cashierShifts.status, "CLOSED"),
-        lte(schema.cashierShifts.openedAt, orderCreatedAt),
-        gte(schema.cashierShifts.closedAt, orderCreatedAt)
+        lte(schema.cashierShifts.openedAt, paidAt),
+        gte(schema.cashierShifts.closedAt, paidAt)
       )
     )
     .get();
@@ -61,7 +66,7 @@ function loadSettled(orderId: string) {
     throw new Error("Only settled (paid) bills can be corrected");
   }
 
-  const lock = getSettlementLock(order.createdAt);
+  const lock = getSettlementLock(invoice.createdAt);
   if (lock) throw new Error(lock);
 
   return { order, invoice };
@@ -89,7 +94,7 @@ function logEvent(orderId: string, eventType: string, payload: Record<string, un
 /**
  * Change how a settled bill was paid. Amounts are untouched; only the tender changes.
  */
-export function correctPaymentMode(orderId: string, input: PaymentCorrectionInput, userId?: string) {
+export const correctPaymentMode = atomicFn(function correctPaymentMode(orderId: string, input: PaymentCorrectionInput, userId?: string) {
   const reason = requireText(input.reason, "reason");
   const approvedBy = requireText(input.approvedBy, "approvedBy");
   if (!CORRECTABLE_PAYMENT_MODES.includes(input.paymentMode)) {
@@ -176,13 +181,13 @@ export function correctPaymentMode(orderId: string, input: PaymentCorrectionInpu
     paymentSubMethod: subMethod,
     paymentSplits: splits,
   };
-}
+});
 
 /**
  * Reverse a settled bill. The order is cancelled and the invoice marked VOIDED,
  * which removes it from shift, day-history and cloud sales figures.
  */
-export function voidSettledOrder(orderId: string, input: SettledVoidInput, userId?: string) {
+export const voidSettledOrder = atomicFn(function voidSettledOrder(orderId: string, input: SettledVoidInput, userId?: string) {
   const reason = requireText(input.reason, "reason");
   const approvedBy = requireText(input.approvedBy, "approvedBy");
   const { order, invoice } = loadSettled(orderId);
@@ -231,4 +236,4 @@ export function voidSettledOrder(orderId: string, input: SettledVoidInput, userI
     refundAmount,
     refundMode: invoice.paymentMode,
   };
-}
+});

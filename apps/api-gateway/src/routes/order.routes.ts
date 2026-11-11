@@ -6,7 +6,10 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, and, count, ilike, sql, gte, lt } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
+import { eq, and, count, ilike, sql, gte, lt, inArray } from "drizzle-orm";
+import { calculateCartTotals, type CartItem, type GSTRate } from "@gusto/core-logic";
+import { queueInventoryReconcile } from "../config/queue.js";
 import {
   createOrderSchema,
   updateOrderSchema,
@@ -22,6 +25,162 @@ import { isPosOrder, queueOrderCommand } from "../utils/order-commands.js";
 import { getOrgTimeZone, localDayRange, startOfLocalDay } from "../utils/business-time.js";
 
 
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Numeric columns arrive as strings and JSON columns as text — normalise for the client. */
+function formatOrder<T extends { subtotal: unknown; discountAmount: unknown; taxAmount: unknown; totalAmount: unknown; items: any[] }>(order: T) {
+  return {
+    ...order,
+    subtotal: Number(order.subtotal),
+    discountAmount: Number(order.discountAmount),
+    taxAmount: Number(order.taxAmount),
+    totalAmount: Number(order.totalAmount),
+    items: order.items.map((item) => ({
+      ...item,
+      unitPrice: Number(item.unitPrice),
+      modifiers: parseJsonArray(item.modifiers),
+    })),
+  };
+}
+
+/** ORD-YYMMDD-XXXXXX. The ORD- prefix marks an order as created in the ERP (see isPosOrder). */
+function generateErpOrderNumber(): string {
+  const d = new Date();
+  const date = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  return `ORD-${date}-${randomBytes(4).toString("hex").slice(0, 6).toUpperCase()}`;
+}
+
+/**
+ * Every id an order points at must belong to the caller's organization —
+ * otherwise an order could attach another tenant's table, customer or staff.
+ * Returns an error message, or null when everything checks out.
+ */
+async function validateOrderReferences(
+  orgId: string,
+  outletId: string,
+  refs: { tableId?: string | null; customerId?: string | null; waiterId?: string | null }
+): Promise<string | null> {
+  const outlet = await db.query.outlets.findFirst({
+    where: and(eq(cloudSchema.outlets.id, outletId), eq(cloudSchema.outlets.organizationId, orgId)),
+    columns: { id: true },
+  });
+  if (!outlet) return "Outlet not found in your organization";
+
+  if (refs.tableId) {
+    const table = await db.query.diningTables.findFirst({
+      where: and(eq(cloudSchema.diningTables.id, refs.tableId), eq(cloudSchema.diningTables.outletId, outletId)),
+      columns: { id: true },
+    });
+    if (!table) return "Table not found in this outlet";
+  }
+  if (refs.customerId) {
+    const customer = await db.query.customers.findFirst({
+      where: and(eq(cloudSchema.customers.id, refs.customerId), eq(cloudSchema.customers.organizationId, orgId)),
+      columns: { id: true },
+    });
+    if (!customer) return "Customer not found in your organization";
+  }
+  if (refs.waiterId) {
+    const waiter = await db.query.users.findFirst({
+      where: and(eq(cloudSchema.users.id, refs.waiterId), eq(cloudSchema.users.organizationId, orgId)),
+      columns: { id: true },
+    });
+    if (!waiter) return "Waiter not found in your organization";
+  }
+  return null;
+}
+
+type OrderItemInput = {
+  menuItemId: string;
+  quantity: number;
+  variantName?: string;
+  notes?: string;
+  modifiers: string[];
+  addOns: { name: string; quantity: number; unitPrice: number }[];
+};
+
+const GST_RATES = ["0", "5", "12", "18", "28"] as const;
+
+interface BuiltOrderRow {
+  menuItemId: string;
+  menuItemName: string;
+  variantName: string | null;
+  quantity: number;
+  unitPrice: string;
+  gstRate: GSTRate;
+  modifiers: string;
+  addOns: string | null;
+  notes: string | null;
+}
+
+/**
+ * Price order lines from the outlet's own menu (never from the request) and
+ * compute the order totals with the shared tax engine.
+ */
+async function buildOrderItems(
+  outletId: string,
+  items: OrderItemInput[]
+): Promise<{ error: string } | { rows: BuiltOrderRow[]; totals: ReturnType<typeof calculateCartTotals> }> {
+  const ids = [...new Set(items.map((i) => i.menuItemId))];
+  const menuRows = ids.length
+    ? await db
+        .select()
+        .from(cloudSchema.menuItems)
+        .where(and(inArray(cloudSchema.menuItems.id, ids), eq(cloudSchema.menuItems.outletId, outletId)))
+    : [];
+  const menuById = new Map(menuRows.map((m) => [m.id, m]));
+
+  const rows: BuiltOrderRow[] = [];
+  const cart: CartItem[] = [];
+  for (const item of items) {
+    const menuItem = menuById.get(item.menuItemId);
+    if (!menuItem) return { error: "One or more menu items do not belong to this outlet" };
+
+    // A named variant carries its own price
+    let unitPrice = Number(menuItem.price);
+    if (item.variantName) {
+      const variants = parseJsonArray(menuItem.variants) as { name?: string; price?: number }[];
+      const variant = variants.find((v) => v?.name === item.variantName);
+      if (!variant || !Number.isFinite(Number(variant.price))) {
+        return { error: `"${menuItem.name}" has no variant "${item.variantName}"` };
+      }
+      unitPrice = Number(variant.price);
+    }
+    const gstRate = ((GST_RATES as readonly string[]).includes(menuItem.gstRate) ? menuItem.gstRate : "5") as GSTRate;
+
+    cart.push({
+      menuItemId: menuItem.id,
+      menuItemName: menuItem.name,
+      quantity: item.quantity,
+      unitPrice,
+      gstRate,
+      addOns: item.addOns,
+    });
+    rows.push({
+      menuItemId: menuItem.id,
+      menuItemName: menuItem.name,
+      variantName: item.variantName ?? null,
+      quantity: item.quantity,
+      unitPrice: String(unitPrice),
+      gstRate,
+      modifiers: JSON.stringify(item.modifiers ?? []),
+      addOns: item.addOns?.length ? JSON.stringify(item.addOns) : null,
+      notes: item.notes || null,
+    });
+  }
+
+  return { rows, totals: calculateCartTotals(cart) };
+}
 
 export async function orderRoutes(fastify: FastifyInstance) {
   fastify.addHook("preHandler", fastify.authenticate);
@@ -64,18 +223,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
       db.select({ count: count() }).from(cloudSchema.orders).where(where),
     ]);
 
-    const formattedOrders = orders.map(order => ({
-      ...order,
-      subtotal: Number(order.subtotal),
-      discountAmount: Number(order.discountAmount),
-      taxAmount: Number(order.taxAmount),
-      totalAmount: Number(order.totalAmount),
-      items: order.items.map(item => ({
-        ...item,
-        unitPrice: Number(item.unitPrice),
-        modifiers: item.modifiers ? JSON.parse(item.modifiers as string) : []
-      }))
-    }));
+    const formattedOrders = orders.map(formatOrder);
 
     const total = totalResult[0]?.count ?? 0;
     return reply.send(paginated(formattedOrders, total, query.page, query.limit));
@@ -86,90 +234,54 @@ export async function orderRoutes(fastify: FastifyInstance) {
     const orgId = getOrganizationId(request);
     const body = createOrderSchema.parse(request.body);
 
-    // Simple order number generation for now
-    const orderNumber = `ORD-${Date.now().toString().slice(-6)}`;
+    const refError = await validateOrderReferences(orgId, body.outletId, body);
+    if (refError) return reply.status(400).send(error(refError));
 
-    // Note: A real implementation would calculate totals and handle items transactionally
-    const results = await db
-      .insert(cloudSchema.orders)
-      .values({
-        organizationId: orgId,
-        outletId: body.outletId,
-        tableId: body.tableId || null,
-        orderNumber,
-        status: body.status,
-        paymentMode: body.paymentMode || null,
-        customerId: body.customerId || null,
-        waiterId: body.waiterId || null,
-        notes: body.notes || null,
-      })
-      .returning();
-      
-    const order = results[0]!;
+    const built = await buildOrderItems(body.outletId, body.items);
+    if ("error" in built) return reply.status(400).send(error(built.error));
 
-    if (body.items.length > 0) {
-      const itemsToInsert = await Promise.all(body.items.map(async item => {
-        const menuItem = await db.query.menuItems.findFirst({
-          where: eq(cloudSchema.menuItems.id, item.menuItemId)
-        });
+    // Header, items and totals are written together or not at all
+    const order = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(cloudSchema.orders)
+        .values({
+          organizationId: orgId,
+          outletId: body.outletId,
+          tableId: body.tableId || null,
+          orderNumber: generateErpOrderNumber(),
+          orderMode: body.orderType,
+          status: body.status,
+          subtotal: String(built.totals.subtotal),
+          discountAmount: String(built.totals.discountAmount),
+          taxAmount: String(built.totals.totalTax),
+          totalAmount: String(built.totals.grandTotal),
+          paymentMode: body.paymentMode || null,
+          customerId: body.customerId || null,
+          customerName: body.customerName || null,
+          waiterId: body.waiterId || null,
+          notes: body.notes || null,
+        })
+        .returning();
 
-        // --- INVENTORY DEDUCTION LOGIC ---
-        const recipe = await db.query.recipes.findFirst({
-          where: eq(cloudSchema.recipes.menuItemId, item.menuItemId),
-          with: { ingredients: true }
-        });
+      if (built.rows.length > 0) {
+        await tx.insert(cloudSchema.orderItems).values(built.rows.map((row) => ({ ...row, orderId: created!.id })));
+      }
+      return created!;
+    });
 
-        if (recipe && recipe.ingredients.length > 0) {
-          for (const ingredient of recipe.ingredients) {
-            const deductionQuantity = Number(ingredient.quantity) * item.quantity;
-            
-            const invItem = await db.query.inventoryItems.findFirst({
-              where: eq(cloudSchema.inventoryItems.id, ingredient.inventoryItemId)
-            });
-
-            if (invItem) {
-              const currentStock = Number(invItem.currentStock);
-              const balanceAfter = currentStock - deductionQuantity;
-
-              await db.update(cloudSchema.inventoryItems)
-                .set({ currentStock: String(balanceAfter) })
-                .where(eq(cloudSchema.inventoryItems.id, invItem.id));
-
-              await db.insert(cloudSchema.stockTransactions).values({
-                organizationId: orgId,
-                inventoryItemId: invItem.id,
-                orderId: order.id,
-                type: "ORDER_DEDUCTION",
-                quantityChange: String(-deductionQuantity),
-                balanceAfter: String(balanceAfter),
-                notes: `Deducted for Order ${orderNumber}`,
-              });
-            }
-          }
-        }
-        // ---------------------------------
-        
-        return {
-          orderId: order.id,
-          menuItemId: item.menuItemId,
-          menuItemName: menuItem?.name || "Unknown Item",
-          quantity: item.quantity,
-          unitPrice: menuItem?.price ? String(menuItem.price) : "0",
-          gstRate: menuItem?.gstRate || "5",
-          modifiers: JSON.stringify(item.modifiers),
-          notes: item.notes || null,
-        };
-      }));
-
-      await db.insert(cloudSchema.orderItems).values(itemsToInsert);
-    }
+    await queueInventoryReconcile({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      organizationId: orgId,
+      outletId: order.outletId,
+    });
 
     const createdOrder = await db.query.orders.findFirst({
       where: eq(cloudSchema.orders.id, order.id),
       with: { items: true }
     });
 
-    return reply.status(201).send(success(createdOrder, "Order created"));
+    return reply.status(201).send(success(createdOrder ? formatOrder(createdOrder) : null, "Order created"));
   });
 
   // ─── Get Order ───
@@ -189,20 +301,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
       return reply.status(404).send(error("Order not found"));
     }
 
-    const formattedOrder = {
-      ...order,
-      subtotal: Number(order.subtotal),
-      discountAmount: Number(order.discountAmount),
-      taxAmount: Number(order.taxAmount),
-      totalAmount: Number(order.totalAmount),
-      items: order.items.map(item => ({
-        ...item,
-        unitPrice: Number(item.unitPrice),
-        modifiers: item.modifiers ? JSON.parse(item.modifiers as string) : []
-      }))
-    };
-
-    return reply.send(success(formattedOrder));
+    return reply.send(success(formatOrder(order)));
   });
 
   // ─── Update Order ───
@@ -236,30 +335,59 @@ export async function orderRoutes(fastify: FastifyInstance) {
       }
     }
 
+    if (!fromPos) {
+      const refError = await validateOrderReferences(orgId, existing.outletId, body);
+      if (refError) return reply.status(400).send(error(refError));
+    }
+
+    // Replacing the items of an ERP order re-prices the whole order
+    let built: Awaited<ReturnType<typeof buildOrderItems>> | null = null;
+    if (body.items !== undefined) {
+      built = await buildOrderItems(existing.outletId, body.items);
+      if ("error" in built) return reply.status(400).send(error(built.error));
+    }
+
     // POS orders keep the POS-clock updatedAt so the POS's follow-up snapshot
     // isn't mistaken for an older one.
     const updateData: any = fromPos ? {} : { updatedAt: new Date() };
     if (body.status !== undefined) updateData.status = body.status;
+    if (body.orderType !== undefined && !fromPos) updateData.orderMode = body.orderType;
     if (body.tableId !== undefined) updateData.tableId = body.tableId;
     if (body.paymentMode !== undefined) updateData.paymentMode = body.paymentMode;
     if (body.customerId !== undefined) updateData.customerId = body.customerId;
+    if (body.customerName !== undefined && !fromPos) updateData.customerName = body.customerName;
     if (body.waiterId !== undefined) updateData.waiterId = body.waiterId;
     if (body.notes !== undefined) updateData.notes = body.notes;
+    if (built && !("error" in built)) {
+      updateData.subtotal = String(built.totals.subtotal);
+      updateData.discountAmount = String(built.totals.discountAmount);
+      updateData.taxAmount = String(built.totals.totalTax);
+      updateData.totalAmount = String(built.totals.grandTotal);
+    }
 
-    const results = Object.keys(updateData).length === 0
-      ? [existing]
-      : await db
-          .update(cloudSchema.orders)
-          .set(updateData)
-          .where(
-            and(
-              eq(cloudSchema.orders.id, id),
-              eq(cloudSchema.orders.organizationId, orgId)
+    const updated = await db.transaction(async (tx) => {
+      const rows = Object.keys(updateData).length === 0
+        ? [existing]
+        : await tx
+            .update(cloudSchema.orders)
+            .set(updateData)
+            .where(
+              and(
+                eq(cloudSchema.orders.id, id),
+                eq(cloudSchema.orders.organizationId, orgId)
+              )
             )
-          )
-          .returning();
+            .returning();
 
-    const updated = results[0];
+      if (rows[0] && built && !("error" in built)) {
+        await tx.delete(cloudSchema.orderItems).where(eq(cloudSchema.orderItems.orderId, id));
+        if (built.rows.length > 0) {
+          await tx.insert(cloudSchema.orderItems).values(built.rows.map((row) => ({ ...row, orderId: id })));
+        }
+      }
+      return rows[0];
+    });
+
     if (!updated) {
       return reply.status(404).send(error("Order not found"));
     }
@@ -273,30 +401,16 @@ export async function orderRoutes(fastify: FastifyInstance) {
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
       });
     }
-    
-    // Simplistic items update logic for demo (usually involves careful diffing)
-    if (body.items) {
-      await db.delete(cloudSchema.orderItems).where(eq(cloudSchema.orderItems.orderId, id));
-      if (body.items.length > 0) {
-        const itemsToInsert = await Promise.all(body.items.map(async item => {
-          const menuItem = await db.query.menuItems.findFirst({
-            where: eq(cloudSchema.menuItems.id, item.menuItemId)
-          });
-          
-          return {
-            orderId: id,
-            menuItemId: item.menuItemId,
-            menuItemName: menuItem?.name || "Unknown Item",
-            quantity: item.quantity,
-            unitPrice: menuItem?.price ? String(menuItem.price) : "0",
-            gstRate: menuItem?.gstRate || "5",
-            modifiers: JSON.stringify(item.modifiers),
-            notes: item.notes || null,
-          };
-        }));
-  
-        await db.insert(cloudSchema.orderItems).values(itemsToInsert);
-      }
+
+    // Status or items changed on an ERP order → bring stock in line
+    // (POS orders are reconciled when their snapshot arrives)
+    if (!fromPos && (body.status !== undefined || body.items !== undefined)) {
+      await queueInventoryReconcile({
+        orderId: id,
+        orderNumber: existing.orderNumber,
+        organizationId: orgId,
+        outletId: existing.outletId,
+      });
     }
 
     const finalOrder = await db.query.orders.findFirst({
@@ -304,7 +418,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
       with: { items: true }
     });
 
-    return reply.send(success(finalOrder, "Order updated"));
+    return reply.send(success(finalOrder ? formatOrder(finalOrder) : null, "Order updated"));
   });
 
   // ─── Delete Order ───

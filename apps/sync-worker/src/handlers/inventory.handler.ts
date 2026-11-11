@@ -1,183 +1,203 @@
 /**
- * Gusto Sync Worker — Inventory Deduction Handler
+ * Gusto Sync Worker — Recipe-based inventory reconciliation
  *
- * Processes ORDER_COMPLETED events to deduct ingredient stock
- * based on recipe definitions. Each menu item has a recipe that
- * maps to inventory ingredients with quantities.
+ * Keeps ingredient stock in line with what an order actually consumed.
  *
- * Flow:
- * 1. For each order item, look up the recipe → recipe_ingredients
- * 2. Multiply ingredient quantities by order item quantity
- * 3. Aggregate all deductions by inventory item (avoid duplicate writes)
- * 4. Execute a single transaction to deduct stock and log audit records
- * 5. Warn on low stock (below minimum_stock threshold)
+ * Rather than "deduct once when the order completes", each run compares what
+ * the order SHOULD have consumed with what has ALREADY been booked against it
+ * (the sum of its stock transactions) and applies only the difference:
+ *
+ *   order COMPLETED          → consumption = Σ recipe quantity × item quantity
+ *   order anything else      → consumption = 0
+ *
+ * That single rule makes the job:
+ *   - idempotent   — a retry or a re-sent event books nothing twice
+ *   - self-healing — a bill voided after payment gets its stock back,
+ *                    and a corrected order is adjusted to the right amount
+ *
+ * Stock is changed with an atomic `current_stock = current_stock + Δ`, and all
+ * work for one order is serialized with an advisory lock, so concurrent jobs
+ * can never lose an update.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import * as schema from "@gusto/db-schema/cloud";
 
-export interface OrderItemForDeduction {
-  menuItemId: string;
-  menuItemName: string;
-  quantity: number;
+export interface StockMovement {
+  inventoryItemId: string;
+  inventoryItemName: string;
+  /** Negative = deducted, positive = returned to stock */
+  quantityChange: number;
+  balanceAfter: number;
+  lowStock: boolean;
 }
 
-export interface DeductionResult {
-  deducted: boolean;
-  deductions: {
-    inventoryItemId: string;
-    inventoryItemName: string;
-    quantityDeducted: number;
-    balanceAfter: number;
-    lowStock: boolean;
-  }[];
+export interface ReconcileResult {
+  applied: boolean;
+  reason?: string;
+  movements: StockMovement[];
   warnings: string[];
 }
 
-/**
- * Process inventory deductions for a completed order.
- * Looks up recipes for each menu item and deducts ingredients.
- */
-export async function processInventoryDeduction(
+interface Publisher {
+  publish(channel: string, message: string): Promise<unknown>;
+}
+
+/** Quantities are stored to 3 decimals; ignore differences below that. */
+const EPSILON = 0.0005;
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+export async function reconcileInventoryForOrder(
   orderId: string,
   organizationId: string,
-  items: OrderItemForDeduction[],
-  outletId?: string,
-  pubClient?: any
-): Promise<DeductionResult> {
+  pubClient?: Publisher
+): Promise<ReconcileResult> {
   const warnings: string[] = [];
 
-  // Step 1: Collect all recipe ingredients needed for this order
-  const aggregatedDeductions = new Map<
-    string,
-    { inventoryItemId: string; totalQuantity: number; unit: string }
-  >();
+  const result = await db.transaction(async (tx) => {
+    // One reconcile per order at a time
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + orderId}))`);
 
-  for (const item of items) {
-    // Find the recipe for this menu item
-    const recipe = await db.query.recipes.findFirst({
-      where: eq(schema.recipes.menuItemId, item.menuItemId),
+    const order = await tx.query.orders.findFirst({
+      where: and(eq(schema.orders.id, orderId), eq(schema.orders.organizationId, organizationId)),
+      columns: { id: true, orderNumber: true, status: true, outletId: true },
     });
-
-    if (!recipe) {
-      // No recipe defined — skip deduction for this item (common for drinks, etc.)
-      warnings.push(
-        `No recipe found for "${item.menuItemName}" (${item.menuItemId}) — skipping inventory deduction`
-      );
-      continue;
+    if (!order) {
+      return { applied: false, reason: "order not found", movements: [] as StockMovement[], outletId: null as string | null };
     }
 
-    // Get all ingredients for this recipe
-    const ingredients = await db
-      .select()
-      .from(schema.recipeIngredients)
-      .where(eq(schema.recipeIngredients.recipeId, recipe.id));
+    // ── What the order should have consumed ──
+    const desired = new Map<string, number>();
+    if (order.status === "COMPLETED") {
+      const items = await tx
+        .select({
+          menuItemId: schema.orderItems.menuItemId,
+          menuItemName: schema.orderItems.menuItemName,
+          quantity: schema.orderItems.quantity,
+        })
+        .from(schema.orderItems)
+        .where(and(eq(schema.orderItems.orderId, orderId), ne(schema.orderItems.status, "CANCELLED")));
 
-    for (const ingredient of ingredients) {
-      const key = ingredient.inventoryItemId;
-      const neededQty =
-        Number(ingredient.quantity) * item.quantity;
+      const menuItemIds = [...new Set(items.map((i) => i.menuItemId))];
+      const recipes = menuItemIds.length
+        ? await tx.query.recipes.findMany({
+            where: inArray(schema.recipes.menuItemId, menuItemIds),
+            with: { ingredients: true },
+          })
+        : [];
+      const recipeByMenuItem = new Map(recipes.map((r) => [r.menuItemId, r]));
 
-      if (aggregatedDeductions.has(key)) {
-        const existing = aggregatedDeductions.get(key)!;
-        existing.totalQuantity += neededQty;
-      } else {
-        aggregatedDeductions.set(key, {
-          inventoryItemId: ingredient.inventoryItemId,
-          totalQuantity: neededQty,
-          unit: ingredient.unit,
-        });
+      for (const item of items) {
+        const recipe = recipeByMenuItem.get(item.menuItemId);
+        if (!recipe || recipe.ingredients.length === 0) continue; // nothing to deduct (e.g. bottled drinks)
+        for (const ingredient of recipe.ingredients) {
+          const qty = Number(ingredient.quantity) * item.quantity;
+          if (!Number.isFinite(qty) || qty <= 0) continue;
+          desired.set(ingredient.inventoryItemId, (desired.get(ingredient.inventoryItemId) ?? 0) + qty);
+        }
       }
     }
-  }
 
-  if (aggregatedDeductions.size === 0) {
-    return { deducted: true, deductions: [], warnings };
-  }
+    // ── What has already been booked against this order ──
+    const booked = await tx
+      .select({
+        inventoryItemId: schema.stockTransactions.inventoryItemId,
+        net: sql<string>`coalesce(sum(${schema.stockTransactions.quantityChange}), 0)`,
+      })
+      .from(schema.stockTransactions)
+      .where(eq(schema.stockTransactions.orderId, orderId))
+      .groupBy(schema.stockTransactions.inventoryItemId);
+    const bookedNet = new Map(booked.map((b) => [b.inventoryItemId, Number(b.net)]));
 
-  // Step 2: Execute deductions in a single transaction
-  const deductions: DeductionResult["deductions"] = [];
+    // ── Apply only the difference ──
+    const movements: StockMovement[] = [];
+    const itemIds = new Set([...desired.keys(), ...bookedNet.keys()]);
+    for (const inventoryItemId of itemIds) {
+      const target = -(desired.get(inventoryItemId) ?? 0); // consumption is a negative movement
+      const delta = round3(target - (bookedNet.get(inventoryItemId) ?? 0));
+      if (Math.abs(delta) < EPSILON) continue;
 
-  await db.transaction(async (tx) => {
-    for (const [inventoryItemId, deduction] of aggregatedDeductions) {
-      // Get current stock
-      const inventoryItem = await tx.query.inventoryItems.findFirst({
-        where: eq(schema.inventoryItems.id, inventoryItemId),
-      });
+      // Atomic, tenant-scoped update. Stock may go negative: better to record
+      // the truth and alert than to block a sale that already happened.
+      const [updated] = await tx
+        .update(schema.inventoryItems)
+        .set({
+          currentStock: sql`${schema.inventoryItems.currentStock} + ${String(delta)}`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.organizationId, organizationId))
+        )
+        .returning({
+          name: schema.inventoryItems.name,
+          unit: schema.inventoryItems.unit,
+          currentStock: schema.inventoryItems.currentStock,
+          minimumStock: schema.inventoryItems.minimumStock,
+        });
 
-      if (!inventoryItem) {
-        warnings.push(
-          `Inventory item ${inventoryItemId} not found — skipping deduction`
-        );
+      if (!updated) {
+        warnings.push(`Inventory item ${inventoryItemId} not found for order ${order.orderNumber} — skipped`);
         continue;
       }
 
-      const currentStock = Number(inventoryItem.currentStock);
-      const newStock = currentStock - deduction.totalQuantity;
-      const minimumStock = Number(inventoryItem.minimumStock);
-
-      // Deduct stock (allow negative — better to track than to block orders)
-      await tx
-        .update(schema.inventoryItems)
-        .set({
-          currentStock: String(newStock),
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.inventoryItems.id, inventoryItemId));
-
-      // Insert audit record
+      const balanceAfter = Number(updated.currentStock);
       await tx.insert(schema.stockTransactions).values({
         organizationId,
         inventoryItemId,
         orderId,
-        type: "ORDER_DEDUCTION",
-        quantityChange: String(-deduction.totalQuantity),
-        balanceAfter: String(newStock),
-        notes: `Auto-deduction for order ${orderId}`,
+        type: delta < 0 ? "ORDER_DEDUCTION" : "ADJUSTMENT",
+        quantityChange: String(delta),
+        balanceAfter: String(balanceAfter),
+        notes:
+          delta < 0
+            ? `Auto-deduction for order ${order.orderNumber}`
+            : `Stock returned — order ${order.orderNumber} ${order.status === "COMPLETED" ? "corrected" : order.status.toLowerCase()}`,
       });
 
-      const isLowStock = newStock <= minimumStock;
-
-      deductions.push({
+      const minimumStock = Number(updated.minimumStock);
+      const lowStock = delta < 0 && balanceAfter <= minimumStock;
+      movements.push({
         inventoryItemId,
-        inventoryItemName: inventoryItem.name,
-        quantityDeducted: deduction.totalQuantity,
-        balanceAfter: newStock,
-        lowStock: isLowStock,
+        inventoryItemName: updated.name,
+        quantityChange: delta,
+        balanceAfter,
+        lowStock,
       });
-
-      if (isLowStock) {
-        const warningMsg = `⚠️ LOW STOCK: "${inventoryItem.name}" is at ${newStock.toFixed(1)} ${inventoryItem.unit} (minimum: ${minimumStock} ${inventoryItem.unit})`;
-        warnings.push(warningMsg);
-
-        if (pubClient) {
-          pubClient.publish(
-            "sync-events",
-            JSON.stringify({
-              eventType: "LOW_STOCK_ALERT",
-              organizationId,
-              outletId,
-              payload: {
-                inventoryItemId,
-                name: inventoryItem.name,
-                currentStock: newStock,
-                minimumStock,
-                unit: inventoryItem.unit,
-                orderId,
-                message: warningMsg,
-              },
-            })
-          ).catch((err: any) => console.error("[Inventory] Failed to publish low-stock alert:", err));
-        }
+      if (lowStock) {
+        warnings.push(
+          `LOW STOCK: "${updated.name}" is at ${balanceAfter.toFixed(1)} ${updated.unit} (minimum: ${minimumStock} ${updated.unit})`
+        );
       }
     }
+
+    return { applied: true, movements, outletId: order.outletId as string | null, orderNumber: order.orderNumber };
   });
 
-  // Log warnings
-  for (const warning of warnings) {
-    console.warn(`[Inventory] ${warning}`);
+  // Alerts go out only after the stock change is committed
+  if (pubClient && result.applied) {
+    for (const m of result.movements.filter((x) => x.lowStock)) {
+      pubClient
+        .publish(
+          "sync-events",
+          JSON.stringify({
+            eventType: "LOW_STOCK_ALERT",
+            organizationId,
+            outletId: result.outletId,
+            payload: {
+              inventoryItemId: m.inventoryItemId,
+              name: m.inventoryItemName,
+              currentStock: m.balanceAfter,
+              orderId,
+              message: `Low stock: ${m.inventoryItemName} is at ${m.balanceAfter.toFixed(1)}`,
+            },
+          })
+        )
+        .catch((err: unknown) => console.error("[Inventory] Failed to publish low-stock alert:", err));
+    }
   }
 
-  return { deducted: true, deductions, warnings };
+  for (const warning of warnings) console.warn(`[Inventory] ${warning}`);
+
+  return { applied: result.applied, reason: "reason" in result ? result.reason : undefined, movements: result.movements, warnings };
 }

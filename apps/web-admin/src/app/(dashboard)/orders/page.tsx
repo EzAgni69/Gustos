@@ -170,7 +170,6 @@ export default function OrdersPage() {
   const [pdfDownloading, setPdfDownloading] = useState<string | null>(null);
 
   const form = useForm<UpdateOrderForm>({
-    // @ts-ignore: Zod type mismatch across package boundaries
     resolver: zodResolver(updateOrderSchema),
     defaultValues: {
       status: "PLACED",

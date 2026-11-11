@@ -1,3 +1,4 @@
+import { useAuthStore } from "../store/useAuthStore";
 import { useEffect } from "react";
 import { useCartStore } from "../store/useCartStore";
 import { useMenuStore } from "../store/useMenuStore";
@@ -11,6 +12,8 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
+      // Billing shortcuts only apply once someone is signed in
+      if (!useAuthStore.getState().isAuthenticated) return;
       // Allow normal typing when input/textarea focused, EXCEPT for F-keys and Alt combinations
       const activeEl = document.activeElement;
       const isInputFocused =

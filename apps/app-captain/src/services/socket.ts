@@ -8,6 +8,7 @@
 import { io, Socket } from "socket.io-client";
 import { SOCKET_EVENTS } from "../config/constants";
 import { drainOfflineQueue } from "../lib/offlineQueue";
+import { getAuthToken } from "./api";
 
 let socket: Socket | null = null;
 
@@ -52,7 +53,7 @@ export function connectSocket(serverUrl: string, userId?: string | null): void {
     socket?.emit(SOCKET_EVENTS.JOIN_CAPTAIN);
     
     // Drain offline queue on connect/reconnect
-    drainOfflineQueue(url, userId).catch(err => {
+    drainOfflineQueue(url, { userId, token: getAuthToken() }).catch(err => {
       console.error("[Socket.IO] Error draining offline queue:", err);
     });
   });

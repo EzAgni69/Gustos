@@ -25,3 +25,8 @@ const client = postgres(connectionString, { max: 5 });
 
 // Initialize Drizzle ORM
 export const db = drizzle(client, { schema });
+
+/** Close the connection pool (graceful shutdown). */
+export async function closeDb(): Promise<void> {
+  await client.end({ timeout: 5 });
+}

@@ -6,7 +6,6 @@
  * and payment details.
  */
 
-// @ts-nocheck — pdfmake types are for client-side; server-side API differs slightly
 import { createRequire } from "node:module";
 import type { TDocumentDefinitions, Content } from "pdfmake/interfaces.js";
 

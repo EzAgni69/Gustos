@@ -15,6 +15,35 @@ import {
   emitOrderUpdated,
 } from "../socket/events.js";
 import { mergeOrders, getOrderById } from "../services/order.service.js";
+import { atomic } from "../db/tx.js";
+import { queueSyncEvent } from "../services/sync.service.js";
+import { v4 as uuid } from "uuid";
+
+const TABLE_STATUSES = ["AVAILABLE", "OCCUPIED", "RESERVED", "CLEANING"];
+const RESERVATION_STATUSES = ["ACTIVE", "COMPLETED", "CANCELLED"];
+const ORGANIZATION_ID = process.env.ORGANIZATION_ID || "local-org";
+
+/** Parse a reservation window; throws a user-facing error when it is unusable. */
+function parseReservationWindow(reservationTime: unknown, durationMins: unknown) {
+  const start = new Date(String(reservationTime ?? "")).getTime();
+  if (!Number.isFinite(start)) throw new Error("reservationTime must be a valid date/time");
+  const duration = durationMins === undefined || durationMins === null ? 60 : Number(durationMins);
+  if (!Number.isInteger(duration) || duration < 15 || duration > 24 * 60) {
+    throw new Error("durationMins must be between 15 and 1440");
+  }
+  return { start, end: start + duration * 60_000, duration, iso: new Date(start).toISOString() };
+}
+
+function notifyCloudTable(table: { id: string; name: string; outletId: string }, status: string, orderId?: string | null) {
+  queueSyncEvent("TABLE_STATUS_CHANGED", {
+    tableId: table.id,
+    tableName: table.name,
+    status,
+    orderId: orderId ?? undefined,
+    outletId: table.outletId,
+    organizationId: ORGANIZATION_ID,
+  });
+}
 
 const router = Router();
 
@@ -211,7 +240,11 @@ router.get("/:id/order", (req, res) => {
  */
 router.patch("/:id/status", (req, res) => {
   const { id } = req.params;
-  const { status } = req.body as { status: string };
+  const status = String((req.body as { status?: unknown }).status ?? "").toUpperCase();
+  if (!TABLE_STATUSES.includes(status)) {
+    res.status(400).json({ success: false, message: `status must be one of ${TABLE_STATUSES.join(", ")}` });
+    return;
+  }
 
   const table = db
     .select()
@@ -236,6 +269,7 @@ router.patch("/:id/status", (req, res) => {
 
   const updatedTable = db.select().from(schema.diningTables).where(eq(schema.diningTables.id, id!)).get();
   emitTableStatusChanged({ tableId: id, tableName: updatedTable?.name, status });
+  notifyCloudTable(table, status);
 
   res.json({
     success: true,
@@ -271,36 +305,65 @@ router.post("/transfer", (req, res) => {
     return;
   }
 
-  if (toTable.status !== "AVAILABLE") {
+  if (fromTableId === toTableId) {
+    res.status(400).json({ success: false, message: "Source and target table are the same" });
+    return;
+  }
+
+  if (toTable.status !== "AVAILABLE" || toTable.currentOrderId) {
     res.status(400).json({ success: false, message: "Target table is not available" });
     return;
   }
 
-  if (!fromTable.currentOrderId) {
+  const orderId = fromTable.currentOrderId;
+  const order = orderId ? db.select().from(schema.orders).where(eq(schema.orders.id, orderId)).get() : undefined;
+  if (!orderId || !order || ["COMPLETED", "CANCELLED", "MERGED"].includes(order.status)) {
     res.status(400).json({ success: false, message: "Source table has no active order" });
     return;
   }
 
-  // Move order to new table
-  db.update(schema.orders)
-    .set({ tableId: toTableId, updatedAt: new Date().toISOString() })
-    .where(eq(schema.orders.id, fromTable.currentOrderId))
-    .run();
+  try {
+    atomic(() => {
+      // Move order to new table
+      db.update(schema.orders)
+        .set({ tableId: toTableId, updatedAt: new Date().toISOString() })
+        .where(eq(schema.orders.id, orderId))
+        .run();
 
-  // Update table statuses
-  db.update(schema.diningTables)
-    .set({ status: "AVAILABLE", currentOrderId: null })
-    .where(eq(schema.diningTables.id, fromTableId))
-    .run();
+      // Update table statuses
+      db.update(schema.diningTables)
+        .set({ status: "AVAILABLE", currentOrderId: null })
+        .where(eq(schema.diningTables.id, fromTableId))
+        .run();
 
-  db.update(schema.diningTables)
-    .set({ status: "OCCUPIED", currentOrderId: fromTable.currentOrderId })
-    .where(eq(schema.diningTables.id, toTableId))
-    .run();
+      db.update(schema.diningTables)
+        .set({ status: "OCCUPIED", currentOrderId: orderId })
+        .where(eq(schema.diningTables.id, toTableId))
+        .run();
 
-  emitTableStatusChanged({ tableId: fromTableId, tableName: fromTable.name, status: "AVAILABLE" });
-  emitTableStatusChanged({ tableId: toTableId, tableName: toTable.name, status: "OCCUPIED", orderId: fromTable.currentOrderId });
-  emitOrderUpdated({ type: "TABLE_TRANSFERRED", orderId: fromTable.currentOrderId });
+      db.insert(schema.eventLog)
+        .values({
+          id: uuid(),
+          orderId,
+          eventType: "TABLE_TRANSFERRED",
+          payload: JSON.stringify({ fromTableId, fromTableName: fromTable.name, toTableId, toTableName: toTable.name }),
+          userId: req.currentUser?.id,
+          createdAt: new Date().toISOString(),
+        })
+        .run();
+
+      notifyCloudTable(fromTable, "AVAILABLE");
+      notifyCloudTable(toTable, "OCCUPIED", orderId);
+
+      emitTableStatusChanged({ tableId: fromTableId, tableName: fromTable.name, status: "AVAILABLE" });
+      emitTableStatusChanged({ tableId: toTableId, tableName: toTable.name, status: "OCCUPIED", orderId });
+      emitOrderUpdated({ type: "TABLE_TRANSFERRED", orderId });
+    });
+  } catch (err) {
+    console.error("[POST /api/tables/transfer Error]", err);
+    res.status(500).json({ success: false, message: err instanceof Error ? err.message : "Failed to transfer table" });
+    return;
+  }
 
   res.json({
     success: true,
@@ -332,39 +395,49 @@ router.post("/swap", (req, res) => {
       return;
     }
 
+    if (tableAId === tableBId) {
+      res.status(400).json({ success: false, message: "Choose two different tables to swap" });
+      return;
+    }
+
     const orderAId = tableA.currentOrderId;
     const orderBId = tableB.currentOrderId;
     const now = new Date().toISOString();
 
-    // Swap order tableId references
-    db.update(schema.orders)
-      .set({ tableId: tableBId, updatedAt: now })
-      .where(eq(schema.orders.id, orderAId))
-      .run();
+    atomic(() => {
+      // Swap order tableId references
+      db.update(schema.orders)
+        .set({ tableId: tableBId, updatedAt: now })
+        .where(eq(schema.orders.id, orderAId))
+        .run();
 
-    db.update(schema.orders)
-      .set({ tableId: tableAId, updatedAt: now })
-      .where(eq(schema.orders.id, orderBId))
-      .run();
+      db.update(schema.orders)
+        .set({ tableId: tableAId, updatedAt: now })
+        .where(eq(schema.orders.id, orderBId))
+        .run();
 
-    // Swap table currentOrderId references
-    db.update(schema.diningTables)
-      .set({ currentOrderId: orderBId })
-      .where(eq(schema.diningTables.id, tableAId))
-      .run();
+      // Swap table currentOrderId references
+      db.update(schema.diningTables)
+        .set({ currentOrderId: orderBId })
+        .where(eq(schema.diningTables.id, tableAId))
+        .run();
 
-    db.update(schema.diningTables)
-      .set({ currentOrderId: orderAId })
-      .where(eq(schema.diningTables.id, tableBId))
-      .run();
+      db.update(schema.diningTables)
+        .set({ currentOrderId: orderAId })
+        .where(eq(schema.diningTables.id, tableBId))
+        .run();
 
-    emitTableSwapped({
-      tableAId,
-      tableAName: tableA.name,
-      tableBId,
-      tableBName: tableB.name,
-      orderAId,
-      orderBId,
+      emitTableSwapped({
+        tableAId,
+        tableAName: tableA.name,
+        tableBId,
+        tableBName: tableB.name,
+        orderAId,
+        orderBId,
+      });
+      // Mirror both orders (new table) to the Cloud ERP
+      emitOrderUpdated({ type: "TABLE_SWAPPED", orderId: orderAId });
+      emitOrderUpdated({ type: "TABLE_SWAPPED", orderId: orderBId });
     });
 
     res.json({
@@ -394,6 +467,11 @@ router.post("/merge", (req, res) => {
 
     if (!sourceTable || !targetTable) {
       res.status(404).json({ success: false, message: "One or both tables not found" });
+      return;
+    }
+
+    if (sourceTableId === targetTableId) {
+      res.status(400).json({ success: false, message: "Choose two different tables to merge" });
       return;
     }
 
@@ -478,9 +556,21 @@ router.post("/:id/reservations", (req, res) => {
     return;
   }
 
-  const newStart = new Date(reservationTime).getTime();
-  const dur = durationMins || 60;
-  const newEnd = newStart + dur * 60 * 1000;
+  let window: ReturnType<typeof parseReservationWindow>;
+  try {
+    window = parseReservationWindow(reservationTime, durationMins);
+  } catch (err) {
+    res.status(400).json({ success: false, message: (err as Error).message });
+    return;
+  }
+  // Allow a little slack for clock drift, but a booking in the past is a mistake
+  if (window.end < Date.now()) {
+    res.status(400).json({ success: false, message: "Reservation time is in the past" });
+    return;
+  }
+  const newStart = window.start;
+  const dur = window.duration;
+  const newEnd = window.end;
 
   // Check overlap
   const existingReservations = db
@@ -500,14 +590,14 @@ router.post("/:id/reservations", (req, res) => {
     }
   }
 
-  const newId = `res-${Date.now()}`;
+  const newId = uuid();
   db.insert(schema.tableReservations)
     .values({
       id: newId,
       outletId: table.outletId,
       tableId: id!,
-      customerName: customerName || null,
-      reservationTime: new Date(reservationTime).toISOString(),
+      customerName: typeof customerName === "string" && customerName.trim() ? customerName.trim().slice(0, 120) : null,
+      reservationTime: window.iso,
       durationMins: dur,
       status: "ACTIVE",
       createdAt: new Date().toISOString(),
@@ -578,8 +668,24 @@ router.put("/reservations/:id", (req, res) => {
     return;
   }
 
-  const updatedTime = reservationTime ? new Date(reservationTime).toISOString() : existingRes.reservationTime;
-  const updatedDur = durationMins || existingRes.durationMins;
+  if (status !== undefined && !RESERVATION_STATUSES.includes(status)) {
+    res.status(400).json({ success: false, message: `status must be one of ${RESERVATION_STATUSES.join(", ")}` });
+    return;
+  }
+
+  let updatedTime: string;
+  let updatedDur: number;
+  try {
+    const window = parseReservationWindow(
+      reservationTime ?? existingRes.reservationTime,
+      durationMins ?? existingRes.durationMins
+    );
+    updatedTime = window.iso;
+    updatedDur = window.duration;
+  } catch (err) {
+    res.status(400).json({ success: false, message: (err as Error).message });
+    return;
+  }
   
   // If time or duration changed and status is still ACTIVE, check conflicts again
   const currentStatus = status || existingRes.status;

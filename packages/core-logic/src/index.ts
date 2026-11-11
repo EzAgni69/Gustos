@@ -113,6 +113,13 @@ export interface CartItem {
   modifiers?: string[];
   notes?: string;
   addOns?: CartItemAddOn[];
+  /** Line-level discount, applied to this line before any order-level discount */
+  discount?: ItemDiscountConfig | null;
+}
+
+export interface ItemDiscountConfig {
+  type: "PERCENTAGE" | "FLAT";
+  value: number;
 }
 
 export interface DiscountConfig {
@@ -125,8 +132,12 @@ export interface DiscountConfig {
 }
 
 export interface CartTotals {
+  /** Gross value of all lines (items + add-ons) before any discount */
   subtotal: number;
+  /** Total discount: line-level discounts plus the order-level discount */
   discountAmount: number;
+  /** Portion of discountAmount that came from line-level discounts */
+  itemDiscountAmount: number;
   taxBreakdown: TaxBreakdown[];
   totalCgst: number;
   totalSgst: number;
@@ -136,54 +147,73 @@ export interface CartTotals {
   totalQuantity: number;
 }
 
+/** Gross value of one cart line: (unit price × quantity) + add-ons. */
+export function calculateLineGross(item: Pick<CartItem, "unitPrice" | "quantity" | "addOns">): number {
+  let total = roundCurrency(item.unitPrice * item.quantity);
+  if (item.addOns) {
+    for (const addOn of item.addOns) {
+      total += roundCurrency(addOn.unitPrice * addOn.quantity);
+    }
+  }
+  return roundCurrency(total);
+}
+
 /**
- * Calculate complete cart totals including tax and optional discount.
- * Tax is calculated on the discounted subtotal (post-discount).
+ * Discount amount for a value. Percentages are clamped to 0–100 and the
+ * result never exceeds the value, so a bad input can never produce a
+ * negative bill.
+ */
+export function calculateDiscountAmount(
+  amount: number,
+  discount?: { type: "PERCENTAGE" | "FLAT"; value: number; maxDiscount?: number } | null
+): number {
+  if (!discount || !Number.isFinite(discount.value) || discount.value <= 0 || amount <= 0) return 0;
+  let result: number;
+  if (discount.type === "PERCENTAGE") {
+    result = roundCurrency((amount * Math.min(discount.value, 100)) / 100);
+    if (discount.maxDiscount && discount.maxDiscount > 0) {
+      result = Math.min(result, discount.maxDiscount);
+    }
+  } else {
+    result = roundCurrency(discount.value);
+  }
+  return Math.min(result, amount);
+}
+
+/**
+ * Calculate complete cart totals including tax and optional discounts.
+ *
+ * Order of operations:
+ *   1. line gross            = unit price × qty + add-ons
+ *   2. line-level discount   → line net
+ *   3. order-level discount  on the sum of line nets, spread proportionally
+ *   4. GST per rate on the fully discounted amounts
  */
 export function calculateCartTotals(
   items: CartItem[],
   discount?: DiscountConfig
 ): CartTotals {
-  // Include add-on amounts in subtotal
-  const subtotal = items.reduce((sum, item) => {
-    let itemTotal = roundCurrency(item.unitPrice * item.quantity);
-    if (item.addOns) {
-      for (const addOn of item.addOns) {
-        itemTotal += roundCurrency(addOn.unitPrice * addOn.quantity);
-      }
-    }
-    return sum + itemTotal;
-  }, 0);
+  const lines = items.map((item) => {
+    const gross = calculateLineGross(item);
+    const lineDiscount = calculateDiscountAmount(gross, item.discount);
+    return { item, gross, net: roundCurrency(gross - lineDiscount), lineDiscount };
+  });
 
-  // Discount
-  let discountAmount = 0;
-  if (discount) {
-    if (discount.type === "PERCENTAGE") {
-      discountAmount = roundCurrency((subtotal * discount.value) / 100);
-      if (discount.maxDiscount) {
-        discountAmount = Math.min(discountAmount, discount.maxDiscount);
-      }
-    } else {
-      discountAmount = Math.min(discount.value, subtotal);
-    }
-  }
+  const subtotal = roundCurrency(lines.reduce((sum, l) => sum + l.gross, 0));
+  const itemDiscountAmount = roundCurrency(lines.reduce((sum, l) => sum + l.lineDiscount, 0));
+  const netSubtotal = roundCurrency(subtotal - itemDiscountAmount);
 
-  const discountedSubtotal = roundCurrency(subtotal - discountAmount);
+  const orderDiscountAmount = calculateDiscountAmount(netSubtotal, discount);
+  const discountedSubtotal = roundCurrency(netSubtotal - orderDiscountAmount);
 
-  // Apply proportional discount to each item's amount for accurate per-rate tax
-  const discountRatio = subtotal > 0 ? discountedSubtotal / subtotal : 0;
+  // Spread the order-level discount proportionally for accurate per-rate tax
+  const discountRatio = netSubtotal > 0 ? discountedSubtotal / netSubtotal : 0;
 
-  // Group items by GST rate and calculate tax
+  // Group taxable amounts by GST rate
   const taxByRate = new Map<GSTRate, number>();
-  for (const item of items) {
-    let itemTotal = roundCurrency(item.unitPrice * item.quantity * discountRatio);
-    if (item.addOns) {
-      for (const addOn of item.addOns) {
-        itemTotal += roundCurrency(addOn.unitPrice * addOn.quantity * discountRatio);
-      }
-    }
-    const existing = taxByRate.get(item.gstRate) ?? 0;
-    taxByRate.set(item.gstRate, existing + itemTotal);
+  for (const line of lines) {
+    const taxable = roundCurrency(line.net * discountRatio);
+    taxByRate.set(line.item.gstRate, (taxByRate.get(line.item.gstRate) ?? 0) + taxable);
   }
 
   const taxBreakdown: TaxBreakdown[] = [];
@@ -206,8 +236,9 @@ export function calculateCartTotals(
   const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
 
   return {
-    subtotal: roundCurrency(subtotal),
-    discountAmount: roundCurrency(discountAmount),
+    subtotal,
+    discountAmount: roundCurrency(itemDiscountAmount + orderDiscountAmount),
+    itemDiscountAmount,
     taxBreakdown,
     totalCgst,
     totalSgst,
@@ -216,6 +247,17 @@ export function calculateCartTotals(
     itemCount: items.length,
     totalQuantity,
   };
+}
+
+/**
+ * Half-rates (CGST = SGST = rate ÷ 2) to print on a bill. When a bill mixes
+ * GST slabs there is no single rate, so 0 is returned and the receipt prints
+ * the tax lines without a percentage.
+ */
+export function getUniformHalfRate(taxBreakdown: TaxBreakdown[]): number {
+  const rates = new Set(taxBreakdown.filter((t) => t.totalTax > 0).map((t) => t.taxRate));
+  if (rates.size !== 1) return 0;
+  return Number([...rates][0]) / 2;
 }
 
 // ─── Split Payment Validation ───
@@ -235,13 +277,13 @@ export function validatePaymentSplits(
   splits: PaymentSplitInput[],
   grandTotal: number
 ): { valid: boolean; error?: string } {
-  if (splits.length < 2) {
+  if (!Array.isArray(splits) || splits.length < 2) {
     return { valid: false, error: "Split payment requires at least 2 payment legs" };
   }
 
   for (let i = 0; i < splits.length; i++) {
     const split = splits[i]!;
-    if (split.amount <= 0) {
+    if (typeof split.amount !== "number" || !Number.isFinite(split.amount) || split.amount <= 0) {
       return { valid: false, error: `Payment leg ${i + 1} has invalid amount: ${split.amount}` };
     }
     if (split.mode === "SPLIT") {
@@ -249,7 +291,7 @@ export function validatePaymentSplits(
     }
   }
 
-  const totalSplitAmount = splits.reduce((sum, s) => sum + s.amount, 0);
+  const totalSplitAmount = roundCurrency(splits.reduce((sum, s) => sum + s.amount, 0));
   const diff = Math.abs(totalSplitAmount - grandTotal);
 
   // Allow ₹0.01 tolerance for floating point
@@ -446,16 +488,17 @@ export function buildReceiptFromOrder(params: {
   const sgstRate = invoice.sgstRate ?? 2.5;
   const taxes: TaxLine[] = [];
 
+  // A rate of 0 means the bill mixes GST slabs — print the amount without a percentage
   if (invoice.sgstAmount > 0) {
     taxes.push({
-      label: `SGST ${sgstRate}%`,
+      label: sgstRate > 0 ? `SGST ${sgstRate}%` : "SGST",
       rate: sgstRate,
       amount: invoice.sgstAmount,
     });
   }
   if (invoice.cgstAmount > 0) {
     taxes.push({
-      label: `CGST ${cgstRate}%`,
+      label: cgstRate > 0 ? `CGST ${cgstRate}%` : "CGST",
       rate: cgstRate,
       amount: invoice.cgstAmount,
     });
@@ -537,11 +580,13 @@ export function buildReceiptFromOrder(params: {
 // ─── Utility Functions ───
 
 /**
- * Round to 2 decimal places (currency precision).
- * Uses banker's rounding to avoid floating point drift.
+ * Round to 2 decimal places (currency precision), half away from zero.
+ * The epsilon nudge corrects binary float artefacts such as 1.005 → 1.00.
  */
 export function roundCurrency(amount: number): number {
-  return Math.round((amount + Number.EPSILON) * 100) / 100;
+  if (!Number.isFinite(amount)) return 0;
+  const sign = amount < 0 ? -1 : 1;
+  return (sign * Math.round((Math.abs(amount) + Number.EPSILON) * 100)) / 100;
 }
 
 /**

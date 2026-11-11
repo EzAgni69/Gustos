@@ -31,12 +31,19 @@ export function initRealtimeUplink() {
   }
 
   console.log(`[Realtime Uplink] Connecting to Cloud API at ${API_URL}`);
+  startHeartbeat();
   
   socket = io(API_URL, {
     transports: ["websocket"],
     reconnection: true,
     reconnectionDelay: 2000,
     reconnectionDelayMax: 30000, // Back off more aggressively when unreachable
+    // The cloud only lets an outlet's POS into its store room with the POS key
+    auth: {
+      posApiKey: process.env.POS_API_KEY || undefined,
+      organizationId: ORGANIZATION_ID,
+      outletId: OUTLET_ID,
+    },
   });
 
   socket.on("connect", () => {
@@ -47,6 +54,7 @@ export function initRealtimeUplink() {
     socket?.emit("join:store", {
       organizationId: ORGANIZATION_ID,
       outletId: OUTLET_ID,
+      posApiKey: process.env.POS_API_KEY || undefined,
     });
     
     // Flush outbox on connect, and pick up ERP edits made while we were offline
@@ -67,8 +75,8 @@ export function initRealtimeUplink() {
   });
 
   socket.on("cloud:sync_update", (data) => {
-    console.log(`[Realtime Uplink] Received real-time update from Cloud ERP`, data);
-    
+    if (!data || typeof data.eventType !== "string") return;
+
     const downlinkEvents = ["MENU_UPDATED", "TABLE_UPDATED", "CONFIG_UPDATED", "USER_UPDATED"];
     if (downlinkEvents.includes(data.eventType)) {
       console.log(`[Realtime Uplink] Downlink config changed (${data.eventType}). Pulling immediately...`);
@@ -84,12 +92,16 @@ export function initRealtimeUplink() {
     }
     else if (data.eventType === "ONLINE_ORDER_RECEIVED" && data.payload) {
       try {
-        console.log(`[Realtime Uplink] New Online Order from Zomato. Creating local DRAFT...`);
-        const order = createOnlineOrderFromWebhook(data.payload);
+        const { order, created } = createOnlineOrderFromWebhook(data.payload);
+        if (!created) {
+          console.log(`[Realtime Uplink] Online order ${order?.orderNumber} already received — ignoring duplicate delivery`);
+          return;
+        }
+        console.log(`[Realtime Uplink] New online order ${order?.orderNumber} created as DRAFT`);
 
         // Auto-KOT Pipeline
         const isAutoKOTEnabled = process.env.AUTO_KOT_ONLINE_ORDERS === "true";
-        if (isAutoKOTEnabled && order) {
+        if (isAutoKOTEnabled && order && order.items.length > 0) {
           console.log(`[Realtime Uplink] AUTO_KOT is enabled. Auto-accepting order ${order.orderNumber}...`);
           acceptOnlineOrder(order.id, "system");
           generateKOT(order.id, undefined, undefined, "system");
@@ -105,6 +117,58 @@ export function initRealtimeUplink() {
   });
 }
 
+// ─── Heartbeat ───
+// Tells the Cloud ERP this outlet's POS is alive and how far behind its uploads
+// are (shown in the ERP's Edge Sync Monitor). Plain HTTP so it also works when
+// the websocket is blocked.
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let lastLatencyMs = 0;
+
+async function sendHeartbeat(): Promise<void> {
+  try {
+    const { getOutboxCounts } = await import("./sync.service.js");
+    const counts = getOutboxCounts();
+    const headers: Record<string, string> = { "Content-Type": "application/json", "x-outlet-id": OUTLET_ID };
+    if (process.env.POS_API_KEY) headers["X-POS-API-Key"] = process.env.POS_API_KEY;
+
+    const started = Date.now();
+    const res = await fetch(`${API_URL}/api/v1/sync/heartbeat`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        outletId: OUTLET_ID,
+        latencyMs: lastLatencyMs,
+        pendingUploads: counts.pending + counts.failed,
+        deadUploads: counts.dead,
+        posVersion: process.env.npm_package_version ?? "0.1.0",
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) lastLatencyMs = Date.now() - started;
+  } catch {
+    // Offline — the ERP will show this outlet as late / offline, which is the truth
+  }
+}
+
+function startHeartbeat(): void {
+  if (heartbeatTimer) return;
+  sendHeartbeat();
+  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+}
+
+/** Disconnect from the cloud (graceful shutdown). */
+export function stopRealtimeUplink(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  socket?.removeAllListeners();
+  socket?.disconnect();
+  socket = null;
+}
+
 /**
  * When the socket connects or an event is queued, flush immediately.
  */
@@ -116,7 +180,7 @@ export async function flushOutbox() {
   // Instead of HTTP, we can push via WS or just use the HTTP logic immediately.
   // We'll reuse the robust HTTP logic but trigger it instantly instead of waiting for the cron job.
   const syncedCount = await pushToCloud();
-  if (syncedCount > 0) {
+  if (syncedCount > 0 && socket?.connected) {
     // Notify the socket room so other clients connected to the Cloud ERP get real-time UI updates
     socket.emit("sync:push_realtime", {
       organizationId: ORGANIZATION_ID,

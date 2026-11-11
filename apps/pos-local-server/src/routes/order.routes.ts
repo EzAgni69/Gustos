@@ -31,6 +31,7 @@ import {
   type AddItemInput,
 } from "../services/order.service.js";
 import { generateKOT } from "../services/kot.service.js";
+import { atomic } from "../db/tx.js";
 import { undoLastAction, canUndo } from "../services/undo.service.js";
 import { getDayHistory } from "../services/history.service.js";
 import {
@@ -39,11 +40,11 @@ import {
   type PaymentCorrectionInput,
   type SettledVoidInput,
 } from "../services/settlement.service.js";
+import { requireRole, CASHIER_ROLES, MANAGER_ROLES } from "../middleware/auth.js";
 
 /** Post-settlement edits are cashier/manager operations — never waiters/captains. */
 function canEditSettledBill(role?: string): boolean {
-  if (!role) return true;
-  return ["SUPER_ADMIN", "ADMIN", "POS_ADMIN", "OWNER", "MANAGER", "CASHIER"].includes(role);
+  return !!role && (CASHIER_ROLES as readonly string[]).includes(role);
 }
 
 const router = Router();
@@ -76,7 +77,7 @@ router.get("/", (req, res) => {
     orderMode: orderMode as string | undefined,
     customerPhone: customerPhone as string | undefined,
     isComplimentary: isComplimentary !== undefined ? isComplimentary === "true" : undefined,
-    limit: limit ? Number(limit) : undefined,
+    limit: limit ? Math.min(Math.max(Number(limit) || 0, 0), 1000) || undefined : undefined,
     activeOnly: active === "true",
   });
   res.json({ success: true, data: orders });
@@ -220,10 +221,10 @@ router.post("/:id/items/:itemId/split", (req, res) => {
  * PATCH /api/orders/:id/discount
  * Apply or remove discount.
  */
-router.patch("/:id/discount", (req, res) => {
+router.patch("/:id/discount", requireRole(...CASHIER_ROLES), (req, res) => {
   try {
-    const discount = req.body.discount as { type: "PERCENTAGE" | "FLAT"; value: number } | null;
-    const order = applyDiscount(req.params.id!, discount, req.currentUser?.id);
+    const discount = (req.body.discount ?? null) as { type: "PERCENTAGE" | "FLAT"; value: number; label?: string } | null;
+    const order = applyDiscount(String(req.params.id), discount, req.currentUser?.id);
     res.json({ success: true, data: order, message: "Discount updated" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to apply discount";
@@ -266,7 +267,8 @@ router.post("/:id/hold", (req, res) => {
  */
 router.post("/:id/cancel", (req, res) => {
   try {
-    const order = cancelOrder(req.params.id!, req.currentUser?.id);
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
+    const order = cancelOrder(req.params.id!, req.currentUser?.id, { reason });
     res.json({ success: true, data: order, message: "Order cancelled" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to cancel order";
@@ -398,15 +400,15 @@ router.patch("/:id/waiter", (req, res) => {
  * PATCH /api/orders/:id/items/:itemId/discount
  * Apply or remove item-level discount.
  */
-router.patch("/:id/items/:itemId/discount", (req, res) => {
+router.patch("/:id/items/:itemId/discount", requireRole(...CASHIER_ROLES), (req, res) => {
   try {
     const { discount } = req.body as {
       discount: { type: "PERCENTAGE" | "FLAT"; value: number; reason?: string } | null;
     };
     const order = applyItemDiscount(
-      req.params.id!,
-      req.params.itemId!,
-      discount,
+      String(req.params.id),
+      String(req.params.itemId),
+      discount ?? null,
       req.currentUser?.id
     );
     res.json({ success: true, data: order, message: "Item discount updated" });
@@ -420,14 +422,14 @@ router.patch("/:id/items/:itemId/discount", (req, res) => {
  * POST /api/orders/:id/complimentary
  * Mark order as complimentary (NC — No Charge).
  */
-router.post("/:id/complimentary", (req, res) => {
+router.post("/:id/complimentary", requireRole(...MANAGER_ROLES), (req, res) => {
   try {
     const { reason, approvedBy } = req.body as { reason: string; approvedBy: string };
     if (!reason || !approvedBy) {
       res.status(400).json({ success: false, message: "reason and approvedBy are required" });
       return;
     }
-    const order = markAsComplimentary(req.params.id!, reason, approvedBy, req.currentUser?.id);
+    const order = markAsComplimentary(String(req.params.id), reason, approvedBy, req.currentUser?.id);
     res.json({ success: true, data: order, message: "Order marked as complimentary" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to mark as complimentary";
@@ -468,9 +470,12 @@ router.get("/:id/undo-status", (req, res) => {
  */
 router.post("/:id/accept-online", (req, res) => {
   try {
-    const order = acceptOnlineOrder(req.params.id!, req.currentUser?.id);
-    // Fire KOT for KDS
-    const kot = generateKOT(order!.id, undefined, undefined, req.currentUser?.id);
+    // Accepting and firing must succeed or fail together
+    const { order, kot } = atomic(() => {
+      const accepted = acceptOnlineOrder(req.params.id!, req.currentUser?.id);
+      const fired = generateKOT(accepted!.id, undefined, undefined, req.currentUser?.id);
+      return { order: getOrderById(accepted!.id), kot: { kotId: fired.kotId, kotNumber: fired.kotNumber } };
+    });
     res.json({ success: true, data: { order, kot }, message: "Online order accepted & KOT fired" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to accept online order";

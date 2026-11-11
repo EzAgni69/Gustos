@@ -12,9 +12,9 @@
 import { Worker, Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { eq, and, or, inArray, sql } from "drizzle-orm";
-import { db } from "./db.js";
+import { db, closeDb } from "./db.js";
 import * as schema from "@gusto/db-schema/cloud";
-import { processInventoryDeduction } from "./handlers/inventory.handler.js";
+import { reconcileInventoryForOrder } from "./handlers/inventory.handler.js";
 import { processOrderSnapshot } from "./handlers/order-snapshot.handler.js";
 import { isUuid, resolveDiningTable, resolveMenuItemId, DEFAULT_OUTLET_ID, DEFAULT_ORG_ID } from "./handlers/resolve.js";
 import dotenv from "dotenv";
@@ -28,13 +28,16 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 dotenv.config();
 
+const sentrySampleRate = Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? (process.env.NODE_ENV === "production" ? 0.1 : 1));
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
+  enabled: Boolean(process.env.SENTRY_DSN),
+  environment: process.env.NODE_ENV ?? "development",
   integrations: [
     nodeProfilingIntegration(),
   ],
-  tracesSampleRate: 1.0,
-  profilesSampleRate: 1.0,
+  tracesSampleRate: Number.isFinite(sentrySampleRate) ? sentrySampleRate : 0.1,
+  profilesSampleRate: Number.isFinite(sentrySampleRate) ? sentrySampleRate : 0.1,
 });
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
@@ -144,12 +147,73 @@ export const syncQueue = new Queue("pos-sync", { connection });
 export const inventoryQueue = new Queue("inventory-deduction", {
   connection,
   defaultJobOptions: {
-    attempts: 3,
+    attempts: 5,
     backoff: { type: "exponential", delay: 3000 },
-    removeOnComplete: true,
+    removeOnComplete: { age: 3600, count: 5000 },
+    removeOnFail: { age: 7 * 24 * 3600, count: 5000 },
   },
 });
 export const webhookQueue = new Queue("webhook-processing", { connection });
+
+/**
+ * An order addressed by id AND organization. Every write goes through this, so
+ * an event from one tenant can never touch another tenant's order even if it
+ * names that order's id.
+ */
+const ownOrder = (orderId: string, organizationId: string) =>
+  and(eq(schema.orders.id, orderId), eq(schema.orders.organizationId, organizationId));
+
+/** Ask the inventory worker to bring stock in line with an order's current state. */
+async function queueInventoryReconcile(orderId: string, orderNumber: string, organizationId: string, outletId: string) {
+  await inventoryQueue.add("reconcile-order", { orderId, orderNumber, organizationId, outletId });
+}
+
+type OnlineOrderStatus = "ACCEPTED" | "REJECTED" | "READY_FOR_PICKUP";
+
+/**
+ * Record the outlet's decision on an aggregator order (scoped to the outlet's
+ * organization) and tell the ERP.
+ *
+ * The aggregator itself is NOT called from here: Zomato / Swiggy order-status
+ * APIs need partner credentials and an approved integration. Until that client
+ * is added the status is recorded and surfaced in the ERP, and staff confirm
+ * on the aggregator's own tablet as they do today.
+ */
+async function setOnlineOrderStatus(payload: any, status: OnlineOrderStatus): Promise<void> {
+  const { onlineOrderId, organizationId, outletId, reason } = payload ?? {};
+  if (!isUuid(onlineOrderId) || !isUuid(organizationId)) {
+    console.warn(`[Sync] Online order ${status} ignored — missing online order id`);
+    return;
+  }
+
+  const [updated] = await db
+    .update(schema.onlineOrders)
+    .set({ status, updatedAt: new Date() })
+    .where(and(eq(schema.onlineOrders.id, onlineOrderId), eq(schema.onlineOrders.organizationId, organizationId)))
+    .returning({ id: schema.onlineOrders.id, externalOrderId: schema.onlineOrders.externalOrderId, provider: schema.onlineOrders.provider });
+
+  if (!updated) {
+    console.warn(`[Sync] Online order ${onlineOrderId} not found for this organization`);
+    return;
+  }
+
+  console.log(
+    `[Sync] 🍔 ${updated.provider} order ${updated.externalOrderId} → ${status}` +
+      (reason ? ` (${reason})` : "") +
+      " — recorded in the ERP; confirm on the aggregator device (no partner API configured)"
+  );
+  pubClient
+    .publish(
+      "sync-events",
+      JSON.stringify({
+        eventType: "ONLINE_ORDER_STATUS",
+        organizationId,
+        outletId,
+        payload: { onlineOrderId, externalOrderId: updated.externalOrderId, status, reason: reason ?? null },
+      })
+    )
+    .catch((err) => console.error("[Sync] Pub/Sub Error:", err));
+}
 
 // ─── Sync Worker ───
 
@@ -210,6 +274,14 @@ const syncWorker = new Worker(
           : undefined;
 
         await db.transaction(async (tx) => {
+          const foreign = await tx.query.orders.findFirst({
+            where: eq(schema.orders.id, orderId),
+            columns: { organizationId: true },
+          });
+          if (foreign && foreign.organizationId !== finalOrgId) {
+            throw new Error(`Order ${orderId} belongs to a different organization — event rejected`);
+          }
+
           // 1. Upsert Order
           await tx
             .insert(schema.orders)
@@ -232,6 +304,8 @@ const syncWorker = new Worker(
             })
             .onConflictDoUpdate({
               target: schema.orders.id,
+              // Never overwrite an order that belongs to a different organization
+              setWhere: eq(schema.orders.organizationId, finalOrgId),
               set: {
                 status: "COMPLETED",
                 orderMode: orderMode || "DINE_IN",
@@ -332,21 +406,8 @@ const syncWorker = new Worker(
           console.warn("[Sync] Could not release table for completed order:", tableErr);
         }
 
-        // 4. Auto-enqueue inventory deduction job
-        if (resolvedItems.length > 0) {
-          await inventoryQueue.add("deduct-for-order", {
-            orderId,
-            orderNumber,
-            organizationId: finalOrgId,
-            outletId: finalOutletId,
-            items: resolvedItems.map((i: any) => ({
-              menuItemId: i.menuItemId,
-              menuItemName: i.menuItemName,
-              quantity: i.quantity,
-            })),
-          });
-          console.log(`[Sync] 📦 Queued inventory deduction for order ${orderNumber} (outlet: ${outletId})`);
-        }
+        // 4. Bring ingredient stock in line with the completed order
+        await queueInventoryReconcile(orderId, orderNumber, finalOrgId, finalOutletId);
       } catch (err) {
         Sentry.captureException(err);
         const pgCode = extractPgErrorCode(err);
@@ -409,6 +470,12 @@ const syncWorker = new Worker(
             );
           }
           console.log(`[Sync] ✅ Synced ORDER_SNAPSHOT: ${result.orderNumber} (${result.status})`);
+
+          // Completed → deduct ingredients; cancelled/voided after payment → return them.
+          // The reconcile is idempotent, so repeated snapshots cost nothing.
+          if (result.status === "COMPLETED" || result.status === "CANCELLED") {
+            await queueInventoryReconcile(result.orderId, result.orderNumber, result.organizationId, result.outletId);
+          }
           pubClient.publish("sync-events", JSON.stringify({
             eventType: "ORDER_UPDATED",
             organizationId: result.organizationId,
@@ -452,38 +519,11 @@ const syncWorker = new Worker(
         })).catch(err => console.error("[Sync] Pub/Sub Error:", err));
       }
     } else if (eventType === "ONLINE_ORDER_ACCEPTED") {
-      const { onlineOrderId } = payload;
-      if (onlineOrderId) {
-        console.log(`[Sync] 🍔 ONLINE_ORDER_ACCEPTED -> Zomato Order ${onlineOrderId}`);
-        await db.update(schema.onlineOrders)
-          .set({ status: "ACCEPTED", updatedAt: new Date() })
-          .where(eq(schema.onlineOrders.id, onlineOrderId));
-        
-        // Mock Zomato REST API Call
-        console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/accept -> 200 OK`);
-      }
+      await setOnlineOrderStatus(payload, "ACCEPTED");
     } else if (eventType === "ONLINE_ORDER_REJECTED") {
-      const { onlineOrderId, reason } = payload;
-      if (onlineOrderId) {
-        console.log(`[Sync] 🍔 ONLINE_ORDER_REJECTED -> Zomato Order ${onlineOrderId} (Reason: ${reason})`);
-        await db.update(schema.onlineOrders)
-          .set({ status: "REJECTED", updatedAt: new Date() })
-          .where(eq(schema.onlineOrders.id, onlineOrderId));
-        
-        // Mock Zomato REST API Call
-        console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/reject -> 200 OK`);
-      }
+      await setOnlineOrderStatus(payload, "REJECTED");
     } else if (eventType === "ONLINE_ORDER_READY") {
-      const { onlineOrderId } = payload;
-      if (onlineOrderId) {
-        console.log(`[Sync] 🍔 ONLINE_ORDER_READY -> Zomato Order ${onlineOrderId} is ready for pickup!`);
-        await db.update(schema.onlineOrders)
-          .set({ status: "READY_FOR_PICKUP", updatedAt: new Date() })
-          .where(eq(schema.onlineOrders.id, onlineOrderId));
-        
-        // Mock Zomato REST API Call
-        console.log(`[Zomato API] POST /v1/orders/${onlineOrderId}/ready -> 200 OK`);
-      }
+      await setOnlineOrderStatus(payload, "READY_FOR_PICKUP");
     } else if (eventType === "ORDER_CREATED") {
       const {
         orderId,
@@ -522,6 +562,7 @@ const syncWorker = new Worker(
           })
           .onConflictDoUpdate({
             target: schema.orders.id,
+            setWhere: eq(schema.orders.organizationId, finalOrgId),
             set: {
               tableId: validTableId,
               orderMode: orderMode || "DINE_IN",
@@ -563,13 +604,13 @@ const syncWorker = new Worker(
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
         const cloudOrder = await db.query.orders.findFirst({
-          where: eq(schema.orders.id, orderId),
+          where: ownOrder(orderId, finalOrgId),
         });
-
         await db
           .update(schema.orders)
           .set({ status: "CANCELLED", updatedAt: eventTime })
-          .where(eq(schema.orders.id, orderId));
+          .where(ownOrder(orderId, finalOrgId));
+        if (cloudOrder) await queueInventoryReconcile(orderId, orderNumber, finalOrgId, finalOutletId);
 
         console.log(`[Sync] ✅ Successfully synced ORDER_CANCELLED: ${orderNumber}`);
 
@@ -629,6 +670,11 @@ const syncWorker = new Worker(
       const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
+        const owned = await db.query.orders.findFirst({ where: ownOrder(orderId, finalOrgId), columns: { id: true } });
+        if (!owned) {
+          console.warn(`[Sync] ITEM_VOIDED skipped — order ${orderId} not found in this organization`);
+          return { synced: true, timestamp: new Date().toISOString() };
+        }
         if (voidQuantity !== undefined && remainingQuantity !== undefined && remainingQuantity > 0) {
           await db
             .update(schema.orderItems)
@@ -656,19 +702,29 @@ const syncWorker = new Worker(
       const finalOutletId = outletId || "00000000-0000-0000-0000-000000000003";
       const finalOrgId = organizationId || "00000000-0000-0000-0000-000000000001";
       try {
-        await db
-          .update(schema.orderItems)
-          .set({ orderId: targetOrderId })
-          .where(eq(schema.orderItems.orderId, sourceOrderId));
-
-        await db
-          .update(schema.orders)
-          .set({
-            status: "CANCELLED",
-            notes: `Merged into ${targetOrderNumber || targetOrderId}`,
-            updatedAt: eventTime,
-          })
-          .where(eq(schema.orders.id, sourceOrderId));
+        // Both orders must exist in this organization before anything moves
+        const [src, dst] = await Promise.all([
+          db.query.orders.findFirst({ where: ownOrder(sourceOrderId, finalOrgId), columns: { id: true } }),
+          db.query.orders.findFirst({ where: ownOrder(targetOrderId, finalOrgId), columns: { id: true } }),
+        ]);
+        if (!src || !dst) {
+          console.warn(`[Sync] ORDERS_MERGED skipped — order not found in this organization (the snapshots will reconcile it)`);
+          return { synced: true, timestamp: new Date().toISOString() };
+        }
+        await db.transaction(async (tx) => {
+          await tx
+            .update(schema.orderItems)
+            .set({ orderId: targetOrderId })
+            .where(eq(schema.orderItems.orderId, sourceOrderId));
+          await tx
+            .update(schema.orders)
+            .set({
+              status: "CANCELLED",
+              notes: `Merged into ${targetOrderNumber || targetOrderId}`,
+              updatedAt: eventTime,
+            })
+            .where(ownOrder(sourceOrderId, finalOrgId));
+        });
 
         console.log(`[Sync] 🔀 Orders merged: ${sourceOrderNumber || sourceOrderId} -> ${targetOrderNumber || targetOrderId}`);
 
@@ -689,7 +745,7 @@ const syncWorker = new Worker(
         await db
           .update(schema.orders)
           .set({ orderMode: newMode, updatedAt: eventTime })
-          .where(eq(schema.orders.id, orderId));
+          .where(ownOrder(orderId, finalOrgId));
 
         console.log(`[Sync] 🔄 Order ${orderNumber || orderId} mode changed: ${oldMode} -> ${newMode}`);
 
@@ -715,7 +771,7 @@ const syncWorker = new Worker(
             notes: `Complimentary by ${approvedBy || "Manager"}. Reason: ${reason || ""}`,
             updatedAt: eventTime,
           })
-          .where(eq(schema.orders.id, orderId));
+          .where(ownOrder(orderId, finalOrgId));
 
         console.log(`[Sync] 🎁 Order ${orderNumber || orderId} marked COMPLIMENTARY`);
 
@@ -735,26 +791,27 @@ const syncWorker = new Worker(
   { connection, concurrency: CONCURRENCY }
 );
 
-// ─── Inventory Deduction Worker ───
-
+// ─── Inventory Worker ───
+// Handles both "reconcile-order" and the older "deduct-for-order" job name.
 const inventoryWorker = new Worker(
   "inventory-deduction",
   async (job) => {
-    const { orderId, orderNumber, organizationId, outletId, items } = job.data;
-    console.log(`[Inventory] Processing deduction for order ${orderNumber} (${items.length} items)`);
+    const { orderId, orderNumber, organizationId } = job.data as {
+      orderId?: string;
+      orderNumber?: string;
+      organizationId?: string;
+    };
+    if (!isUuid(orderId) || !isUuid(organizationId)) {
+      console.warn(`[Inventory] Job ${job.id} has no valid order / organization — skipped`);
+      return { applied: false };
+    }
 
-    const result = await processInventoryDeduction(orderId, organizationId, items, outletId, pubClient);
-
-    if (result.deductions.length > 0) {
+    const result = await reconcileInventoryForOrder(orderId, organizationId, pubClient);
+    if (result.movements.length > 0) {
       console.log(
-        `[Inventory] ✅ Deducted ${result.deductions.length} ingredient(s) for order ${orderNumber}`
+        `[Inventory] ✅ ${result.movements.length} stock movement(s) for order ${orderNumber ?? orderId}`
       );
     }
-
-    if (result.warnings.length > 0) {
-      console.log(`[Inventory] ⚠️ ${result.warnings.length} warning(s) for order ${orderNumber}`);
-    }
-
     return result;
   },
   { connection, concurrency: 3 }
@@ -774,7 +831,7 @@ const webhookWorker = new Worker(
       
       // Phase 2: Menu Mapping Engine
       const mappedItems = [];
-      for (const item of payload.items) {
+      for (const item of Array.isArray(payload?.items) ? payload.items : []) {
         const mapping = await db.query.aggregatorMenuMappings.findFirst({
           where: and(
             eq(schema.aggregatorMenuMappings.provider, "ZOMATO"),
@@ -809,7 +866,7 @@ const webhookWorker = new Worker(
       await webhookQueue.add(
         "check-zomato-ack",
         { onlineOrderId, organizationId, outletId },
-        { delay: 2 * 60 * 1000 } // 2 minutes
+        { delay: 2 * 60 * 1000, jobId: `zomato-ack-${onlineOrderId}`, removeOnComplete: true, removeOnFail: { age: 86_400 } }
       );
     } 
     else if (job.name === "check-zomato-ack") {
@@ -827,8 +884,7 @@ const webhookWorker = new Worker(
           .set({ status: "REJECTED", updatedAt: new Date() })
           .where(eq(schema.onlineOrders.id, onlineOrderId));
 
-        // TODO (Phase 5): Call Zomato REST API to actually reject the order
-        // e.g. await rejectZomatoOrder(order.externalOrderId, config);
+        // (See setOnlineOrderStatus: the aggregator is not called from here.)
         
         // Notify POS that it was auto-rejected
         pubClient.publish(
@@ -904,3 +960,42 @@ console.log(`
 ╚══════════════════════════════════════════════╝
 `);
 
+
+// ─── Graceful Shutdown ───
+// Let in-flight jobs finish (BullMQ returns unfinished ones to the queue),
+// then close Redis and Postgres so nothing is cut off mid-transaction.
+let shuttingDown = false;
+async function shutdown(signal: string, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[${signal}] Sync worker shutting down...`);
+  setTimeout(() => process.exit(exitCode || 1), 30_000).unref();
+
+  const results = await Promise.allSettled([syncWorker.close(), inventoryWorker.close(), webhookWorker.close()]);
+  for (const r of results) if (r.status === "rejected") console.error("[Shutdown] Worker close failed:", r.reason);
+
+  await Promise.allSettled([syncQueue.close(), inventoryQueue.close(), webhookQueue.close()]);
+  await pubClient.quit().catch(() => pubClient.disconnect());
+  await closeDb().catch((err) => console.error("[Shutdown] Database close failed:", err));
+  await Sentry.close(2_000).catch(() => undefined);
+  process.exit(exitCode);
+}
+
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason) => {
+  Sentry.captureException(reason);
+  console.error("[Sync Worker] Unhandled promise rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  Sentry.captureException(err);
+  console.error("[Sync Worker] Uncaught exception:", err);
+  void shutdown("uncaughtException", 1);
+});
+
+for (const worker of [syncWorker, inventoryWorker, webhookWorker]) {
+  worker.on("error", (err) => console.error("[Worker] Connection error:", err.message));
+}
+webhookWorker.on("failed", (job, err) => {
+  console.error(`[Webhook] Job ${job?.id} failed:`, err.message);
+});

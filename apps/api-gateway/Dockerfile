@@ -27,6 +27,8 @@ RUN pnpm turbo run build --filter=@gusto/api-gateway...
 
 FROM base AS runner
 WORKDIR /app
+# Enables the strict production checks (strong JWT secret, POS key required)
+ENV NODE_ENV=production
 RUN corepack enable pnpm
 
 # Don't run production as root

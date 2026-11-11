@@ -64,11 +64,39 @@ pnpm dev          # Start all services
 pnpm build        # Build all packages and apps
 pnpm typecheck    # TypeScript check across all workspaces
 pnpm lint         # Lint all workspaces
+pnpm test         # Run all test suites
 pnpm clean        # Clean all build artifacts
 ```
+
+## Production Checklist
+
+**Cloud (API gateway + sync worker)**
+
+| Setting | Why |
+|---|---|
+| `NODE_ENV=production` | Turns on the strict checks below (the Dockerfiles set it). |
+| `JWT_SECRET` (≥ 32 random chars) | The gateway refuses to start in production with a weak or default secret. |
+| `POS_API_KEY` or `POS_OUTLET_API_KEYS` | Authenticates outlet POS servers. In production, sync is refused without one. Per-outlet keys confine a leaked key to its own outlet. |
+| `CORS_ORIGIN` | The web-admin origin(s) allowed to call the API. |
+| `DISABLE_REGISTRATION=true` | Close public sign-up once your organization exists. |
+| `pnpm --filter @gusto/db-schema db:migrate` | Run before every deploy. Migrations are idempotent, so they are safe on databases previously updated with `db:push`. |
+
+`GET /health` on the gateway reports database and Redis status (503 when the database is down).
+
+**Outlet (POS local server)**
+
+- Set the same `POS_API_KEY` as the cloud, plus `ORGANIZATION_ID`, `OUTLET_ID` and `API_GATEWAY_URL`.
+- Staff sign in by choosing their name and entering their PIN; devices then hold a signed session token.
+  POS UI and Captain app builds made before session tokens must be updated — or set
+  `POS_ALLOW_LEGACY_AUTH=true` temporarily while rolling the new builds out.
+- The kitchen display (KDS / Expo) needs no sign-in; it can only read tickets and change their cooking status.
+- Configure printers with `POS_BILL_PRINTER_*`, `CAPTAIN_BILL_PRINTER_*` and `KITCHEN_PRINTER_*` (see `.env.example`).
+- The outlet keeps billing with no internet. Sales queue locally and upload in order when the link returns;
+  the ERP's **Outlets → Edge Sync Monitor** shows each outlet's connection and backlog.
 
 ## Database Migration Strategy (CI/CD)
 
 For consistent and safe database schemas across environments:
-- **Local Development:** Run `pnpm db:push` to rapidly prototype and push schema changes to local SQLite/Postgres.
-- **Production Deployments:** We employ a strict migration-based approach. The CI/CD pipeline (or deployment orchestrator) must execute `pnpm db:migrate` (which runs `drizzle-kit migrate`) against the production PostgreSQL instance before the new application versions boot. This prevents schema corruption and ensures deterministic rollouts.
+- **Local Development:** `pnpm db:push` pushes schema changes straight to local SQLite/Postgres for rapid prototyping.
+- **Every schema change needs a migration:** run `pnpm --filter @gusto/db-schema db:generate:cloud` (and `db:generate:local`) and commit the generated files. CI fails if the schema and the migrations have drifted apart.
+- **Production Deployments:** run `pnpm --filter @gusto/db-schema db:migrate` against the production PostgreSQL instance before the new application versions boot. The local SQLite database migrates itself when the POS server starts.

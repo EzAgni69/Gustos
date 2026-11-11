@@ -13,7 +13,7 @@ import cors from "cors";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import dotenv from "dotenv";
-import { initializeDatabase } from "./db/index.js";
+import { initializeDatabase, sqlite } from "./db/index.js";
 import { initSocketEvents } from "./socket/events.js";
 import { authMiddleware } from "./middleware/auth.js";
 
@@ -28,10 +28,11 @@ import { expoRoutes } from "./routes/expo.routes.js";
 import { printRoutes } from "./routes/print.routes.js";
 import { shiftRoutes } from "./routes/shift.routes.js";
 import { syncRoutes } from "./routes/sync.routes.js";
-import { startCloudSyncPoller } from "./services/cloud-sync.service.js";
-import { startPrintRetryLoop } from "./services/print.service.js";
-import { initRealtimeUplink } from "./services/realtime-uplink.service.js";
+import { startCloudSyncPoller, stopCloudSyncPoller } from "./services/cloud-sync.service.js";
+import { startPrintRetryLoop, stopPrintRetryLoop } from "./services/print.service.js";
+import { initRealtimeUplink, stopRealtimeUplink } from "./services/realtime-uplink.service.js";
 
+import os from "os";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -60,26 +61,58 @@ const io = new SocketIOServer(httpServer, {
 });
 
 const PORT = Number(process.env.PORT ?? process.env.POS_LOCAL_PORT ?? 8080);
+const SERVER_VERSION = "0.1.0";
 
 // ─── Middleware ───
+app.disable("x-powered-by");
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use((req, _res, next) => {
   if (!req.body || typeof req.body !== "object") req.body = {};
   next();
 });
 app.use(authMiddleware);
 
-import os from "os";
-
 // ─── Health Check ───
 app.get("/health", (_req, res) => {
-  res.json({
-    status: "ok",
+  let database = "ok";
+  try {
+    sqlite.prepare("SELECT 1").get();
+  } catch {
+    database = "error";
+  }
+  res.status(database === "ok" ? 200 : 503).json({
+    status: database === "ok" ? "ok" : "degraded",
     service: "gusto-pos-local-server",
-    version: "0.1.0",
+    version: SERVER_VERSION,
+    database,
+    uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
   });
+});
+
+// ─── API access control ───
+// Everything under /api needs a signed-in staff member, except:
+//  - logging in and the staff list shown on the login screen
+//  - network discovery used by the Captain app's connect screen
+//  - the kitchen screens (KDS / Expo), which are shared wall-mounted devices
+//    with no user; they can only read tickets and bump their cooking status.
+const PUBLIC_API_ROUTES: Array<{ method: string; pattern: RegExp }> = [
+  { method: "POST", pattern: /^\/api\/auth\/(login|pin-login)\/?$/ },
+  { method: "GET", pattern: /^\/api\/auth\/users\/?$/ },
+  { method: "GET", pattern: /^\/api\/system\/network\/?$/ },
+  { method: "GET", pattern: /^\/api\/kots\/?$/ },
+  { method: "PATCH", pattern: /^\/api\/kots\/[^/]+\/status\/?$/ },
+  { method: "POST", pattern: /^\/api\/kots\/[^/]+\/stations\/[^/]+\/(ready|recall)\/?$/ },
+  { method: "GET", pattern: /^\/api\/expo\/(orders|recent)\/?$/ },
+  { method: "POST", pattern: /^\/api\/expo\/orders\/[^/]+\/(bump|recall)\/?$/ },
+];
+
+app.use("/api", (req, res, next) => {
+  if (req.method === "OPTIONS" || req.currentUser) return next();
+  const fullPath = req.baseUrl + req.path;
+  if (PUBLIC_API_ROUTES.some((r) => r.method === req.method && r.pattern.test(fullPath))) return next();
+  res.status(401).json({ success: false, message: "Authentication required", code: "UNAUTHENTICATED" });
 });
 
 // ─── Network Info ───
@@ -165,15 +198,37 @@ if (posUiDist) {
   });
 }
 
+// ─── Unknown API routes ───
+app.use("/api", (_req, res) => {
+  res.status(404).json({ success: false, message: "Route not found" });
+});
+
 // ─── Global Error Handler ───
 app.use(
   (
-    err: Error,
-    _req: express.Request,
+    err: Error & { status?: number; statusCode?: number; type?: string },
+    req: express.Request,
     res: express.Response,
     _next: express.NextFunction
   ) => {
-    console.error("[Error]", err.message);
+    if (res.headersSent) return;
+
+    // Malformed / oversized request bodies are the client's fault, not ours
+    const status = err.status ?? err.statusCode;
+    if (err.type === "entity.parse.failed") {
+      res.status(400).json({ success: false, message: "Request body is not valid JSON" });
+      return;
+    }
+    if (err.type === "entity.too.large") {
+      res.status(413).json({ success: false, message: "Request body is too large" });
+      return;
+    }
+    if (status && status >= 400 && status < 500) {
+      res.status(status).json({ success: false, message: err.message || "Bad request" });
+      return;
+    }
+
+    console.error(`[Error] ${req.method} ${req.originalUrl}:`, err);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -184,6 +239,8 @@ app.use(
 // ─── Initialize Socket.IO ───
 initSocketEvents(io);
 
+const timers: Array<ReturnType<typeof setInterval>> = [];
+
 // ─── Start Server ───
 httpServer.listen(PORT as number, "0.0.0.0", () => {
   console.log(`
@@ -192,7 +249,7 @@ httpServer.listen(PORT as number, "0.0.0.0", () => {
 ╠══════════════════════════════════════════════╣
 ║  REST API:    http://localhost:${PORT}          ║
 ║  Socket.IO:   ws://localhost:${PORT}            ║
-║  Version:     0.1.0                          ║
+║  Version:     ${SERVER_VERSION}                          ║
 ║  Status:      ✅ Running                      ║
 ╚══════════════════════════════════════════════╝
   `);
@@ -236,17 +293,19 @@ httpServer.listen(PORT as number, "0.0.0.0", () => {
   initRealtimeUplink();
 
   // Periodic sync outbox retry — ensures FAILED events are retried even if socket is down
-  setInterval(async () => {
-    try {
-      const { pushToCloud } = await import("./services/sync.service.js");
-      const synced = await pushToCloud();
-      if (synced > 0) {
-        console.log(`[Sync Cron] ✅ Retried and synced ${synced} pending outbox event(s) to cloud`);
+  timers.push(
+    setInterval(async () => {
+      try {
+        const { pushToCloud } = await import("./services/sync.service.js");
+        const synced = await pushToCloud();
+        if (synced > 0) {
+          console.log(`[Sync Cron] ✅ Retried and synced ${synced} pending outbox event(s) to cloud`);
+        }
+      } catch {
+        // Silent — cloud may be unreachable
       }
-    } catch (err) {
-      // Silent — cloud may be unreachable
-    }
-  }, 120_000); // Every 2 minutes
+    }, 120_000) // Every 2 minutes
+  );
 
   // Order snapshot reconciliation — keeps Cloud ERP orders (items, totals, status)
   // identical to local orders and backfills any history that never synced.
@@ -261,8 +320,75 @@ httpServer.listen(PORT as number, "0.0.0.0", () => {
       console.warn("[OrderSync] Reconcile error:", err instanceof Error ? err.message : err);
     }
   };
-  setTimeout(reconcileOrders, 10_000);
-  setInterval(reconcileOrders, 300_000); // Every 5 minutes
+  timers.push(setTimeout(reconcileOrders, 10_000));
+  timers.push(setInterval(reconcileOrders, 300_000)); // Every 5 minutes
+
+  // Housekeeping — keep the local database from growing without bound
+  const housekeeping = async () => {
+    try {
+      const { pruneSyncedEvents } = await import("./services/sync.service.js");
+      const { prunePrintQueue } = await import("./services/print.service.js");
+      const events = pruneSyncedEvents();
+      const jobs = prunePrintQueue();
+      if (events > 0 || jobs > 0) {
+        console.log(`[Housekeeping] Pruned ${events} synced event(s) and ${jobs} finished print job(s)`);
+      }
+    } catch (err) {
+      console.warn("[Housekeeping] Error:", err instanceof Error ? err.message : err);
+    }
+  };
+  timers.push(setTimeout(housekeeping, 60_000));
+  timers.push(setInterval(housekeeping, 6 * 3_600_000)); // Every 6 hours
+});
+
+httpServer.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[Server] Port ${PORT} is already in use. Is another POS server running?`);
+  } else {
+    console.error("[Server] Failed to start:", err);
+  }
+  process.exit(1);
+});
+
+// ─── Graceful shutdown ───
+// Stop accepting work, let in-flight requests finish, then checkpoint and
+// close SQLite so the WAL is flushed and the database file is consistent.
+let shuttingDown = false;
+function shutdown(signal: string, exitCode = 0): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Server] ${signal} received — shutting down...`);
+
+  for (const t of timers) clearInterval(t);
+  stopCloudSyncPoller();
+  stopPrintRetryLoop();
+  stopRealtimeUplink();
+
+  const finish = () => {
+    try {
+      sqlite.pragma("wal_checkpoint(TRUNCATE)");
+      sqlite.close();
+    } catch (err) {
+      console.error("[Server] Error closing database:", err);
+    }
+    process.exit(exitCode);
+  };
+
+  // Force-exit if connections refuse to drain
+  setTimeout(finish, 5_000).unref();
+  io.close(() => finish());
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason) => {
+  console.error("[Server] Unhandled promise rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  // State may be inconsistent — log, flush the database and let the process
+  // supervisor (or the desktop launcher) restart us.
+  console.error("[Server] Uncaught exception:", err);
+  shutdown("uncaughtException", 1);
 });
 
 export { app, io, httpServer };

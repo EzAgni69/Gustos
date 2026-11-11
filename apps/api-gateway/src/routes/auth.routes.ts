@@ -7,7 +7,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   registerRequestSchema,
   loginRequestSchema,
@@ -16,11 +16,25 @@ import * as cloudSchema from "@gusto/db-schema/cloud";
 import { db } from "../db/index.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
 import { success, error } from "../utils/response.js";
+import { createRateLimiter } from "../utils/rate-limit.js";
+
+// Brute-force protection for the unauthenticated endpoints
+const loginIpLimiter = createRateLimiter({ name: "login-ip", max: 30, windowMs: 15 * 60_000 });
+const loginAccountLimiter = createRateLimiter({ name: "login-account", max: 10, windowMs: 15 * 60_000 });
+const registerLimiter = createRateLimiter({ name: "register", max: 5, windowMs: 60 * 60_000 });
+
+// A real bcrypt hash to compare against when the account does not exist, so
+// response time does not reveal which emails are registered.
+const dummyHash = hashPassword("gusto-timing-equaliser");
 
 export async function authRoutes(fastify: FastifyInstance) {
   // ─── Register (Create Organization + Owner) ───
-  fastify.post("/api/v1/auth/register", async (request, reply) => {
-    const body = registerRequestSchema.parse(request.body);
+  fastify.post("/api/v1/auth/register", { preHandler: [registerLimiter.byIp] }, async (request, reply) => {
+    if (process.env.DISABLE_REGISTRATION === "true") {
+      return reply.status(403).send(error("Self-service registration is disabled. Ask an administrator for an account."));
+    }
+    const parsed = registerRequestSchema.parse(request.body);
+    const body = { ...parsed, email: parsed.email.trim().toLowerCase() };
 
     // Check if slug is already taken
     const existingOrg = await db.query.organizations.findFirst({
@@ -33,38 +47,38 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     // Check if email is already taken
     const existingUser = await db.query.users.findFirst({
-      where: eq(cloudSchema.users.email, body.email),
+      where: sql`lower(${cloudSchema.users.email}) = ${body.email}`,
     });
     if (existingUser) {
       return reply.status(409).send(error("Email already registered"));
     }
 
-    // Create organization
-    const orgs = await db
-      .insert(cloudSchema.organizations)
-      .values({
-        name: body.organizationName,
-        slug: body.organizationSlug,
-        gstNumber: body.gstNumber,
-      })
-      .returning();
-    const org = orgs[0]!;
-
-    // Hash password and create owner user
+    // Organization and its owner are created together or not at all
     const passwordHash = await hashPassword(body.password);
+    const { org, user } = await db.transaction(async (tx) => {
+      const [org] = await tx
+        .insert(cloudSchema.organizations)
+        .values({
+          name: body.organizationName,
+          slug: body.organizationSlug,
+          gstNumber: body.gstNumber,
+        })
+        .returning();
 
-    const users = await db
-      .insert(cloudSchema.users)
-      .values({
-        organizationId: org.id,
-        name: body.name,
-        email: body.email,
-        phone: body.phone,
-        passwordHash,
-        role: "OWNER",
-      })
-      .returning();
-    const user = users[0]!;
+      const [user] = await tx
+        .insert(cloudSchema.users)
+        .values({
+          organizationId: org!.id,
+          name: body.name,
+          email: body.email,
+          phone: body.phone,
+          passwordHash,
+          role: "OWNER",
+        })
+        .returning();
+
+      return { org: org!, user: user! };
+    });
 
     // Generate JWT
     const token = fastify.jwt.sign({
@@ -98,23 +112,30 @@ export async function authRoutes(fastify: FastifyInstance) {
   });
 
   // ─── Login ───
-  fastify.post("/api/v1/auth/login", async (request, reply) => {
-    const body = loginRequestSchema.parse(request.body);
+  fastify.post("/api/v1/auth/login", { preHandler: [loginIpLimiter.byIp] }, async (request, reply) => {
+    const parsed = loginRequestSchema.parse(request.body);
+    const email = parsed.email.trim().toLowerCase();
 
-    // Find user by email
+    const accountKey = `${email}`;
+    const wait = loginAccountLimiter.hit(accountKey);
+    if (wait > 0) {
+      return reply
+        .header("Retry-After", String(wait))
+        .status(429)
+        .send(error(`Too many sign-in attempts for this account. Try again in ${Math.ceil(wait / 60)} minute(s).`));
+    }
+
+    // Find user by email (stored emails may predate lower-casing)
     const user = await db.query.users.findFirst({
-      where: eq(cloudSchema.users.email, body.email),
+      where: sql`lower(${cloudSchema.users.email}) = ${email}`,
     });
 
-    if (!user || !user.passwordHash) {
+    // Verify password (against a dummy hash when there is no such account)
+    const isValid = await verifyPassword(parsed.password, user?.passwordHash || (await dummyHash)).catch(() => false);
+    if (!user || !user.passwordHash || !isValid) {
       return reply.status(401).send(error("Invalid email or password"));
     }
-
-    // Verify password
-    const isValid = await verifyPassword(body.password, user.passwordHash);
-    if (!isValid) {
-      return reply.status(401).send(error("Invalid email or password"));
-    }
+    loginAccountLimiter.reset(accountKey);
 
     // Check if user is active
     if (!user.isActive) {

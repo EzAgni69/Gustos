@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { apiFetch } from "@/lib/api-client";
 import { PageErrorBoundary } from "@/components/shared/PageErrorBoundary";
 import { SocketProvider } from "@/lib/socket-context";
+import { QuickNav, AlertsBell } from "@/components/shared/HeaderTools";
 import { UplinkIndicator } from "@/components/shared/UplinkIndicator";
 
 const sidebarNavItems = [
@@ -256,23 +257,13 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 )}
               </div>
 
-              <div className="relative hidden lg:block max-w-md w-full">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
-                <Input 
-                  type="search" 
-                  placeholder="Search anything..." 
-                  className="pl-9 bg-gray-50 border-transparent focus-visible:bg-white transition-colors"
-                />
-              </div>
+              <QuickNav items={sidebarNavItems} />
             </div>
             
             <div className="flex items-center gap-3">
               <UplinkIndicator />
 
-              <Button variant="ghost" size="icon" className="text-gray-500 relative">
-                <Bell className="w-5 h-5" />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-              </Button>
+              <AlertsBell />
               
               <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm overflow-hidden border-2 border-white flex items-center justify-center text-white text-xs font-bold">
                 {userName ? userName.charAt(0).toUpperCase() : ""}

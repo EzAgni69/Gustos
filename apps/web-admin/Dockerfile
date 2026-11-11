@@ -29,6 +29,8 @@ RUN pnpm turbo run build --filter=@gusto/web-admin...
 
 FROM base AS runner
 WORKDIR /app
+# Enables the strict production checks (strong JWT secret, POS key required)
+ENV NODE_ENV=production
 RUN corepack enable pnpm
 
 RUN addgroup --system --gid 1001 nodejs

@@ -205,6 +205,11 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
           const existing = tx.select().from(schema.menuCategories)
             .where(eq(schema.menuCategories.id, cat.id)).get();
           if (existing) {
+            // Unchanged rows are not counted, so devices are only told to
+            // refresh when something really changed.
+            if (existing.name === cat.name && existing.sortOrder === cat.sortOrder && existing.isActive === Boolean(cat.isActive)) {
+              continue;
+            }
             tx.update(schema.menuCategories)
               .set({
                 name: cat.name,
@@ -341,12 +346,34 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
 
           if (existing) {
             // Respect active local order if currently occupied locally
-            const isLocallyOccupied = existing.status === "OCCUPIED" && existing.currentOrderId;
+            // The POS owns occupancy: OCCUPIED is never taken from the cloud (its
+            // copy is a delayed echo of ours and would resurrect a table that was
+            // just paid), and a locally occupied table is never overridden. The
+            // ERP may still mark a free table RESERVED / CLEANING, or free one it
+            // had marked that way.
+            const cloudStatus = typeof table.status === "string" ? table.status : existing.status;
+            const erpManaged = ["RESERVED", "CLEANING"];
+            const nextStatus =
+              existing.status !== "OCCUPIED" &&
+              cloudStatus !== "OCCUPIED" &&
+              (erpManaged.includes(cloudStatus) || erpManaged.includes(existing.status))
+                ? cloudStatus
+                : existing.status;
+
+            if (
+              existing.name === table.name &&
+              existing.capacity === table.capacity &&
+              (existing.section ?? null) === (table.section ?? null) &&
+              existing.sortOrder === table.sortOrder &&
+              existing.status === nextStatus
+            ) {
+              continue;
+            }
             tx.update(schema.diningTables)
               .set({
                 name: table.name,
                 capacity: table.capacity,
-                status: isLocallyOccupied ? existing.status : (table.status || existing.status),
+                status: nextStatus,
                 section: table.section,
                 sortOrder: table.sortOrder,
               })
@@ -407,7 +434,9 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
       }
 
       // 4. Reconcile local users (PIN-based auth, cloud is authoritative)
-      if (data.users && Array.isArray(data.users)) {
+      // An empty list is treated as "no data" — wiping every local login would
+      // lock the restaurant out of its own POS.
+      if (data.users && Array.isArray(data.users) && data.users.length > 0) {
         const cloudUserIds = new Set(data.users.map((u: any) => u.id));
         const localUsers = tx.select().from(schema.localUsers).all();
 
@@ -422,30 +451,31 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
           }
         }
 
-        // Upsert cloud users
+        // Upsert cloud users. A user without a PIN cannot sign in on the POS:
+        // they are stored inactive with an unguessable placeholder rather than
+        // a default PIN, which would be a shared back door.
         for (const user of data.users) {
+          const hasPin = typeof user.pin === "string" && /^\d{4,8}$/.test(user.pin);
+          const values = {
+            name: user.name,
+            pin: hasPin ? (user.pin as string) : `!nopin-${user.id}`,
+            role: user.role,
+            isActive: hasPin && Boolean(user.isActive),
+          };
           const existing = tx.select().from(schema.localUsers)
             .where(eq(schema.localUsers.id, user.id)).get();
           if (existing) {
-            tx.update(schema.localUsers)
-              .set({
-                name: user.name,
-                pin: user.pin ?? "0000",
-                role: user.role,
-                isActive: Boolean(user.isActive),
-              })
-              .where(eq(schema.localUsers.id, user.id))
-              .run();
+            if (
+              existing.name === values.name &&
+              existing.pin === values.pin &&
+              existing.role === values.role &&
+              existing.isActive === values.isActive
+            ) {
+              continue;
+            }
+            tx.update(schema.localUsers).set(values).where(eq(schema.localUsers.id, user.id)).run();
           } else {
-            tx.insert(schema.localUsers)
-              .values({
-                id: user.id,
-                name: user.name,
-                pin: user.pin ?? "0000",
-                role: user.role,
-                isActive: Boolean(user.isActive),
-              })
-              .run();
+            tx.insert(schema.localUsers).values({ id: user.id, ...values }).run();
           }
           summary.usersUpdated++;
         }
@@ -463,6 +493,8 @@ export async function pullFromCloud(fullSync = false): Promise<SyncChangeSummary
               address: cfg.address ?? "",
               phone: cfg.phone,
               gstNumber: cfg.gstNumber,
+              ...(cfg.fssaiLicenseNo !== undefined ? { fssaiLicenseNo: cfg.fssaiLicenseNo } : {}),
+              ...(cfg.greetingMessage ? { greetingMessage: cfg.greetingMessage } : {}),
               updatedAt: new Date().toISOString(),
             })
             .where(eq(schema.outletConfig.outletId, cfg.outletId))

@@ -36,6 +36,7 @@ vi.mock("../../socket/events.js", () => ({
 // Mock print service — no physical printer in tests
 vi.mock("../print.service.js", () => ({
   queuePrint: vi.fn().mockResolvedValue(undefined),
+  isKotPrintingEnabled: () => false,
 }));
 
 // Mock sync service — no cloud connection in tests

@@ -44,13 +44,14 @@ export function App() {
   const { fetchTables } = useTableStore();
   const { fetchActiveShift, fetchShiftWarning } = useShiftStore();
 
-  // Check socket/connection status on boot
+  // Load working data once a staff member is signed in (and again after re-login)
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchMenu();
     fetchTables();
     fetchActiveShift();
     fetchShiftWarning();
-  }, [fetchMenu, fetchTables, fetchActiveShift, fetchShiftWarning]);
+  }, [isAuthenticated, fetchMenu, fetchTables, fetchActiveShift, fetchShiftWarning]);
 
   if (!isAuthenticated) {
     return <LoginScreen />;
